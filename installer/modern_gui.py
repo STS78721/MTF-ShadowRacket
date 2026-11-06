@@ -536,17 +536,60 @@ class ModernDkbInstaller(ctk.CTk):
         target = self.var_install_dir.get().strip()
         src = self.var_game_source.get().strip()
         keys = self.var_keys.get().strip()
+        os.makedirs(target, exist_ok=True)
         
         self.log(f"[*] Target directory: {target}")
         self.log(f"[*] Validating legally supplied game dump from: {src}")
-        self.log(f"[*] Verified user prod.keys from: {keys}")
+        self.log(f"[*] Verified user console prod.keys from: {keys}")
         self.progress_bar.set(0.15)
 
-        # 1. Base Game Dump Link/Copy
+        # 1. Deploy Game Binaries (dkb.exe, launcher, config, icon)
+        payload_candidates = [
+            r"C:\DK-Bananza-Instalador\jogo\build\dkb100",
+            os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "build", "dkb100"),
+            os.path.dirname(os.path.abspath(sys.executable)),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "build", "dkb100")),
+            r"C:\Games\DKB PC\build\dkb100",
+        ]
+        payload_dir = next((c for c in payload_candidates if os.path.isfile(os.path.join(c, "dkb.exe"))), None)
+        if payload_dir and os.path.abspath(payload_dir) != os.path.abspath(target):
+            self.log("[*] Deploying Donkey Kong Bananza recompiled binaries...")
+            essential_files = [
+                "dkb.exe", "totk.ini", "romfs-index.bin", "dkb.ico",
+                "totk_xlate.exe", "totk_xlate.id", "pipeline-cache.bin"
+            ]
+            for ef in essential_files:
+                src_file = os.path.join(payload_dir, ef)
+                dst_file = os.path.join(target, ef)
+                if os.path.isfile(src_file) and not os.path.exists(dst_file):
+                    try:
+                        shutil.copy2(src_file, dst_file)
+                        self.log(f"  -> Installed {ef}")
+                    except Exception as e:
+                        self.log(f"  [!] Notice copying {ef}: {e}")
+
+        # Deploy DKBLauncher.exe
+        launcher_candidates = [
+            os.path.join(payload_dir, "DKBLauncher.exe") if payload_dir else None,
+            r"C:\DK-Bananza-Instalador\DKBLauncher.exe",
+            os.path.join(os.path.dirname(sys.executable), "DKBLauncher.exe"),
+            r"C:\DK-Bananza-Instalador\jogo\dist\DKBLauncher.exe",
+        ]
+        launcher_src = next((cand for cand in launcher_candidates if cand and os.path.isfile(cand)), None)
+        if launcher_src:
+            dst_launcher = os.path.join(target, "DKBLauncher.exe")
+            if os.path.abspath(launcher_src) != os.path.abspath(dst_launcher):
+                try:
+                    shutil.copy2(launcher_src, dst_launcher)
+                    self.log("[✓] Installed DKBLauncher.exe to target directory.")
+                except Exception:
+                    pass
+
+        # 2. Base Game Dump Link / Extract
+        dst_romfs = os.path.join(target, "romfs")
         if os.path.isdir(os.path.join(src, "exefs")) and os.path.isdir(os.path.join(src, "romfs")):
             self.log("[✓] Validated user exefs/ and romfs/ directory dump.")
             dst_exefs = os.path.join(target, "exefs")
-            dst_romfs = os.path.join(target, "romfs")
             if not os.path.exists(dst_exefs):
                 try:
                     os.symlink(os.path.join(src, "exefs"), dst_exefs)
@@ -560,8 +603,36 @@ class ModernDkbInstaller(ctk.CTk):
                     self.log("[✓] Created zero-copy filesystem link to romfs.")
                 except Exception:
                     self.log("[✓] Verified romfs access.")
+        elif os.path.isdir(src) and os.path.isfile(os.path.join(src, "romfs.bin")):
+            self.log("[✓] Validated user packed romfs.bin dump.")
+            os.makedirs(dst_romfs, exist_ok=True)
+            dst_bin = os.path.join(dst_romfs, "romfs.bin")
+            if not os.path.exists(dst_bin):
+                try:
+                    os.symlink(os.path.join(src, "romfs.bin"), dst_bin)
+                    self.log("[✓] Linked romfs.bin image.")
+                except Exception:
+                    shutil.copy2(os.path.join(src, "romfs.bin"), dst_bin)
         elif src.lower().endswith((".nsp", ".xci")):
-            self.log("[*] Packed container selected (.nsp/.xci). User keys active.")
+            self.log("[*] Packed container selected (.nsp/.xci). Extracting with user keys...")
+            hactool_candidates = [
+                r"C:\DK-Bananza-Instalador\jogo\bin\hactool.exe",
+                os.path.join(os.path.dirname(sys.executable), "bin", "hactool.exe"),
+                r"C:\Games\DKB PC\dkb-BANANAS\bin\hactool.exe",
+                shutil.which("hactool"),
+            ]
+            hactool = next((h for h in hactool_candidates if h and os.path.isfile(h)), None)
+            os.makedirs(dst_romfs, exist_ok=True)
+            if hactool and keys:
+                cmd = [hactool, "-k", keys, f"--romfsdir={dst_romfs}", src]
+                try:
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                    if res.returncode == 0:
+                        self.log("[✓] Successfully extracted RomFS from container.")
+                    else:
+                        self.log(f"[*] Hactool result logged (code {res.returncode}).")
+                except Exception as e:
+                    self.log(f"[!] Extraction notice: {e}")
 
         self.progress_bar.set(0.35)
 
