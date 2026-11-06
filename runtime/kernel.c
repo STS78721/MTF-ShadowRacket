@@ -1397,6 +1397,7 @@ static RtThread *thr_new(int prio, int core, uint64_t mask) {
 
 static void thr_link(RtThread *t) {   // holding G
     t->handle = h_new(O_THREAD, t);
+    *(uint32_t *)(t->tlr + 0x110) = t->handle;   // Horizon kernel TLR user thread handle slot (SDK 20+ InternalCriticalSection)
     t->id = g_next_id++;
     t->all = g_all;
     g_all = t;

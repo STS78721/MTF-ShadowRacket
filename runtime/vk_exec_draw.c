@@ -843,7 +843,7 @@ static const uint8_t *native_gs_control(const uint8_t *ctl, const uint8_t *code,
     uint8_t *copy = malloc(0x880);
     if (!copy) return NULL;
     memcpy(copy, ctl, 0x880);
-    if (!nvn_geometry_control_pack_lowered(copy, 0x880, code, len, skip)) {
+    if (!nvn_geometry_control_pack_portable(copy, 0x880, code, len, skip)) {
         rt_log("native GS: stage %016llx does not fit the portable control", (unsigned long long)nvn2_origin(code));
         free(copy);
         return NULL;
@@ -3024,7 +3024,6 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
         case 4: memcpy(&ex->pipe.poly, b->bytes, sizeof ex->pipe.poly); break;
         case 5: memcpy(&ex->pipe.ds, b->bytes, sizeof ex->pipe.ds); break;
         case 6: memcpy(&ex->point_size, b->bytes, sizeof ex->point_size); break;
-        case 7: memcpy(&ex->pipe.alpha_ref, b->bytes, sizeof ex->pipe.alpha_ref); break;
         }
         break;
     }

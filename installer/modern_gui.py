@@ -239,9 +239,6 @@ class ModernDkbInstaller(ctk.CTk):
 
     def auto_find_game_source(self):
         candidates = [
-            r"C:\DK-Bananza-Instalador\jogo\base",
-            r"C:\Games\DKB PC\base",
-            r"C:\DK-Bananza-Instalador\jogo\build\extracted",
             r"C:\Games",
             os.path.join(os.environ.get("USERPROFILE", ""), "Downloads"),
         ]
@@ -319,7 +316,7 @@ class ModernDkbInstaller(ctk.CTk):
             self.after(20, self.on_tab_changed)
         self.tabview._segmented_button_callback = _hooked_sb_cb
 
-        self.tab_files = self.tabview.add("1. Destination & Setup")
+        self.tab_files = self.tabview.add("1. Legal Game Files & Keys")
         self.tab_features = self.tabview.add("2. DLSS & Controllers")
         self.tab_guide = self.tabview.add("3. Controller Guide")
         self.tab_install = self.tabview.add("4. Finalize & Launch")
@@ -352,15 +349,19 @@ class ModernDkbInstaller(ctk.CTk):
         f = filedialog.askopenfilename(filetypes=filetypes)
         if f: var.set(f)
 
+    def browse_folder(self, var):
+        d = filedialog.askdirectory(title="Select Game Dump Folder (containing romfs / exefs)")
+        if d: var.set(d)
+
     def browse_source(self, var):
         # Allow choosing either a file (.nsp / .xci) or a directory (dump containing exefs/romfs)
-        d = filedialog.askdirectory(title="Select Game Dump Folder (containing exefs/romfs)")
-        if d:
-            var.set(d)
+        f = filedialog.askopenfilename(title="Select Game Dump File (.nsp or .xci)",
+                                       filetypes=[("Nintendo Switch Game", "*.nsp *.xci"), ("All Files", "*.*")])
+        if f:
+            var.set(f)
         else:
-            f = filedialog.askopenfilename(title="Select Game File (.nsp or .xci)",
-                                           filetypes=[("Nintendo Switch Game", "*.nsp *.xci"), ("All Files", "*.*")])
-            if f: var.set(f)
+            d = filedialog.askdirectory(title="Select Game Dump Folder (containing exefs/romfs)")
+            if d: var.set(d)
 
     def build_tab_files(self):
         f = self.tab_files
@@ -384,13 +385,15 @@ class ModernDkbInstaller(ctk.CTk):
         # 1. Base Game Dump / File
         src_box = ctk.CTkFrame(f, fg_color=CARD_BG, border_color=CARD_BORDER, border_width=1)
         src_box.pack(fill="x", padx=15, pady=8)
-        ctk.CTkLabel(src_box, text="🎮 Game Dump / ROMFS Source (Folder or .nsp / .xci):",
+        ctk.CTkLabel(src_box, text="🎮 Legitimate Game Dump Source (.nsp, .xci, or folder with romfs):",
                      font=ctk.CTkFont(size=13, weight="bold"), text_color="#ffffff").pack(anchor="w", padx=15, pady=(8, 4))
         r1 = ctk.CTkFrame(src_box, fg_color="transparent")
         r1.pack(fill="x", padx=15, pady=(0, 10))
         ctk.CTkEntry(r1, textvariable=self.var_game_source, placeholder_text="Path to folder with exefs/romfs, or .nsp / .xci file").pack(side="left", fill="x", expand=True, padx=(0, 10))
-        ctk.CTkButton(r1, text="Browse...", width=100, fg_color="#202b25", hover_color="#2e3d34",
-                      command=lambda: self.browse_source(self.var_game_source)).pack(side="right")
+        ctk.CTkButton(r1, text="Browse File...", width=105, fg_color="#202b25", hover_color="#2e3d34",
+                      command=lambda: self.browse_file(self.var_game_source, [("Game Dump (.nsp, .xci)", "*.nsp *.xci"), ("All Files", "*.*")])).pack(side="left", padx=(0, 5))
+        ctk.CTkButton(r1, text="Browse Folder...", width=115, fg_color="#202b25", hover_color="#2e3d34",
+                      command=lambda: self.browse_folder(self.var_game_source)).pack(side="right")
 
         # 2. Decryption Keys (prod.keys)
         keys_box = ctk.CTkFrame(f, fg_color=CARD_BG, border_color=CARD_BORDER, border_width=1)
@@ -501,22 +504,22 @@ class ModernDkbInstaller(ctk.CTk):
 
     def prev_tab(self):
         cur = self.tabview.get()
-        if cur == "2. DLSS & Controllers": self.tabview.set("1. Destination & Setup")
+        if cur == "2. DLSS & Controllers": self.tabview.set("1. Legal Game Files & Keys")
         elif cur == "3. Controller Guide": self.tabview.set("2. DLSS & Controllers")
         elif cur == "4. Finalize & Launch": self.tabview.set("3. Controller Guide")
 
     def next_tab(self):
         cur = self.tabview.get()
-        if cur == "1. Destination & Setup":
+        if cur == "1. Legal Game Files & Keys":
             src = self.var_game_source.get().strip()
             keys = self.var_keys.get().strip()
             if not src or not os.path.exists(src):
                 messagebox.showerror("Legitimate Game Dump Required",
-                                     "In strict compliance with copyright law, Donkey Kong Bananza PC Recomp requires you to provide your own legally dumped game files (folder with exefs/romfs or .nsp/.xci).\n\nPlease select your dump location before proceeding.")
+                                     "In strict compliance with Nintendo copyright laws and clean-room recompilation rules, Donkey Kong Bananza PC Recomp requires you to supply your own legally dumped game files (folder with exefs/romfs or .nsp/.xci).\n\nPlease select your dump location before proceeding.")
                 return
             if not keys or not os.path.isfile(keys):
                 messagebox.showerror("Decryption Keys Required",
-                                     "Please provide your own legally dumped prod.keys file from your Nintendo Switch console.\n\nNo proprietary keys are included or distributed with this project.")
+                                     "Please provide your own legally dumped prod.keys file from your Nintendo Switch console.\n\nNo proprietary keys or copyrighted assets are bundled or distributed with this project.")
                 return
             self.tabview.set("2. DLSS & Controllers")
         elif cur == "2. DLSS & Controllers":
