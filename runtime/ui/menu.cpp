@@ -494,7 +494,7 @@ static void row_output_res(void) {
 }
 
 static void row_render_scale(void) {
-    static const char *const vals[] = {"game", "50", "67", "75", "100", "125", "150", "200"};
+    static const char *const vals[] = {"game", "33", "50", "58", "67", "75", "100", "125", "150", "200"};
     enum { N = sizeof vals / sizeof *vals };
     char shown[N][32];
     const char *names[N];
@@ -503,7 +503,30 @@ static void row_render_scale(void) {
         snprintf(shown[i], sizeof shown[i], "%s %%", vals[i]);
         names[i] = shown[i];
     }
-    opt_choice_list("TOTK_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC);
+    if (opt_choice_list("TOTK_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC)) {
+        const char *rs = cfg_value("TOTK_RENDER_SCALE");
+        if (!strcmp(rs, "100")) {
+            cfg_set("TOTK_UPSCALER_PRESET", "native");
+            cfg_set("TOTK_DLAA", "1");
+        } else if (!strcmp(rs, "67")) {
+            cfg_set("TOTK_UPSCALER_PRESET", "quality");
+            cfg_set("TOTK_DLAA", "0");
+        } else if (!strcmp(rs, "58")) {
+            cfg_set("TOTK_UPSCALER_PRESET", "balanced");
+            cfg_set("TOTK_DLAA", "0");
+        } else if (!strcmp(rs, "50")) {
+            cfg_set("TOTK_UPSCALER_PRESET", "performance");
+            cfg_set("TOTK_DLSS_PRESET", "preset_m");
+            cfg_set("TOTK_DLAA", "0");
+        } else if (!strcmp(rs, "33")) {
+            cfg_set("TOTK_UPSCALER_PRESET", "ultra_performance");
+            cfg_set("TOTK_DLSS_PRESET", "preset_l");
+            cfg_set("TOTK_DLAA", "0");
+        } else {
+            cfg_set("TOTK_DLAA", "0");
+        }
+        cfg_save();
+    }
 }
 
 static void row_gpu(void) {
@@ -624,22 +647,25 @@ static void tab_screen(float scale) {
     opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
     opt_group(UI_MENU_GRAPHICS);
     row_render_scale();
-    static const char *const up_vals[] = {"dlss", "fsr", "bilinear"};
+    static const char *const up_vals[] = {"dlss", "xess", "fsr", "bilinear"};
     const char *dp = cfg_value("TOTK_DLSS_PRESET");
     const char *dlss_title = (!strcmp(dp, "preset_m") || !strcmp(dp, "preset_l")) ? "NVIDIA DLSS 4.5"
                            : (!strcmp(dp, "preset_k") || !strcmp(dp, "preset_j")) ? "NVIDIA DLSS 4"
                            : "NVIDIA DLSS 4 / 4.5";
-    const char *up_names[] = {dlss_title, menu_text(UI_MENU_UPSCALER_FSR), menu_text(UI_MENU_UPSCALER_BILINEAR)};
-    if (opt_choice_list("TOTK_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 3, UI_MENU_UPSCALER_DESC)) {
+    const char *up_names[] = {dlss_title, "Intel XeSS 1.3 / XeLL", menu_text(UI_MENU_UPSCALER_FSR), menu_text(UI_MENU_UPSCALER_BILINEAR)};
+    if (opt_choice_list("TOTK_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 4, UI_MENU_UPSCALER_DESC)) {
         const char *u = cfg_value("TOTK_UPSCALER");
-        cfg_set("TOTK_DLAA", !strcmp(u, "dlss") ? "1" : "0");
+        const char *rs = cfg_value("TOTK_RENDER_SCALE");
+        int is_100 = (!strcmp(rs, "100") || !strcmp(cfg_value("TOTK_UPSCALER_PRESET"), "native"));
+        cfg_set("TOTK_DLAA", (!strcmp(u, "dlss") && is_100) ? "1" : "0");
         cfg_save();
     }
     const char *up = cfg_value("TOTK_UPSCALER");
     bool is_dlss = !strcmp(up, "dlss");
-    if (is_dlss) {
+    bool is_xess = !strcmp(up, "xess");
+    if (is_dlss || is_xess) {
         static const struct { const char *name, *label, *scale, *model; } p[] = {
-            {"native", "Native / DLAA (100%)", "100", "preset_k"},
+            {"native", "Native / AA (100%)", "100", "preset_k"},
             {"quality", "Quality (67%)", "67", "preset_k"},
             {"balanced", "Balanced (58%)", "58", "preset_k"},
             {"performance", "Performance (50%)", "50", "preset_m"},
@@ -650,18 +676,25 @@ static void tab_screen(float scale) {
             for (const auto &e : p) {
                 if (!strcmp(cfg_value("TOTK_UPSCALER_PRESET"), e.name)) {
                     cfg_set("TOTK_RENDER_SCALE", e.scale);
-                    cfg_set("TOTK_DLSS_PRESET", e.model);
+                    cfg_set("TOTK_DLAA", !strcmp(e.name, "native") ? "1" : "0");
+                    if (is_dlss) cfg_set("TOTK_DLSS_PRESET", e.model);
                     cfg_save();
                 }
             }
         }
-        static const char *const model_vals[] = {"preset_k", "preset_j", "preset_m", "preset_l", "default"};
-        static const char *const model_names[] = {
-            "DLSS 4 (Preset K)", "DLSS 4 (Preset J)",
-            "DLSS 4.5 Perf (Preset M)", "DLSS 4.5 UltraPerf (Preset L)", "Default (Auto)"};
-        opt_choice_list("TOTK_DLSS_PRESET", UI_MENU_DLSS_MODEL, model_vals, model_names, 5, UI_MENU_DLSS_MODEL_DESC);
+        if (is_dlss) {
+            static const char *const model_vals[] = {"preset_k", "preset_j", "preset_m", "preset_l", "default"};
+            static const char *const model_names[] = {
+                "DLSS 4 (Preset K)", "DLSS 4 (Preset J)",
+                "DLSS 4.5 Perf (Preset M)", "DLSS 4.5 UltraPerf (Preset L)", "Default (Auto)"};
+            opt_choice_list("TOTK_DLSS_PRESET", UI_MENU_DLSS_MODEL, model_vals, model_names, 5, UI_MENU_DLSS_MODEL_DESC);
+        }
     }
     opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
+    static const char *const lat_vals[] = {"boost", "on", "off"};
+    static const char *const lat_names[] = {"Reflex / Anti-Lag Boost", "On", "Off"};
+    opt_choice_list("TOTK_REFLEX", UI_MENU_LOW_LATENCY, lat_vals, lat_names, 3, UI_MENU_LOW_LATENCY_DESC);
+    opt_toggle("TOTK_FRAME_GEN", UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC);
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
     opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
     opt_slider("TOTK_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
@@ -1089,32 +1122,43 @@ static float perf_gb(float mb) { return mb < 0 ? -1 : mb / 1024; }
 static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     unsigned out[2], scene[2];
     res_sizes(out, scene);
-    char v[6][64];
+    char v[8][64];
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
     snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
     if (!strcmp(cfg_value("TOTK_UPSCALER"), "dlss")) {
-        snprintf(v[3], sizeof v[3], "NVIDIA DLSS 4.5 (%s)", cfg_value("TOTK_DLSS_PRESET"));
+        if (!strcmp(cfg_value("TOTK_DLAA"), "1") || !strcmp(cfg_value("TOTK_UPSCALER_PRESET"), "native")) {
+            snprintf(v[3], sizeof v[3], "NVIDIA DLAA (100%%)");
+        } else {
+            snprintf(v[3], sizeof v[3], "NVIDIA DLSS 4.5 (%s, %s%%)", cfg_value("TOTK_DLSS_PRESET"), cfg_value("TOTK_RENDER_SCALE"));
+        }
+    } else if (!strcmp(cfg_value("TOTK_UPSCALER"), "xess")) {
+        snprintf(v[3], sizeof v[3], "Intel XeSS 1.3 (%s)", cfg_value("TOTK_UPSCALER_PRESET"));
     } else if (t->scaler == 2) {
         int s = cfg_int("TOTK_SHARPNESS");
         snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
     } else {
         snprintf(v[3], sizeof v[3], "%s", menu_text(t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
     }
+    const char *ref = cfg_value("TOTK_REFLEX");
+    snprintf(v[4], sizeof v[4], !strcmp(ref, "boost") ? "Reflex/Anti-Lag (Boost)" : !strcmp(ref, "on") ? "Low Latency (On)" : "Off");
+    snprintf(v[5], sizeof v[5], cfg_bool("TOTK_FRAME_GEN") ? "Active (2x Interpolation)" : "Off");
     double hz = frame_step_limit_hz();
-    snprintf(v[4], sizeof v[4], "%s", menu_text(UI_MENU_OV_NONE));
-    if (hz > 0) snprintf(v[4], sizeof v[4], menu_text(UI_MENU_OV_FPS), hz);
+    snprintf(v[6], sizeof v[6], "%s", menu_text(UI_MENU_OV_NONE));
+    if (hz > 0) snprintf(v[6], sizeof v[6], menu_text(UI_MENU_OV_FPS), hz);
     const char *pm = present_name(gfx_window_present_mode());
-    snprintf(v[5], sizeof v[5], "%s", pm ? pm : menu_text(UI_MENU_OV_NONE));
-    static const UiTextId labels[6] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE,
-                                       UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT};
+    snprintf(v[7], sizeof v[7], "%s", pm ? pm : menu_text(UI_MENU_OV_NONE));
+    static const char *const custom_labels[8] = {
+        "Window", "Output", "Scene", "Scaling", "Latency", "Frame Gen", "Limit", "Present"
+    };
     if (!ImGui::BeginTable("##perfp", 2, ImGuiTableFlags_SizingFixedFit)) return;
     float vw = 0;
     for (auto &s : v) vw = fmaxf(vw, ImGui::CalcTextSize(s).x);
     ImGui::TableSetupColumn("##p0", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("##p1", ImGuiTableColumnFlags_WidthFixed, vw);
-    for (int i = 0; i < 6; i++) {
-        perf_label(labels[i], c);
+    for (int i = 0; i < 8; i++) {
+        ImGui::TableNextColumn();
+        ImGui::TextColored(c, "%s", custom_labels[i]);
         ImGui::TableNextColumn();
         perf_right(v[i], false);
     }
@@ -1196,6 +1240,16 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
         ImGui::EndTable();
     }
     perf_picture(t, pic_c);
+    const char *pname = input_gamepad_name();
+    if (pname) {
+        int pct = -1, chg = 0;
+        int hp = input_pad_power_info(&pct, &chg);
+        if (hp && pct >= 0) {
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1), "[Controller] %s [%s %d%%]", pname, chg ? "Charging" : "Battery", pct);
+        } else {
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1), "[Controller] %s", pname);
+        }
+    }
     if (s.gpu_name[0]) ImGui::TextDisabled("%s", s.gpu_name);
     if (s.cpu_name[0]) ImGui::TextDisabled("%s", s.cpu_name);
     ImGui::End();

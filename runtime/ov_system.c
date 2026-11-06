@@ -835,14 +835,14 @@ static void ov_report_send(Cpu *c) {
 }
 static void ov_async_event(Cpu *c) {
     uint64_t ev = arg_x(c, 1);
-    if (ev) {   // stack-allocated event: create it fresh each time (the bind table caches by address, stale on reuse)
-        static uint64_t create, getw;
+    if (ev && !*(uint8_t *)(uintptr_t)(ev + 0x28)) {
+        static uint64_t create, signal;
         if (!create) {
             create = ldr_symbol("_ZN2nn2os17CreateSystemEventEPNS0_15SystemEventTypeENS0_14EventClearModeEb");
-            getw = ldr_symbol("_ZN2nn2os30GetWritableHandleOfSystemEventEPKNS0_15SystemEventTypeE");
+            signal = ldr_symbol("_ZN2nn2os17SignalSystemEventEPNS0_15SystemEventTypeE");
         }
-        rt_call(c, create, 3, ev, (uint64_t)0, (uint64_t)1);
-        kern_event_signal((uint32_t)rt_call(c, getw, 1, ev));
+        rt_call(c, create, 3, ev, (uint64_t)0, (uint64_t)0);
+        rt_call(c, signal, 1, ev);
     }
     ret_x(c, 0);
 }
@@ -1059,9 +1059,7 @@ HOST_OVERRIDE("_ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_", ov_nsd_resolve);
 HOST_OVERRIDE("_ZN2nn2ro12ProtectRelroEPKvS2_S2_S2_S2_", ov_noop);
 HOST_OVERRIDE("_ZN2nn2pl17RequestLoadNxFontEPvm", ov_noop);
 HOST_OVERRIDE("_ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE", ov_report_send);
-HOST_OVERRIDE("_ZN2nn5prepo12AsyncContext18GetCompletionEventEPNS_2os11SystemEventE", ov_async_event);
-HOST_OVERRIDE("_ZN2nn5prepo12AsyncContext9GetResultEv", ov_ret_zero);
-HOST_OVERRIDE("_ZN2nn5prepo12AsyncContextD1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn5prepo10PlayReport4SendEv", ov_report_send);
 HOST_OVERRIDE("_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERKNS0_10UserHandleE", ov_account_offline);
 HOST_OVERRIDE("_ZN2nn7account36EnsureNetworkServiceAccountAvailableERKNS0_10UserHandleE", ov_account_offline);
 HOST_OVERRIDE("_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_10UserHandleE", ov_account_offline);

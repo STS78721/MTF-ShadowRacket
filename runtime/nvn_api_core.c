@@ -204,6 +204,11 @@ NVN_API(nvnDeviceFinalize) { ((dev_t_ *)arg_p(c, 0))->magic = 0; }
 NVN_API(nvnDeviceGetInteger) {
     unsigned w = (unsigned)arg_x(c, 1);
     int *out = arg_p(c, 2);
+    if (w == 0x67) {   // NVN 2 shader-copy alignment; observed by VideoDecoderBuffer::Initialize
+        *out = 256;
+        NVN_LOG("DeviceGetInteger %#x -> %d", w, *out);
+        return;
+    }
     if (w >= sizeof devinfo / sizeof *devinfo) {   // NVN 2 properties past the NVN 1 table: 0 (feature absent) until known
         if (w > 0x100) rt_fatal("nvn: unsupported NVN device property %#x", w);
         rt_log("nvn: NVN 2 device property %#x not known, answering 0", w);

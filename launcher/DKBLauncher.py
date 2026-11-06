@@ -200,7 +200,7 @@ def save_ini_settings(path, updates):
         found=False
         active_section=""
         target_section=next((section for section, keys in {
-            "frame rate":{"fps_limit"}, "display":{"fullscreen","window_size","vk_present","output_res","render_scale","upscaler","upscaler_preset","dlss","dlss_preset","reflex","sharpness","aspect","fov","color_preset","color_brightness","color_contrast","color_saturation","color_gamma","device_profile","assume_focus"},
+            "frame rate":{"fps_limit"}, "display":{"fullscreen","window_size","vk_present","output_res","render_scale","upscaler","upscaler_preset","dlss","dlss_preset","reflex","sharpness","aspect","fov","color_preset","color_brightness","color_contrast","color_saturation","color_gamma","device_profile","assume_focus","dlaa","low_latency","frame_gen","xess_preset"},
             "language":{"locale","lang","menu_lang"}, "audio":{"volume"},
             "input":{"motion","rumble_strength","rumble_curve","rumble_triggers","pad_layout","stick_deadzone","mouse_sens"},
             "performance":{"pipe_wait","pipe_prebuild","lib_prebuild","experimental_geometry","fix_vs_fault","fix_zero","lod_guard","fix_indirect_reset"},
@@ -435,7 +435,10 @@ class DKBSettingsDialog(tk.Toplevel):
         tk.Label(left,text=label,font=("Segoe UI",10,"bold"),fg=COLOR_WHITE,bg=COLOR_BG_DARK).pack(anchor="w")
         if desc:tk.Label(left,text=desc,font=("Segoe UI",8),fg=COLOR_TEXT_DIM,bg=COLOR_BG_DARK,wraplength=540,justify="left").pack(anchor="w")
         current=config_text_value(self.get_val(key,str(default))); var=tk.StringVar(value=current if current in options else str(default)); self.vars[key]=var
-        ttk.Combobox(row,textvariable=var,values=options,state="readonly",width=22,font=("Segoe UI",9)).pack(side=tk.RIGHT,padx=5)
+        cb=ttk.Combobox(row,textvariable=var,values=options,state="readonly",width=22,font=("Segoe UI",9))
+        cb.pack(side=tk.RIGHT,padx=5)
+        if not hasattr(self,"combos"):self.combos={}
+        self.combos[key]=cb
         return row
     def create_row_toggle(self,parent,label,key,default="0",desc=""):
         row=tk.Frame(parent,bg=COLOR_BG_DARK,pady=7); row.pack(fill=tk.X,padx=20)
@@ -510,16 +513,39 @@ class DKBSettingsDialog(tk.Toplevel):
         messagebox.showinfo("Display Profile","Applied DKB's fit aspect mode and a wider camera view. This setting does not rewrite RomFS or HUD files.",parent=self)
     def build_upscale_tab(self):
         f=self.tab_upscale
-        self.create_row_dropdown(f,"Upscaler Technology","upscaler",["dlss","fsr","bilinear"],"dlss","Upscaler: NVIDIA DLSS 4.5 (RTX GPUs), AMD FSR 1.0, or Bilinear.")
+        self.create_row_dropdown(f,"Upscaler Technology","upscaler",["dlss","xess","fsr","bilinear"],"dlss","Upscaler: NVIDIA DLSS 4.5 (RTX GPUs), Intel XeSS 1.3 / XeLL, AMD FSR, or Bilinear.")
         self.create_row_dropdown(f,"DLSS / Upscaler Preset","upscaler_preset",["native","quality","balanced","performance","ultra_performance"],"quality","Preset: Native / DLAA (100%), Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%).")
         self.create_row_dropdown(f,"DLSS Model Generation","dlss_preset",["preset_k","preset_j","preset_m","preset_l","default"],"preset_k","Model: DLSS 4 (Preset K/J), DLSS 4.5 Perf (Preset M), DLSS 4.5 UltraPerf (Preset L).")
-        self.create_row_dropdown(f,"NVIDIA Reflex Latency","reflex",["boost","on","off"],"boost","NVIDIA Reflex Low Latency: reduce rendering queue latency.")
-        self.create_row_dropdown(f,"Render Scale (Manual)","render_scale",["game","50","67","75","100","125","150","200"],"game","Lower values reduce GPU load; Game uses the DKB default.")
+        self.create_row_dropdown(f,"Low-Latency Mode","reflex",["boost","on","off"],"boost","Low Latency: NVIDIA Reflex (Boost/On), AMD Anti-Lag 2, Intel XeLL.")
+        self.create_row_toggle(f,"AI Frame Generation","frame_gen","0","Enables Frame Generation interpolation (DLSS-G / XeSS FG) for maximum fluidity.")
+        self.create_row_dropdown(f,"Render Scale (Internal)","render_scale",["game","33","50","58","67","75","100","125","150","200"],"game","Resolution scale: lower values boost FPS; 100% enables native DLAA.")
         self.create_row_slider(f,"Upscaler Sharpness","sharpness",0,100,80,"%","Adjust the sharpness of the reconstructed image.")
         self.create_row_dropdown(f,"Device Profile","device_profile",["auto","desktop","deck"],"auto","Use the runtime's automatic desktop profile or select a preset profile.")
         self.create_row_dropdown(f,"Shader Pipeline Policy","pipe_wait",["default","draw"],"default","Default waits only when needed; Draw prioritizes avoiding pipeline stalls.")
         self.create_row_toggle(f,"Prebuild Vulkan Pipelines","pipe_prebuild","1","Build reusable Vulkan pipelines before play when supported.")
-        self._section_note(f,"NVIDIA DLSS 4.5, NVIDIA Reflex, and AMD FSR 1.0 are fully wired into DKB.")
+        self._section_note(f,"NVIDIA DLSS 4.5, Intel XeSS 1.3 / XeLL, AMD FSR, NVIDIA Reflex, and AI Frame Generation are fully wired into DKB.")
+
+        def on_preset_changed(_e=None):
+            p = self.vars["upscaler_preset"].get()
+            scale_map = {"native": "100", "quality": "67", "balanced": "58", "performance": "50", "ultra_performance": "33"}
+            model_map = {"performance": "preset_m", "ultra_performance": "preset_l", "quality": "preset_k", "balanced": "preset_k", "native": "preset_k"}
+            if p in scale_map and "render_scale" in self.vars:
+                self.vars["render_scale"].set(scale_map[p])
+            if p in model_map and "dlss_preset" in self.vars:
+                self.vars["dlss_preset"].set(model_map[p])
+
+        def on_scale_changed(_e=None):
+            s = self.vars["render_scale"].get()
+            rev_map = {"100": "native", "67": "quality", "58": "balanced", "50": "performance", "33": "ultra_performance"}
+            if s in rev_map and "upscaler_preset" in self.vars:
+                self.vars["upscaler_preset"].set(rev_map[s])
+                on_preset_changed()
+
+        if hasattr(self, "combos"):
+            if "upscaler_preset" in self.combos:
+                self.combos["upscaler_preset"].bind("<<ComboboxSelected>>", on_preset_changed)
+            if "render_scale" in self.combos:
+                self.combos["render_scale"].bind("<<ComboboxSelected>>", on_scale_changed)
     def build_graphics_tab(self):
         f=self.tab_graphics
         self.create_row_dropdown(f,"Color Profile","color_preset",["default","vivid","clarity","custom"],"default","Choose a display color preset.")
@@ -573,11 +599,21 @@ class DKBSettingsDialog(tk.Toplevel):
         if not GAME_DIR:messagebox.showerror("Settings","Choose the DKB game folder first.",parent=self); return
         updates={k:(f"{v.get()/10:.1f}" if k=="rumble_curve" else str(v.get())) for k,v in self.vars.items()}
         preset_scale_map = {"native": "100", "quality": "67", "balanced": "58", "performance": "50", "ultra_performance": "33"}
-        if updates.get("upscaler") == "dlss":
-            p = updates.get("upscaler_preset", "quality")
-            if p in preset_scale_map and (updates.get("render_scale") == "game" or not updates.get("render_scale")):
-                updates["render_scale"] = preset_scale_map[p]
-            updates["dlss"] = "dlaa" if p == "native" else p
+        u = updates.get("upscaler", "dlss")
+        p = updates.get("upscaler_preset", "quality")
+        rs = updates.get("render_scale", "67")
+        if p in preset_scale_map:
+            updates["render_scale"] = preset_scale_map[p]
+        if u == "dlss":
+            updates["dlaa"] = "1" if (p == "native" or rs == "100") else "0"
+            updates["dlss"] = "dlaa" if updates["dlaa"] == "1" else p
+            if p == "performance": updates["dlss_preset"] = "preset_m"
+            elif p == "ultra_performance": updates["dlss_preset"] = "preset_l"
+        else:
+            updates["dlaa"] = "0"
+        updates["reflex"] = updates.get("reflex", "boost")
+        updates["low_latency"] = updates.get("reflex", "boost")
+        updates["frame_gen"] = updates.get("frame_gen", "0")
         try:
             save_ini_settings(INI_PATH,updates)
             self.parent_app.launcher_cfg["target_display"]=self.target_monitor["device"]

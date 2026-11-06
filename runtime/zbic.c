@@ -374,6 +374,5 @@
 #define ZSTD_ZBIC_SUPPORT 1
 #include "third_party/zbic/zstd.c"
 #undef ZSTD_isError
-unsigned zbic_ZSTD_isError(size_t code) { return zbic_ERR_isError(code); }
 size_t rt_zbic_decompress(void *dst, size_t dstCap, const void *src, size_t srcSize) { return ZSTD_decompress(dst, dstCap, src, srcSize); }
 

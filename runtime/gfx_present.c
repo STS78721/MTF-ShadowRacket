@@ -24,6 +24,7 @@
 #include "gfx_wsys.h"
 #include "nvn_api.h"
 #include "nvn_api_dlss.h"
+#include "vk_xess.h"
 #include "ui/menu.h"
 #include "vk.h"
 #include "platform/platform.h"
@@ -620,14 +621,18 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkImage psrc = graded ? graded : src;
     VkFormat pfmt = graded ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
     const int *prect = graded ? grect : rect;
-    // DLSS / FSR / Bilinear upscaler:
+    // DLSS / XeSS / FSR / Bilinear upscaler:
     int dlss = 0;
     if (general && !strcmp(cfg_value("TOTK_UPSCALER"), "dlss")) {
         dlss = vk_dlss_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, dst, to);
     }
-    int fsr = !dlss && general && vk_fsr_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, dst, to);
-    g_scaler = dlss ? 3 : fsr ? 2 : (cw != to[2] || ch != to[3]);
-    if (!dlss && !fsr) {
+    int xess = 0;
+    if (!dlss && general && !strcmp(cfg_value("TOTK_UPSCALER"), "xess")) {
+        xess = vk_xess_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, dst, to);
+    }
+    int fsr = !dlss && !xess && general && vk_fsr_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, dst, to);
+    g_scaler = dlss ? 3 : xess ? 4 : fsr ? 2 : (cw != to[2] || ch != to[3]);
+    if (!dlss && !xess && !fsr) {
         if (general)   // a GENERAL source (vk_texture.c images): earlier submissions' writes become visible to the blit here
             sync_barrier(cb, psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -751,6 +756,7 @@ void gfx_window_release_vk(void) {
         g_flip_on = 0;   // its blit is done (device idle); the swapchain goes away unpresented
         menu_vk_release();
         vk_fsr_release();
+        vk_xess_release();
         vk_color_release();
         free_capture();
         free_thumbs();

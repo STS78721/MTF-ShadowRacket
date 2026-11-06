@@ -644,6 +644,7 @@ static void vertex_input(const VkPipeState *s, VtxInput *v) {
 }
 
 int vk_pipeline_vertex_input_dynamic(void) { return ensure_init() && P.dyn_vi; }
+VkPipelineCache vk_pipeline_cache(void) { return ensure_init() ? P.cache : VK_NULL_HANDLE; }
 
 PFN_vkCmdPushDescriptorSetKHR vk_pipeline_push_fn(void) { return ensure_init() ? P.push : NULL; }
 PFN_vkCmdPushDescriptorSetWithTemplateKHR vk_pipeline_push_tpl_fn(void) { return ensure_init() && P.tpl ? P.tpl_push : NULL; }

@@ -228,8 +228,11 @@ static int decode_into(Dec *d, Slot *s, const uint8_t *data, size_t size, int64_
 // Result nn::codec::video::Initialize(), Finalize(): nothing to open on the host
 static void ov_video_init(Cpu *c) { ret_x(c, 0); }
 static void ov_video_fini(Cpu *c) { ret_x(c, 0); }
+static void ov_aac_ctor(Cpu *c) { ret_x(c, arg_x(c, 0)); }
+static void ov_aac_zero(Cpu *c) { ret_x(c, 0); }
+static void ov_aac_value(Cpu *c) { ret_x(c, 0); }
 
-static void vp9_init(Cpu *c, uint64_t key, unsigned w, unsigned h, int av1) {
+static void vp9_init(Cpu *c, uint64_t key, unsigned w, unsigned h, int av1, int vp8) {
     plat_mutex_lock(&lock);
     Dec *d = dec_of(key);
     if (!d) d = dec_of(0);
@@ -246,7 +249,7 @@ static void vp9_init(Cpu *c, uint64_t key, unsigned w, unsigned h, int av1) {
         if (!ok) d->dav = NULL;
     } else {
         vpx_codec_dec_cfg_t cfg = {.threads = 2, .w = w, .h = h};
-        ok = d->vpx_ok = vpx_codec_dec_init(&d->vpx, vpx_codec_vp9_dx(), &cfg, 0) == VPX_CODEC_OK;
+        ok = d->vpx_ok = vpx_codec_dec_init(&d->vpx, vp8 ? vpx_codec_vp8_dx() : vpx_codec_vp9_dx(), &cfg, 0) == VPX_CODEC_OK;
     }
     plat_mutex_unlock(&lock);
     rt_log("codec: %s decoder %#llx %ux%u on the host (%s%s)", av1 ? "AV1" : "VP9", (unsigned long long)key, w, h,
@@ -254,15 +257,44 @@ static void vp9_init(Cpu *c, uint64_t key, unsigned w, unsigned h, int av1) {
     ret_x(c, 0);
 }
 // Result InitializeVp9Decoder(Vp9DecoderType *, void *work, size_t, size_t, u16 w, u16 h, u32, input, output fmt)
-static void ov_vp9_init(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xffff, arg_x(c, 5) & 0xffff, 0); }
+static void ov_vp9_init(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xffff, arg_x(c, 5) & 0xffff, 0, 0); }
 // Result Initialize{Vp9,Av1}DecoderByTransferMemory(Type *, void *work, size_t, size_t, u16 w, u16 h, u32, in, out, mode)
-static void ov_vp9_init_tm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xffff, arg_x(c, 5) & 0xffff, 0); }
-static void ov_av1_init_tm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xffff, arg_x(c, 5) & 0xffff, 1); }
+static void ov_vp9_init_tm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xffff, arg_x(c, 5) & 0xffff, 0, 0); }
+static void ov_av1_init_tm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xffff, arg_x(c, 5) & 0xffff, 1, 0); }
 // Result Initialize{Vp9,Av1}DecoderByRemoteMemory(Type *, size_t, u16 w, u16 h, u32, in, out, mode)
-static void ov_vp9_init_rm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 2) & 0xffff, arg_x(c, 3) & 0xffff, 0); }
-static void ov_av1_init_rm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 2) & 0xffff, arg_x(c, 3) & 0xffff, 1); }
+static void ov_vp9_init_rm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 2) & 0xffff, arg_x(c, 3) & 0xffff, 0, 0); }
+static void ov_av1_init_rm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 2) & 0xffff, arg_x(c, 3) & 0xffff, 1, 0); }
+static void ov_vp8_init_tm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xffff, arg_x(c, 5) & 0xffff, 0, 1); }
+static void ov_vp8_init_rm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 2) & 0xffff, arg_x(c, 3) & 0xffff, 0, 1); }
 // Result InitializeVp9Decoder(Vp9DecoderType *, size_t, size_t, u16 w, u16 h, u32, input, output fmt)
-static void ov_vp9_init_nowork(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 3) & 0xffff, arg_x(c, 4) & 0xffff, 0); }
+static void ov_vp9_init_nowork(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 3) & 0xffff, arg_x(c, 4) & 0xffff, 0, 0); }
+
+// SDK 20's image preference is an indirect 0x20-byte return.  The SDK stores width-1 and height-1 at +8/+10;
+// ov_pool_init consumes those fields to report the guest-visible image dimensions.
+static void ov_make_image_preference(Cpu *c) {
+    uint8_t *out = (uint8_t *)(uintptr_t)c->x[8];   // AAPCS64 indirect result register, not stack argument 8
+    if (out) {
+        memset(out, 0, 0x20);
+        uint16_t w = (uint16_t)(arg_x(c, 0) ? arg_x(c, 0) - 1 : 0);
+        uint16_t h = (uint16_t)(arg_x(c, 1) ? arg_x(c, 1) - 1 : 0);
+        memcpy(out + 8, &w, sizeof w);
+        memcpy(out + 10, &h, sizeof h);
+        out[0] = (uint8_t)arg_x(c, 2);
+        out[1] = (uint8_t)arg_x(c, 3);
+    }
+    ret_x(c, 0);
+}
+
+// The AV1 intro requests NV12.  RGBA variants are kept off the console IPC path; black is a safe fallback if another
+// movie selects one of them before a host conversion path is needed.
+static void ov_read_rgba(Cpu *c) {
+    uint8_t *out = arg_p(c, 6);
+    size_t size = arg_x(c, 8);
+    if (out && size <= 64u * 1024u * 1024u) memset(out, 0, size);
+    ret_x(c, 0);
+}
+
+static void ov_h264_unsupported(Cpu *c) { ret_x(c, 0x1c0001u); }
 
 // Result FinalizeVp9Decoder(Vp9DecoderType *)
 static void ov_vp9_fini(Cpu *c) {
@@ -566,6 +598,17 @@ static void ov_sp_nop(Cpu *c) { (void)c; }
 
 HOST_OVERRIDE("_ZN2nn5codec5video10InitializeEv", ov_video_init);
 HOST_OVERRIDE("_ZN2nn5codec5video8FinalizeEv", ov_video_fini);
+HOST_OVERRIDE("_ZN2nn5codec10AacDecoderC1Ev", ov_aac_ctor);
+HOST_OVERRIDE("_ZN2nn5codec10AacDecoderD1Ev", ov_aac_zero);
+HOST_OVERRIDE("_ZN2nn5codec18FinalizeAacDecoderEPNS0_14AacDecoderTypeE", ov_aac_zero);
+HOST_OVERRIDE("_ZN2nn5codec41InitializeAacDecoderForAnyTypeWithDownmixEPNS0_14AacDecoderTypeEiiPvm", ov_aac_zero);
+HOST_OVERRIDE("_ZN2nn5codec30InitializeAacDecoderForAnyTypeEPNS0_14AacDecoderTypeEiiPvm", ov_aac_zero);
+HOST_OVERRIDE("_ZN2nn5codec33GetAacDecoderMpeg4AudioObjectTypeEPKNS0_14AacDecoderTypeE", ov_aac_value);
+HOST_OVERRIDE("_ZN2nn5codec20DecodeAacInterleavedEPNS0_14AacDecoderTypeEPmPiPsmPKvm", ov_aac_zero);
+HOST_OVERRIDE("_ZN2nn5codec23GetAacDecoderSampleRateEPKNS0_14AacDecoderTypeE", ov_aac_value);
+HOST_OVERRIDE("_ZN2nn5codec25GetAacDecoderChannelCountEPKNS0_14AacDecoderTypeE", ov_aac_value);
+HOST_OVERRIDE("_ZN2nn5codec25MakeDecodeImagePreferenceEttNS0_24VideoDecoderOutputFormatENS0_15ImageTilingModeE",
+              ov_make_image_preference);
 HOST_OVERRIDE("_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_"
               "24VideoDecoderOutputFormatE", ov_vp9_init);
 HOST_OVERRIDE("_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEmmttjNS0_23VideoDecoderInputFormatENS0_"
@@ -591,6 +634,8 @@ HOST_OVERRIDE("_ZN2nn5codec29ReleaseVp9DecoderOutputBufferEPNS0_14Vp9DecoderType
 HOST_OVERRIDE("_ZN2nn5codec35GetVp9DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_5movie10ColorSpaceEPNS_8TimeSpanEPbPNS0_"
               "14Vp9DecoderTypeEj", ov_vp9_props);
 HOST_OVERRIDE("_ZN2nn5codec26ReadDecoderOutputImageNv12EPKNS0_25VideoDecoderImagePoolTypeEjttttPvmmS4_mm", ov_read_nv12);
+HOST_OVERRIDE("_ZN2nn5codec29ReadDecoderOutputImageRgbaHdrEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm", ov_read_rgba);
+HOST_OVERRIDE("_ZN2nn5codec26ReadDecoderOutputImageRgbaEPKNS0_25VideoDecoderImagePoolTypeEjttttPvmm", ov_read_rgba);
 HOST_OVERRIDE("_ZN2nn5codec36GetDecoderImagePoolNativeImageHandleEPKNS0_25VideoDecoderImagePoolTypeEj", ov_pool_image);
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk20CreateSyncPointEventEPNS1_18SyncPointEventTypeE", ov_sp_create);
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk25InitializeMultiWaitHolderEPNS_2os19MultiWaitHolderTypeEPNS1_18SyncPointEventTypeE",
@@ -656,5 +701,19 @@ static void ov_unregister(Cpu *c) {
                   "DecoderTypeEj", ov_props2)
 CODEC_SDK20("Av1", ov_av1_init_tm, ov_av1_init_rm);
 CODEC_SDK20("Vp9", ov_vp9_init_tm, ov_vp9_init_rm);
+CODEC_SDK20("Vp8", ov_vp8_init_tm, ov_vp8_init_rm);
+HOST_OVERRIDE("_ZN2nn5codec37InitializeH264DecoderByTransferMemoryEPNS0_15H264DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeEPKvm", ov_h264_unsupported);
+HOST_OVERRIDE("_ZN2nn5codec35InitializeH264DecoderByRemoteMemoryEPNS0_15H264DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeEPKvm", ov_h264_unsupported);
+HOST_OVERRIDE("_ZN2nn5codec19FinalizeH264DecoderEPNS0_15H264DecoderTypeE", ov_vp9_fini);
+HOST_OVERRIDE("_ZN2nn5codec16StartH264DecoderEPNS0_15H264DecoderTypeE", ov_ok);
+HOST_OVERRIDE("_ZN2nn5codec15StopH264DecoderEPNS0_15H264DecoderTypeE", ov_ok);
+HOST_OVERRIDE("_ZN2nn5codec16FlushH264DecoderEPNS0_15H264DecoderTypeE", ov_vp9_flush);
+HOST_OVERRIDE("_ZN2nn5codec25RegisterH264DecoderBufferEPNS0_15H264DecoderTypeEjPNS0_25VideoDecoderImagePoolTypeEj", ov_vp9_register);
+HOST_OVERRIDE("_ZN2nn5codec27UnregisterH264DecoderBufferEPNS0_15H264DecoderTypeEj", ov_unregister);
+HOST_OVERRIDE("_ZN2nn5codec34GetH264DecoderSubmissionReadyEventEPNS0_15H264DecoderTypeE", ov_ready2);
+HOST_OVERRIDE("_ZN2nn5codec28SubmitH264DecoderInputBufferEPmPNS0_15H264DecoderTypeEPKvmNS_8TimeSpanEb", ov_vp9_submit);
+HOST_OVERRIDE("_ZN2nn5codec30AcquireH264DecoderOutputBufferEPjPNS_2gs16NativeSyncHandleEPNS0_15H264DecoderTypeE", ov_vp9_acquire);
+HOST_OVERRIDE("_ZN2nn5codec30ReleaseH264DecoderOutputBufferEPNS0_15H264DecoderTypeEjNS_2gs16NativeSyncHandleE", ov_vp9_release);
+HOST_OVERRIDE("_ZN2nn5codec36GetH264DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_15H264DecoderTypeEj", ov_props2);
 // SDK 20 pool calls carry no CodecMode
 HOST_OVERRIDE("_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPvmRKNS0_27VideoDecoderImagePreferenceEj", ov_pool_init);

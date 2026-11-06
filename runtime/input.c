@@ -599,6 +599,10 @@ int input_pad_power_info(int *percent, int *charging) {
     return 1;
 }
 
+const char *input_gamepad_name(void) {
+    return pad && SDL_GamepadConnected(pad) ? SDL_GetGamepadName(pad) : NULL;
+}
+
 void input_map_snapshot(InputMap *m) {
     plat_mutex_lock(&lock);
     if (!state) start();

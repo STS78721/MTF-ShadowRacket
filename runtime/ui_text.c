@@ -79,6 +79,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_DLSS_MODEL_DESC] = "Selects the neural model generation and preset. DLSS 4 (Preset K / J) is tuned for "
                                 "Native / Quality / Balanced; DLSS 4.5 (Preset M / L) is tuned for Performance (50 %) "
                                 "and Ultra Performance (33 %).",
+    [UI_MENU_LOW_LATENCY] = "Low-latency mode",
+    [UI_MENU_LOW_LATENCY_DESC] = "Reduces render queue latency with NVIDIA Reflex, AMD Anti-Lag 2, or Intel XeLL.",
+    [UI_MENU_FRAME_GEN] = "AI frame generation",
+    [UI_MENU_FRAME_GEN_DESC] = "Enables frame interpolation with DLSS-G or XeSS Frame Generation.",
     [UI_MENU_DLSS_PRESET] = "DLSS model",
     [UI_MENU_DLSS_PRESET_DESC] = "Which DLSS model runs.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatic", [UI_MENU_DLSS_PRESET_K] = "K (sharpest)",
@@ -572,6 +576,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, резкость %d%%", [UI_MENU_OV_SCALE_NONE] = "нет (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "билинейное",
+    [UI_MENU_LOW_LATENCY] = "Режим низкой задержки",
+    [UI_MENU_LOW_LATENCY_DESC] = "Снижает задержку очереди рендеринга с NVIDIA Reflex, AMD Anti-Lag 2 или Intel XeLL.",
+    [UI_MENU_FRAME_GEN] = "Генерация кадров ИИ",
+    [UI_MENU_FRAME_GEN_DESC] = "Включает генерацию кадров DLSS-G или XeSS.",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
