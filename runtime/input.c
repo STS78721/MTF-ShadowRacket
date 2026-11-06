@@ -551,6 +551,21 @@ int input_pad_label(int pad_id) {
     return (int)plat_cas32(&pad_labels[pad_id - PAD_SOUTH], 0, 0);
 }
 
+int input_pad_power_info(int *percent, int *charging) {
+    int value = -1;
+    SDL_PowerState power = SDL_POWERSTATE_ERROR;
+    plat_mutex_lock(&lock);
+    if (!state) start();
+    if (state > 0 && pad && SDL_GamepadConnected(pad)) power = SDL_GetGamepadPowerInfo(pad, &value);
+    plat_mutex_unlock(&lock);
+    if (power != SDL_POWERSTATE_ON_BATTERY && power != SDL_POWERSTATE_CHARGING && power != SDL_POWERSTATE_CHARGED)
+        return 0;
+    if (value < 0) return 0;
+    if (percent) *percent = value > 100 ? 100 : value;
+    if (charging) *charging = power == SDL_POWERSTATE_CHARGING;
+    return 1;
+}
+
 void input_map_snapshot(InputMap *m) {
     plat_mutex_lock(&lock);
     if (!state) start();

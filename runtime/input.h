@@ -26,6 +26,9 @@ int input_pad_layout(void);
 enum { PAD_LABEL_NONE, PAD_LABEL_A, PAD_LABEL_B, PAD_LABEL_X, PAD_LABEL_Y, PAD_LABEL_CROSS, PAD_LABEL_CIRCLE,
        PAD_LABEL_SQUARE, PAD_LABEL_TRIANGLE };
 int input_pad_label(int pad);
+// Battery estimate of the open SDL gamepad. Returns 1 when the device reports a battery, otherwise 0.
+// When available, *percent is 0..100 and *charging is 1 while charging or 0 otherwise.
+int input_pad_power_info(int *percent, int *charging);
 // The menu's remapping rows (Controls tab). input_map_snapshot copies the tables in effect (after any changed TOTK_BIND_* line).
 // input_capture polls the keys, the mouse buttons and the gamepad for a press: reset 1 takes what is held now as the
 // start (a held key counts once released and pressed again) and returns NONE; then it returns KEY or PAD with *id the

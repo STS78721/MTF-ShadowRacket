@@ -279,6 +279,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, sharpness %d%%", [UI_MENU_OV_SCALE_NONE] = "none (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
+    [UI_MENU_OV_SCALE_FSR_SHORT] = "FSR 1",
+    [UI_MENU_OV_FMT_FPS_SCALING] = "%.0f FPS  ·  %s",
+    [UI_MENU_OV_CONTROLLER_BATTERY] = "Controller battery: %d%%",
+    [UI_MENU_OV_CONTROLLER_CHARGING] = "Controller battery: charging",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -546,6 +550,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, резкость %d%%", [UI_MENU_OV_SCALE_NONE] = "нет (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "билинейное",
+    [UI_MENU_OV_SCALE_FSR_SHORT] = "FSR 1",
+    [UI_MENU_OV_FMT_FPS_SCALING] = "%.0f FPS  ·  %s",
+    [UI_MENU_OV_CONTROLLER_BATTERY] = "Заряд контроллера: %d%%",
+    [UI_MENU_OV_CONTROLLER_CHARGING] = "Контроллер заряжается",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}
