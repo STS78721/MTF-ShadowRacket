@@ -124,7 +124,7 @@ def install_controller_ui(choice_id: str, target_game_dir: str) -> bool:
             return False
     return True
 
-def create_desktop_shortcut(game_dir: str, shortcut_name: str = "Donkey Kong Bananza", target_exe: str = None) -> bool:
+def create_desktop_shortcut(game_dir: str, shortcut_name: str = "DKB PC", target_exe: str = None) -> bool:
     try:
         desktop_dir = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
         if not os.path.exists(desktop_dir):
@@ -275,7 +275,7 @@ class ModernDkbInstaller(ctk.CTk):
         super().__init__()
 
         # Window properties
-        self.title("Donkey Kong Bananza PC Recomp - Setup")
+        self.title("DKB PC Recomp - Setup")
         self.geometry("1000x740")
         self.minsize(940, 700)
         ctk.set_appearance_mode("dark")
@@ -361,7 +361,7 @@ class ModernDkbInstaller(ctk.CTk):
         header.grid(row=0, column=0, sticky="ew")
         header.grid_columnconfigure(0, weight=1)
 
-        title_lbl = ctk.CTkLabel(header, text="DONKEY KONG BANANZA",
+        title_lbl = ctk.CTkLabel(header, text="DKB PC RECOMP",
                                  font=ctk.CTkFont(size=22, weight="bold"), text_color=ACCENT_GOLD)
         title_lbl.pack(pady=(12, 2))
 
@@ -509,7 +509,7 @@ class ModernDkbInstaller(ctk.CTk):
 
         opts_box = ctk.CTkFrame(f, fg_color=CARD_BG, border_color=CARD_BORDER, border_width=1)
         opts_box.pack(fill="x", padx=15, pady=12)
-        ctk.CTkCheckBox(opts_box, text="Create Windows Desktop Shortcut (Donkey Kong Bananza with Banana Icon)",
+        ctk.CTkCheckBox(opts_box, text="Create Windows Desktop Shortcut (DKB PC with Banana Icon)",
                         variable=self.var_create_shortcut, font=ctk.CTkFont(size=13, weight="bold"),
                         fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, checkmark_color="#121815").pack(anchor="w", padx=15, pady=(12, 4))
         ctk.CTkCheckBox(opts_box, text="Generate Controller Hotkeys Reference Card (README-CONTROLLER.txt)",
