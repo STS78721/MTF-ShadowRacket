@@ -504,8 +504,27 @@ static void ov_touch_state1(Cpu *c) {
 // NpadJoyDeviceType), Result MergeSingleJoyAsDualJoy(const NpadIdType &, const NpadIdType &): the host's one pad is
 // always a full controller, so the assignment mode changes nothing
 static void ov_joy_assignment(Cpu *c) { ret_x(c, 0); }
+static void ov_hid_noop(Cpu *c) { (void)c; }
+static void ov_hid_zero(Cpu *c) { ret_x(c, 0); }
+static void ov_nmouse_types(Cpu *c) {
+    uint32_t *out = arg_p(c, 0);
+    if (out) *out = 0;
+}
 
 HOST_OVERRIDE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", ov_six_start);
+HOST_OVERRIDE("_ZN2nn3hid17StopSixAxisSensorERKNS0_19SixAxisSensorHandleE", ov_six_stop);
+HOST_OVERRIDE("_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid6detail25SetGyroscopeZeroDriftModeENS0_19SixAxisSensorHandleENS0_22GyroscopeZeroDriftModeE", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid29IsOunceVibrationDeviceMountedERKNS0_21VibrationDeviceHandleE", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid22GetSensorFusionHandlesEPNS0_18SensorFusionHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid20FinalizeSensorFusionEv", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid16GetNmouseHandlesEPNS0_12NmouseHandleEij", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid16GetNmouseTypeSetEPNS_4util10BitFlagSetILi32ENS0_10NmouseTypeEEENS0_12NmouseHandleE", ov_nmouse_types);
+HOST_OVERRIDE("_ZN2nn3hid14FinalizeNmouseEv", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid13GetJcmsHandleERKjRKNS0_8JcmsTypeE", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid9StartJcmsERKNS0_10JcmsHandleE", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid8StopJcmsERKNS0_10JcmsHandleE", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid12FinalizeJcmsEv", ov_hid_noop);
 HOST_OVERRIDE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE",
               ov_six_states_public);
 HOST_OVERRIDE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", ov_vib_send);

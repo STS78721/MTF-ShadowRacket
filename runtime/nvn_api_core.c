@@ -473,6 +473,11 @@ NVN_API(nvnQueueFenceSync) {
     s->fenced = 1;
     s->fence = nvn_fence_last();
 }
+// NVNboolean nvnQueueWaitSync(NVNqueue *q, const NVNsync *s): GPU queue ordering is already sequential on the host
+NVN_API(nvnQueueWaitSync) {
+    (void)c;
+    ret_x(c, 1);
+}
 // NVNsyncWaitResult nvnSyncWait(const NVNsync *s, uint64_t timeout_ns): a sync never fenced reports a timeout at once;
 // a fenced one is released only after the back end completed that fence value
 NVN_API(nvnSyncWait) {

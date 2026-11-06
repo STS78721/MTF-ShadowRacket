@@ -601,9 +601,39 @@ static void ov_current_time(Cpu *c) {
     ret_x(c, 0);
 }
 
+// time_point StandardUserSystemClock / StandardNetworkSystemClock::now(): PosixTime seconds in x0
+static void ov_posix_now(Cpu *c) { ret_x(c, (uint64_t)posix_now()); }
+
 // time_point StandardSteadyClock::now(): the int64 seconds in x0 only. The SDK caller (sdk+0x3d1d88) reads x0;
 // returning the 0x18-byte struct through x8 would write through a stale pointer (time_host.c).
 static void ov_steady_now(Cpu *c) { ret_x(c, (uint64_t)steady_now().value); }
+
+// Result StandardSteadyClock::GetCurrentTimePoint(SteadyClockTimePoint *out)
+static void ov_steady_timepoint(Cpu *c) {
+    SteadyClockTimePoint *out = arg_p(c, 0);
+    if (!out) { ret_x(c, TIME_R_INVALID); return; }
+    *out = steady_now();
+    ret_x(c, 0);
+}
+
+// Result GetStandardSteadyClockCurrentTimespec(timespec *out): called by clock_gettime(CLOCK_MONOTONIC) after nntimeStartup
+static void ov_steady_timespec(Cpu *c) {
+    int64_t *out = arg_p(c, 0);
+    if (!out) { ret_x(c, TIME_R_INVALID); return; }
+    uint64_t ns = kern_now_ns();
+    out[0] = (int64_t)(ns / 1000000000ull);
+    out[1] = (int64_t)(ns % 1000000000ull);
+    ret_x(c, 0);
+}
+
+// Result GetStandard{User,Network}SystemClockCurrentTimespec(timespec *out): called by clock_gettime(CLOCK_REALTIME)
+static void ov_system_timespec(Cpu *c) {
+    int64_t *out = arg_p(c, 0);
+    if (!out) { ret_x(c, TIME_R_INVALID); return; }
+    out[0] = posix_now();
+    out[1] = (int64_t)(kern_now_ns() % 1000000000ull);
+    ret_x(c, 0);
+}
 
 // Result ToCalendarTime(CalendarTime *out, CalendarAdditionalInfo *info, const PosixTime &t): local time
 static void ov_to_calendar(Cpu *c) {
@@ -771,6 +801,50 @@ static void ov_font_size(Cpu *c) {
     ret_x(c, fonts.size[t]);
 }
 
+// int nn::audio::detail::ListVirtualInputDevices(AudioDeviceName *out, int max): no virtual microphone input on host
+static void ov_list_virtual_input(Cpu *c) { ret_x(c, 0); }
+
+// ---- Offline stubs for nifm, socket, ssl, nsd, ro, prepo::Send, account NSA
+static void ov_noop(Cpu *c) { (void)c; }
+static void ov_ret_zero(Cpu *c) { ret_x(c, 0); }
+static void ov_ret_one(Cpu *c) { ret_x(c, 1); }
+static void ov_nifm_error_result(Cpu *c) { ret_x(c, 0x271000u | (110u & 0x1ffu)); }   // nifm offline result
+static void ov_nifm_proxy(Cpu *c) {
+    void *out = arg_p(c, 0);
+    if (out) memset(out, 0, 0xaa);
+    ret_x(c, 0);
+}
+static void ov_nsd_env(Cpu *c) {
+    char *out = arg_p(c, 0);
+    if (out) { memset(out, 0, 8); memcpy(out, "lp1", 3); }
+    ret_x(c, 0);
+}
+static void ov_nsd_resolve(Cpu *c) {
+    char *out = arg_p(c, 0);
+    const char *in = arg_p(c, 1);
+    if (out && in && out != in) memcpy(out, in, 0x100);
+    ret_x(c, 0);
+}
+static void ov_account_offline(Cpu *c) { ret_x(c, 0x1f4000u | 124u); }   // account network unavailable
+static volatile uint32_t sock_errno;
+static void ov_sock_fail(Cpu *c) { sock_errno = 38; ret_x(c, (uint64_t)(int64_t)-1); }
+static void ov_sock_get_errno(Cpu *c) { ret_x(c, sock_errno); }
+static void ov_sock_set_errno(Cpu *c) { sock_errno = (uint32_t)arg_x(c, 0); }
+static void ov_sock_gai(Cpu *c) { ret_x(c, 8); }   // EAI_NONAME
+static void ov_sock_gai_str(Cpu *c) {
+    static char *msg;
+    if (!msg) { msg = mem_kernel_alloc(16, 16); memcpy(msg, "offline", 8); }
+    ret_x(c, (uint64_t)(uintptr_t)msg);
+}
+static void ov_sock_htonl(Cpu *c) { ret_x(c, __builtin_bswap32((uint32_t)arg_x(c, 0))); }
+static void ov_sock_htons(Cpu *c) { ret_x(c, __builtin_bswap16((uint16_t)arg_x(c, 0))); }
+static void ov_sock_eventfd(Cpu *c) { ret_x(c, 100); }
+static void ov_sock_eventfd_rw(Cpu *c) {
+    uint64_t *out = arg_p(c, 1);
+    if (out) *out = 1;
+    ret_x(c, 0);
+}
+
 // ==== registration
 // ---- Switch 2 oe calls (Donkey Kong Bananza)
 // int nn::oe::GetCurrentGraphicsScale(): an enum 0-2; main+0x4686d4 maps it through a float table {3, 12, 16} and
@@ -783,7 +857,16 @@ static void ov_graphics_scale_notify(Cpu *c) { (void)c; }
 static void ov_album_orientation(Cpu *c) { (void)c; }
 // void nn::oe::{Enter,Leave}ExitRequestHandlingSection(): no exit request ever arrives from a host system applet
 static void ov_exit_section(Cpu *c) { (void)c; }
+// void nn::oe::GetDisplayVersion(DisplayVersion *out): 16-byte null-terminated version string
+static void ov_display_version(Cpu *c) {
+    char *out = arg_p(c, 0);
+    if (out) {
+        memset(out, 0, 16);
+        memcpy(out, "1.0.0", 5);
+    }
+}
 
+HOST_OVERRIDE("_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE", ov_display_version);
 HOST_OVERRIDE("_ZN2nn2oe23GetCurrentGraphicsScaleEv", ov_graphics_scale);
 HOST_OVERRIDE("_ZN2nn2oe42SetGraphicsScaleChangedNotificationEnabledEb", ov_graphics_scale_notify);
 HOST_OVERRIDE("_ZN2nn2oe24SetAlbumImageOrientationENS_5album16ImageOrientationE", ov_album_orientation);
@@ -861,7 +944,14 @@ HOST_OVERRIDE("_ZN2nn4time8FinalizeEv", ov_time_finalize);
 HOST_OVERRIDE("_ZN2nn4time13IsInitializedEv", ov_time_ready);
 HOST_OVERRIDE("_ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", ov_current_time);
 HOST_OVERRIDE("_ZN2nn4time26StandardNetworkSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", ov_current_time);
+HOST_OVERRIDE("_ZN2nn4time23StandardUserSystemClock3nowEv", ov_posix_now);
+HOST_OVERRIDE("_ZN2nn4time26StandardNetworkSystemClock3nowEv", ov_posix_now);
 HOST_OVERRIDE("_ZN2nn4time19StandardSteadyClock3nowEv", ov_steady_now);
+HOST_OVERRIDE("_ZN2nn4time19StandardSteadyClock19GetCurrentTimePointEPNS0_20SteadyClockTimePointE", ov_steady_timepoint);
+HOST_OVERRIDE("_ZN2nn4time38GetStandardSteadyClockCurrentTimePointEPNS0_20SteadyClockTimePointE", ov_steady_timepoint);
+HOST_OVERRIDE("_ZN2nn4time37GetStandardSteadyClockCurrentTimespecEP8timespec", ov_steady_timespec);
+HOST_OVERRIDE("_ZN2nn4time41GetStandardUserSystemClockCurrentTimespecEP8timespec", ov_system_timespec);
+HOST_OVERRIDE("_ZN2nn4time44GetStandardNetworkSystemClockCurrentTimespecEP8timespec", ov_system_timespec);
 HOST_OVERRIDE("_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeE",
               ov_to_calendar);
 HOST_OVERRIDE("_ZN2nn4time19ToCalendarTimeInUtcERKNS0_9PosixTimeE", ov_to_calendar_utc);
@@ -875,3 +965,81 @@ HOST_OVERRIDE("_ZN2nn4time48CalculateStandardUserSystemClockDifferenceByUserERKN
 HOST_OVERRIDE("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", ov_font_state);
 HOST_OVERRIDE("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE", ov_font_address);
 HOST_OVERRIDE("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", ov_font_size);
+
+HOST_OVERRIDE("_ZN2nn5audio6detail23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi", ov_list_virtual_input);
+
+HOST_OVERRIDE("_ZN2nn4nifm10InitializeEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn4nifm18IsNetworkAvailableEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn4nifm20CancelNetworkRequestEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4nifm22GetCurrentProxySettingEPNS0_12ProxySettingE", ov_nifm_proxy);
+HOST_OVERRIDE("_ZN2nn4nifm31HandleNetworkRequestErrorResultEv", ov_nifm_error_result);
+HOST_OVERRIDE("_ZN2nn6socket10InitializeERKNS0_6ConfigE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn6socket8FinalizeEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn6socket13IsInitializedEv", ov_ret_one);
+HOST_OVERRIDE("_ZN2nn6socket10SetSockOptEiNS0_5LevelENS0_6OptionEPKvj", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket7EventFdEmNS0_12EventFdFlagsE", ov_sock_eventfd);
+HOST_OVERRIDE("_ZN2nn6socket11EventFdReadEiPm", ov_sock_eventfd_rw);
+HOST_OVERRIDE("_ZN2nn6socket12EventFdWriteEim", ov_ret_zero);
+HOST_OVERRIDE("nnsocketAccept", ov_sock_fail);
+HOST_OVERRIDE("nnsocketBind", ov_sock_fail);
+HOST_OVERRIDE("nnsocketClose", ov_ret_zero);
+HOST_OVERRIDE("nnsocketConnect", ov_sock_fail);
+HOST_OVERRIDE("nnsocketFcntl", ov_ret_zero);
+HOST_OVERRIDE("nnsocketFreeAddrInfo", ov_noop);
+HOST_OVERRIDE("nnsocketGAIStrError", ov_sock_gai_str);
+HOST_OVERRIDE("nnsocketGetAddrInfo", ov_sock_gai);
+HOST_OVERRIDE("nnsocketGetAddrInfoWithOptions", ov_sock_gai);
+HOST_OVERRIDE("nnsocketGetLastErrno", ov_sock_get_errno);
+HOST_OVERRIDE("nnsocketGetPeerName", ov_sock_fail);
+HOST_OVERRIDE("nnsocketGetSockName", ov_sock_fail);
+HOST_OVERRIDE("nnsocketGetSockOpt", ov_sock_fail);
+HOST_OVERRIDE("nnsocketInetHtonl", ov_sock_htonl);
+HOST_OVERRIDE("nnsocketInetHtons", ov_sock_htons);
+HOST_OVERRIDE("nnsocketInetNtohl", ov_sock_htonl);
+HOST_OVERRIDE("nnsocketInetNtohs", ov_sock_htons);
+HOST_OVERRIDE("nnsocketListen", ov_sock_fail);
+HOST_OVERRIDE("nnsocketPoll", ov_ret_zero);
+HOST_OVERRIDE("nnsocketRecv", ov_sock_fail);
+HOST_OVERRIDE("nnsocketRecvMsg", ov_sock_fail);
+HOST_OVERRIDE("nnsocketResolverGetOption", ov_ret_zero);
+HOST_OVERRIDE("nnsocketResolverSetOption", ov_ret_zero);
+HOST_OVERRIDE("nnsocketSend", ov_sock_fail);
+HOST_OVERRIDE("nnsocketSendMsg", ov_sock_fail);
+HOST_OVERRIDE("nnsocketSetLastErrno", ov_sock_set_errno);
+HOST_OVERRIDE("nnsocketSetSockOpt", ov_ret_zero);
+HOST_OVERRIDE("nnsocketShutdown", ov_ret_zero);
+HOST_OVERRIDE("nnsocketSocket", ov_sock_fail);
+HOST_OVERRIDE("nnsslInitialize", ov_ret_zero);
+HOST_OVERRIDE("nnsslFinalize", ov_ret_zero);
+HOST_OVERRIDE("nnsslConnectionCreate", ov_sock_fail);
+HOST_OVERRIDE("nnsslConnectionDestroy", ov_ret_zero);
+HOST_OVERRIDE("nnsslConnectionDoHandshakeWithCertBuffer", ov_sock_fail);
+HOST_OVERRIDE("nnsslConnectionGetConnectionId", ov_sock_fail);
+HOST_OVERRIDE("nnsslConnectionGetNextAlpnProto", ov_sock_fail);
+HOST_OVERRIDE("nnsslConnectionGetServerCertDetail", ov_sock_fail);
+HOST_OVERRIDE("nnsslConnectionGetVerifyCertError", ov_sock_fail);
+HOST_OVERRIDE("nnsslConnectionPeek", ov_sock_fail);
+HOST_OVERRIDE("nnsslConnectionPending", ov_ret_zero);
+HOST_OVERRIDE("nnsslConnectionRead", ov_sock_fail);
+HOST_OVERRIDE("nnsslConnectionSetHostName", ov_ret_zero);
+HOST_OVERRIDE("nnsslConnectionSetIoMode", ov_ret_zero);
+HOST_OVERRIDE("nnsslConnectionSetNextAlpnProto", ov_ret_zero);
+HOST_OVERRIDE("nnsslConnectionSetOption", ov_ret_zero);
+HOST_OVERRIDE("nnsslConnectionSetServerCertBuffer", ov_ret_zero);
+HOST_OVERRIDE("nnsslConnectionSetSessionCacheMode", ov_ret_zero);
+HOST_OVERRIDE("nnsslConnectionSetSocketDescriptor", ov_ret_zero);
+HOST_OVERRIDE("nnsslConnectionSetVerifyOption", ov_ret_zero);
+HOST_OVERRIDE("nnsslConnectionWrite", ov_sock_fail);
+HOST_OVERRIDE("nnsslContextDestroy", ov_ret_zero);
+HOST_OVERRIDE("nnsslContextGetContextId", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn3ssl10InitializeEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn3ssl8FinalizeEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE", ov_nsd_env);
+HOST_OVERRIDE("_ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_", ov_nsd_resolve);
+HOST_OVERRIDE("_ZN2nn2ro12ProtectRelroEPKvS2_S2_S2_S2_", ov_noop);
+HOST_OVERRIDE("_ZN2nn2pl17RequestLoadNxFontEPvm", ov_noop);
+HOST_OVERRIDE("_ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE", ov_report_save);
+HOST_OVERRIDE("_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERKNS0_10UserHandleE", ov_account_offline);
+HOST_OVERRIDE("_ZN2nn7account36EnsureNetworkServiceAccountAvailableERKNS0_10UserHandleE", ov_account_offline);
+HOST_OVERRIDE("_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_10UserHandleE", ov_account_offline);
+HOST_OVERRIDE("_ZN2nn7account44EnsureNetworkServiceAccountIdTokenCacheAsyncEPNS0_12AsyncContextERKNS0_10UserHandleE", ov_account_offline);

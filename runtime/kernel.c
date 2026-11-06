@@ -1845,18 +1845,18 @@ int kern_svc(Cpu *c, uint32_t imm) {
         return 1;
     }
 
-    case 0x34: {   // WaitForAddress(x0 address, w1 type, w2 value, x3 timeout): 0 if less, 1 decrement if less, 2 if equal
+    case 0x34: {   // WaitForAddress(x0 address, w1 type, w2 value, x3 timeout): 0 if less, 1 decrement if less, 2/3 if equal
         RtThread *t = cur(imm);
         uint64_t addr = x[0];
         int type = (int)x[1];
         int32_t val = (int32_t)x[2];
-        if (type < 0 || type > 2) {
+        if (type < 0 || type > 3) {
             x[0] = R_INVALID_ENUM;
             return 1;
         }
         lock();
         uint32_t r, v = ld32(addr);
-        int ok = type == 2 ? (int32_t)v == val : (int32_t)v < val;
+        int ok = (type == 2 || type == 3) ? (int32_t)v == val : (int32_t)v < val;
         if (ok && type == 1)
             while (!cas32(addr, &v, v - 1))
                 if (!((int32_t)v < val)) {
@@ -2245,8 +2245,8 @@ void kern_fiber_finalize(Cpu *c) {
 void kern_fiber_switch(Cpu *c) {
     RtThread *t = tcur;
     if (!t) rt_fatal("SwitchToFiber on a host thread");
-    Fiber *to = fiber_find(c->x[0]);
-    if (!to) rt_fatal("SwitchToFiber(%#llx): not an initialized fiber", (unsigned long long)c->x[0]);
+    Fiber *to = c->x[0] ? fiber_find(c->x[0]) : NULL;
+    if (c->x[0] && !to) rt_fatal("SwitchToFiber(%#llx): not an initialized fiber", (unsigned long long)c->x[0]);
     if (to == t->fiber) return;
     fiber_switch_to(t, c, to);
 }
