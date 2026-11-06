@@ -670,6 +670,8 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
     int cw = crop[2], ch = crop[3];
     uint32_t dw = (uint32_t)out[2], dh = (uint32_t)out[3];
 
+    if ((dw <= (uint32_t)cw && dh <= (uint32_t)ch) || !fmt) return 0;
+
     if (!N.available) {
         static int logged_fallback = 0;
         if (!logged_fallback) {
