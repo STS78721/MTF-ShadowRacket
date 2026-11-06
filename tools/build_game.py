@@ -359,7 +359,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         '  description = CC $in',
         '',
         'rule rc',
-        f'  command = {cmd_arg(WINDRES.as_posix())} -I {cmd_path(RUNTIME)} -O coff $in -o $out',
+        f'  command = {cmd_arg(WINDRES.as_posix())} --preprocessor {cmd_arg(CLANG.as_posix())} --preprocessor-arg -E --preprocessor-arg -xc-header --preprocessor-arg -DRC_INVOKED -I {cmd_path(RUNTIME)} -O coff $in -o $out',
         '  description = RC $in',
         '',
         'rule link',
