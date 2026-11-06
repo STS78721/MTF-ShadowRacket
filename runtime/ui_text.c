@@ -63,6 +63,29 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_UPSCALER_DESC] = "How the picture is scaled when the window is larger than the game resolution. FSR keeps "
                               "edges and detail sharper than bilinear.",
     [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_BILINEAR] = "Bilinear",
+    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
+    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; nvngx_dlss.dll next to dkb.exe): smoother "
+                          "edges and higher frame rates with AI reconstruction.",
+    [UI_MENU_DLSS] = "DLSS mode",
+    [UI_MENU_DLSS_DESC] = "DLAA draws the 3D scene at full resolution. Quality, Balanced, Performance and Ultra "
+                          "Performance draw it at 67, 58, 50 and 33 % and let DLSS scale it up, which saves GPU time.",
+    [UI_MENU_DLSS_DLAA] = "DLAA (native)", [UI_MENU_DLSS_QUALITY] = "Quality", [UI_MENU_DLSS_BALANCED] = "Balanced",
+    [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
+    [UI_MENU_UPSCALE_PRESET] = "Upscaler quality preset",
+    [UI_MENU_UPSCALE_PRESET_DESC] = "Picks the 3D render scale for the upscaler (DLSS or AMD FSR): Quality 67 %, Balanced 58 %, "
+                                    "Performance 50 %, Ultra Performance 33 %, Native 100 %.",
+    [UI_MENU_DLSS_MODEL] = "DLSS model",
+    [UI_MENU_DLSS_MODEL_DESC] = "Selects the neural model generation and preset. DLSS 4 (Preset K / J) is tuned for "
+                                "Native / Quality / Balanced; DLSS 4.5 (Preset M / L) is tuned for Performance (50 %) "
+                                "and Ultra Performance (33 %).",
+    [UI_MENU_DLSS_PRESET] = "DLSS model",
+    [UI_MENU_DLSS_PRESET_DESC] = "Which DLSS model runs.",
+    [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatic", [UI_MENU_DLSS_PRESET_K] = "K (sharpest)",
+    [UI_MENU_DLSS_PRESET_J] = "J (less ghosting)",
+    [UI_MENU_DLSS_CHARS] = "DLSS character trails",
+    [UI_MENU_DLSS_CHARS_DESC] = "Reduces faint trails behind moving characters.",
+    [UI_MENU_DLSS_CHARS_OFF] = "Off", [UI_MENU_DLSS_CHARS_LIGHT] = "Light", [UI_MENU_DLSS_CHARS_MEDIUM] = "Medium",
+    [UI_MENU_DLSS_CHARS_FULL] = "Full",
     [UI_MENU_ASPECT] = "Picture shape",
     [UI_MENU_ASPECT_DESC] = "When the window's shape differs from the game resolution's (a 16:9 picture on a 21:9 "
                             "screen): keep the picture's shape with black bars, or stretch it over the window.",
@@ -279,10 +302,6 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, sharpness %d%%", [UI_MENU_OV_SCALE_NONE] = "none (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
-    [UI_MENU_OV_SCALE_FSR_SHORT] = "FSR 1",
-    [UI_MENU_OV_FMT_FPS_SCALING] = "%.0f FPS  ·  %s",
-    [UI_MENU_OV_CONTROLLER_BATTERY] = "Controller battery: %d%%",
-    [UI_MENU_OV_CONTROLLER_CHARGING] = "Controller battery: charging",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -550,10 +569,6 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, резкость %d%%", [UI_MENU_OV_SCALE_NONE] = "нет (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "билинейное",
-    [UI_MENU_OV_SCALE_FSR_SHORT] = "FSR 1",
-    [UI_MENU_OV_FMT_FPS_SCALING] = "%.0f FPS  ·  %s",
-    [UI_MENU_OV_CONTROLLER_BATTERY] = "Заряд контроллера: %d%%",
-    [UI_MENU_OV_CONTROLLER_CHARGING] = "Контроллер заряжается",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}

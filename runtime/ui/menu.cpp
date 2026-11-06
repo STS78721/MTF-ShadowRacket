@@ -623,8 +623,43 @@ static void tab_screen(float scale) {
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
     row_render_scale();
-    static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
-    opt_choice("TOTK_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
+    static const char *const up_vals[] = {"dlss", "fsr", "bilinear"};
+    const char *dp = cfg_value("TOTK_DLSS_PRESET");
+    const char *dlss_title = (!strcmp(dp, "preset_m") || !strcmp(dp, "preset_l")) ? "NVIDIA DLSS 4.5"
+                           : (!strcmp(dp, "preset_k") || !strcmp(dp, "preset_j")) ? "NVIDIA DLSS 4"
+                           : "NVIDIA DLSS 4 / 4.5";
+    const char *up_names[] = {dlss_title, menu_text(UI_MENU_UPSCALER_FSR), menu_text(UI_MENU_UPSCALER_BILINEAR)};
+    if (opt_choice_list("TOTK_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 3, UI_MENU_UPSCALER_DESC)) {
+        const char *u = cfg_value("TOTK_UPSCALER");
+        cfg_set("TOTK_DLAA", !strcmp(u, "dlss") ? "1" : "0");
+        cfg_save();
+    }
+    const char *up = cfg_value("TOTK_UPSCALER");
+    bool is_dlss = !strcmp(up, "dlss");
+    if (is_dlss) {
+        static const struct { const char *name, *label, *scale, *model; } p[] = {
+            {"native", "Native / DLAA (100%)", "100", "preset_k"},
+            {"quality", "Quality (67%)", "67", "preset_k"},
+            {"balanced", "Balanced (58%)", "58", "preset_k"},
+            {"performance", "Performance (50%)", "50", "preset_m"},
+            {"ultra_performance", "Ultra Performance (33%)", "33", "preset_l"}};
+        static const char *vals[5], *names[5];
+        for (int i = 0; i < 5; i++) vals[i] = p[i].name, names[i] = p[i].label;
+        if (opt_choice_list("TOTK_UPSCALER_PRESET", UI_MENU_UPSCALE_PRESET, vals, names, 5, UI_MENU_UPSCALE_PRESET_DESC)) {
+            for (const auto &e : p) {
+                if (!strcmp(cfg_value("TOTK_UPSCALER_PRESET"), e.name)) {
+                    cfg_set("TOTK_RENDER_SCALE", e.scale);
+                    cfg_set("TOTK_DLSS_PRESET", e.model);
+                    cfg_save();
+                }
+            }
+        }
+        static const char *const model_vals[] = {"preset_k", "preset_j", "preset_m", "preset_l", "default"};
+        static const char *const model_names[] = {
+            "DLSS 4 (Preset K)", "DLSS 4 (Preset J)",
+            "DLSS 4.5 Perf (Preset M)", "DLSS 4.5 UltraPerf (Preset L)", "Default (Auto)"};
+        opt_choice_list("TOTK_DLSS_PRESET", UI_MENU_DLSS_MODEL, model_vals, model_names, 5, UI_MENU_DLSS_MODEL_DESC);
+    }
     opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
     opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
@@ -940,10 +975,8 @@ static unsigned g_perf_ver = ~0u;
 static int g_perf_mode;                  // 0 off, 1 fps, 2 full
 static std::atomic<int> g_perf_save;     // F10 changed the mode: totk.ini is written on the present thread
 static uint64_t g_perf_last_ns, g_perf_win_ns, g_perf_max_ns;
-static uint64_t g_perf_pad_ns;
 static int g_perf_frames;
 static char g_perf_text[96];
-static int g_perf_pad_percent = -1, g_perf_pad_charging;
 
 static int perf_mode_of(const char *s) { return !strcmp(s, "full") ? 2 : !strcmp(s, "fps") ? 1 : 0; }
 
@@ -1000,28 +1033,12 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
         g_perf_frames++;
         if (d > g_perf_max_ns) g_perf_max_ns = d;
         if (g_perf_win_ns >= 500000000ull) {
-            const char *scale = t->scaler == 2 ? menu_text(UI_MENU_OV_SCALE_FSR_SHORT)
-                                : t->scaler == 1 ? menu_text(UI_MENU_OV_SCALE_BILINEAR)
-                                                 : menu_text(UI_MENU_OV_SCALE_NONE);
-            snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_MENU_OV_FMT_FPS_SCALING),
-                     g_perf_frames * 1e9 / g_perf_win_ns, scale);
+            snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS), g_perf_frames * 1e9 / g_perf_win_ns);
             g_perf_win_ns = g_perf_max_ns = 0;
             g_perf_frames = 0;
         }
     }
     g_perf_last_ns = now;
-}
-
-static void perf_pad_tick(uint64_t now) {
-    if (now - g_perf_pad_ns < 2000000000ull) return;
-    g_perf_pad_ns = now;
-    g_perf_pad_percent = -1;
-    g_perf_pad_charging = 0;
-    int percent = -1, charging = 0;
-    if (input_pad_power_info(&percent, &charging)) {
-        g_perf_pad_percent = percent;
-        g_perf_pad_charging = charging;
-    }
 }
 
 // The panel keeps its width while the numbers change: every column is as wide as the widest text it can show, measured
@@ -1075,7 +1092,9 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
     snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
-    if (t->scaler == 2) {
+    if (!strcmp(cfg_value("TOTK_UPSCALER"), "dlss")) {
+        snprintf(v[3], sizeof v[3], "NVIDIA DLSS 4.5 (%s)", cfg_value("TOTK_DLSS_PRESET"));
+    } else if (t->scaler == 2) {
         int s = cfg_int("TOTK_SHARPNESS");
         snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
     } else {
@@ -1176,13 +1195,6 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
         ImGui::EndTable();
     }
     perf_picture(t, pic_c);
-    if (g_perf_pad_percent >= 0) {
-        char battery[96];
-        snprintf(battery, sizeof battery, menu_text(g_perf_pad_charging ? UI_MENU_OV_CONTROLLER_CHARGING
-                                                                        : UI_MENU_OV_CONTROLLER_BATTERY),
-                 g_perf_pad_percent);
-        ImGui::TextDisabled("%s", battery);
-    }
     if (s.gpu_name[0]) ImGui::TextDisabled("%s", s.gpu_name);
     if (s.cpu_name[0]) ImGui::TextDisabled("%s", s.cpu_name);
     ImGui::End();
@@ -1195,23 +1207,10 @@ static void perf_draw(const MenuTarget *t, float scale) {
     // with the menu open: under its window, over the dimming layout_menu drew before
     ImDrawList *dl = g_open.load(std::memory_order_relaxed) ? ImGui::GetBackgroundDrawList() : ImGui::GetForegroundDrawList();
     ImVec2 sz = ImGui::CalcTextSize(g_perf_text);
-    ImVec2 battery_sz = g_perf_pad_percent >= 0
-                            ? ImGui::CalcTextSize(menu_text(g_perf_pad_charging ? UI_MENU_OV_CONTROLLER_CHARGING
-                                                                              : UI_MENU_OV_CONTROLLER_BATTERY))
-                            : ImVec2(0, 0);
-    float value_w = g_perf_pad_percent >= 0 ? fmaxf(sz.x, battery_sz.x) : sz.x;
     float pad = 6 * scale;
-    float height = sz.y + (g_perf_pad_percent >= 0 ? battery_sz.y + 3 * scale : 0);
-    ImVec2 p(w - 12 * scale - value_w - pad * 2, 12 * scale);   // the top right corner: the game's HUD leaves it empty
-    dl->AddRectFilled(p, ImVec2(p.x + value_w + pad * 2, p.y + height + pad * 2), IM_COL32(0, 0, 0, 150), 4 * scale);
+    ImVec2 p(w - 12 * scale - sz.x - pad * 2, 12 * scale);   // the top right corner: the game's HUD leaves it empty
+    dl->AddRectFilled(p, ImVec2(p.x + sz.x + pad * 2, p.y + sz.y + pad * 2), IM_COL32(0, 0, 0, 150), 4 * scale);
     dl->AddText(ImVec2(p.x + pad, p.y + pad), IM_COL32(255, 255, 255, 235), g_perf_text);
-    if (g_perf_pad_percent >= 0) {
-        char battery[96];
-        snprintf(battery, sizeof battery, menu_text(g_perf_pad_charging ? UI_MENU_OV_CONTROLLER_CHARGING
-                                                                        : UI_MENU_OV_CONTROLLER_BATTERY),
-                 g_perf_pad_percent);
-        dl->AddText(ImVec2(p.x + pad, p.y + pad + sz.y + 3 * scale), IM_COL32(175, 190, 205, 225), battery);
-    }
 }
 
 extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot) {
@@ -1219,9 +1218,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     if (!g_test.parsed) test_parse();
     if (g_test.next_set < g_test.n_sets && frame >= g_test.sets[g_test.next_set].frame) test_apply_sets(frame);
     if (g_perf_save.exchange(0)) cfg_save();
-    uint64_t now = plat_now_ns();
-    perf_tick(now, t);
-    if (g_perf_mode) perf_pad_tick(now);
+    perf_tick(plat_now_ns(), t);
     bool open = g_open.load(std::memory_order_relaxed);
     if (!open) {
         if (g_save_pending) g_save_pending = opt_save_tick(1);   // closed: the last change goes to totk.ini now
