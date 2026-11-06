@@ -203,6 +203,73 @@ Enjoy playing Donkey Kong Bananza on PC!
 ================================================================================
 """
 
+README_TEXT = """================================================================================
+  DONKEY KONG BANANZA PC RECOMP (DKB) - ALPHA RELEASE
+  High-Performance Static Recompilation for Native Windows x86-64
+================================================================================
+
+1. LEGAL NOTICE & CLEAN-ROOM COMPLIANCE:
+   -----------------------------------------------------------------------------
+   This software is an independent static recompilation project.
+   In strict compliance with Nintendo copyright laws and clean-room recompilation
+   rules:
+   • NO proprietary Nintendo game code, ExeFS binaries, NPDM files, RomFS assets,
+     keys, or firmware files are distributed with this software.
+   • All game assets and code must be extracted directly from YOUR OWN legally
+     obtained copy of Donkey Kong Bananza for Nintendo Switch 2 (Base v1.0.0).
+   • The setup wizard unpacks the assets on your local PC from your legitimate
+     .nup container, .nsp / .xci dump, or dumped game folder.
+
+2. SYSTEM REQUIREMENTS:
+   -----------------------------------------------------------------------------
+   • OS:        Windows 10 / 11 64-bit
+   • CPU:       x86-64 processor with AVX2 support
+   • GPU:       Vulkan 1.3 capable GPU (NVIDIA RTX / GTX 10-series+, AMD RDNA / GCN,
+                Intel Arc) with updated graphics drivers
+   • Memory:    16 GB RAM minimum
+   • Storage:   ~30 GB free storage on target install drive
+
+3. HOW TO INSTALL:
+   -----------------------------------------------------------------------------
+   1. Run 'DKB-Setup.exe' (or 'Donkey-Kong-Bananza-Setup.exe').
+   2. Select your legally dumped game source:
+      - .nup container (recommended — unpacked natively with zero tools)
+      - .nsp / .xci file (requires your console prod.keys)
+      - Folder containing 'romfs' and 'exefs' directories
+   3. Choose your desired install location (e.g. C:\\Games\\DKB PC).
+   4. Configure your preferred options:
+      - Multi-Vendor AI Upscalers (NVIDIA DLSS 4.5, DLSS-NR, Intel XeSS, AMD FSR)
+      - Low Latency Modes (NVIDIA Reflex, AMD Anti-Lag 2, Intel XeLL)
+      - Controller Glyphs (PlayStation 5 DualSense, Xbox Series X|S, Switch)
+      - 1-Click Desktop Shortcut
+   5. Click "Install" and wait for the wizard to complete.
+
+4. LAUNCHING & IN-GAME CONTROLS:
+   -----------------------------------------------------------------------------
+   Launch the game using the desktop shortcut or 'DKBLauncher.exe' inside the
+   installation folder.
+   
+   • In-Game Settings Menu:
+     - Keyboard:   Press [F1] or [Esc]
+     - Controller: Press [Select + Start] simultaneously
+                   (PS: [Share] + [Options] | Xbox: [View] + [Menu])
+   • Performance HUD (FPS / Frametime / VRAM):
+     - Keyboard:   Press [F10] to cycle overlay modes
+     - Controller: Click [L3 + R3] simultaneously
+   • Fullscreen Toggle:
+     - Keyboard:   Press [F11] or [Alt + Enter]
+
+5. TROUBLESHOOTING & LOGS:
+   -----------------------------------------------------------------------------
+   • Installation logs: %TEMP%\\dkb-setup.log
+   • Game runtime logs: <InstallFolder>\\logs\\totk.log (and totk.1.log to totk.4.log)
+   • Black screen / instant exit on start:
+     Ensure your graphics driver is updated and supports Vulkan 1.3.
+     Verify that your dump contains a valid 'exefs/main.npdm' and 'romfs/'.
+
+================================================================================
+"""
+
 class ModernDkbInstaller(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -246,13 +313,13 @@ class ModernDkbInstaller(ctk.CTk):
             if not os.path.exists(c): continue
             if os.path.isdir(os.path.join(c, "exefs")) and os.path.isdir(os.path.join(c, "romfs")):
                 return c
-            if os.path.isfile(c) and any(c.lower().endswith(ext) for ext in [".nsp", ".xci"]):
+            if os.path.isfile(c) and any(c.lower().endswith(ext) for ext in [".nsp", ".xci", ".nup"]):
                 return c
             if os.path.isdir(c):
                 try:
                     for f in os.listdir(c):
                         fl = f.lower()
-                        if any(kw in fl for kw in ["dk", "bananza", "donkey"]) and (fl.endswith(".nsp") or fl.endswith(".xci")):
+                        if any(kw in fl for kw in ["dk", "bananza", "donkey"]) and (fl.endswith(".nsp") or fl.endswith(".xci") or fl.endswith(".nup")):
                             return os.path.join(c, f)
                 except Exception:
                     pass
@@ -371,7 +438,7 @@ class ModernDkbInstaller(ctk.CTk):
         intro_box.pack(fill="x", padx=15, pady=8)
         ctk.CTkLabel(intro_box, text="🌴 Donkey Kong Bananza Game Files & Destination",
                      font=ctk.CTkFont(size=16, weight="bold"), text_color=ACCENT_GOLD).pack(anchor="w", padx=15, pady=(10, 4))
-        ctk.CTkLabel(intro_box, text="Select your legally dumped base game files (exefs/romfs or .nsp/.xci), your console prod.keys, and your install destination.",
+        ctk.CTkLabel(intro_box, text="Select your legally dumped base game files (.nup container, .nsp/.xci, or exefs/romfs folder), your console prod.keys, and your install destination.",
                      font=ctk.CTkFont(size=12), text_color=TEXT_DIM, justify="left", wraplength=850).pack(anchor="w", padx=15, pady=(0, 10))
 
         # Legal Notice Banner
@@ -385,11 +452,11 @@ class ModernDkbInstaller(ctk.CTk):
         # 1. Base Game Dump / File
         src_box = ctk.CTkFrame(f, fg_color=CARD_BG, border_color=CARD_BORDER, border_width=1)
         src_box.pack(fill="x", padx=15, pady=8)
-        ctk.CTkLabel(src_box, text="🎮 Legitimate Game Dump Source (.nsp, .xci, or folder with romfs):",
+        ctk.CTkLabel(src_box, text="🎮 Legitimate Game Dump Source (.nup, .nsp, .xci, or folder with romfs):",
                      font=ctk.CTkFont(size=13, weight="bold"), text_color="#ffffff").pack(anchor="w", padx=15, pady=(8, 4))
         r1 = ctk.CTkFrame(src_box, fg_color="transparent")
         r1.pack(fill="x", padx=15, pady=(0, 10))
-        ctk.CTkEntry(r1, textvariable=self.var_game_source, placeholder_text="Path to folder with exefs/romfs, or .nsp / .xci file").pack(side="left", fill="x", expand=True, padx=(0, 10))
+        ctk.CTkEntry(r1, textvariable=self.var_game_source, placeholder_text="Path to .nup container, .nsp / .xci file, or folder with exefs/romfs").pack(side="left", fill="x", expand=True, padx=(0, 10))
         ctk.CTkButton(r1, text="Browse File...", width=105, fg_color="#202b25", hover_color="#2e3d34",
                       command=lambda: self.browse_file(self.var_game_source, [("Game Dump (.nsp, .xci, .nup)", "*.nsp *.xci *.nup"), ("All Files", "*.*")])).pack(side="left", padx=(0, 5))
         ctk.CTkButton(r1, text="Browse Folder...", width=115, fg_color="#202b25", hover_color="#2e3d34",
@@ -686,22 +753,14 @@ class ModernDkbInstaller(ctk.CTk):
                 except Exception as e:
                     self.log(f"[!] Extraction notice: {e}")
 
-        # Fallback / validation: ensure exefs/main.npdm is in place
+        # Validation: ensure user's dump yielded exefs/main.npdm (Clean-Room compliance)
         dst_npdm = os.path.join(target, "exefs", "main.npdm")
         if not os.path.isfile(dst_npdm):
-            payload_exefs = os.path.join(payload_dir, "exefs") if payload_dir else None
-            if payload_exefs and os.path.isdir(payload_exefs):
-                try:
-                    self.log("[*] Deploying base ExeFS modules from package...")
-                    shutil.copytree(payload_exefs, os.path.join(target, "exefs"), dirs_exist_ok=True)
-                    self.log("[✓] ExeFS verified and installed.")
-                except Exception as e:
-                    self.log(f"[!] Notice copying ExeFS: {e}")
-
-        if not os.path.isfile(os.path.join(target, "exefs", "main.npdm")):
             self.log("[!] ERROR: ExeFS (main.npdm) was not found in destination.")
-            messagebox.showerror("Installation Incomplete",
-                "Could not locate or extract the game ExeFS (main.npdm).\n\n"
+            messagebox.showerror("Legitimate ExeFS Required",
+                "Could not locate or extract the game ExeFS (main.npdm) from your dump.\n\n"
+                "In strict compliance with clean-room recompilation rules, proprietary Nintendo\n"
+                "binaries cannot be distributed with this installer.\n\n"
                 "Please verify that your dump contains exefs/main.npdm or supply a valid .nup dump.")
             self.btn_next.configure(state="normal", text="Retry Installation", command=self.start_install)
             return
@@ -722,18 +781,33 @@ class ModernDkbInstaller(ctk.CTk):
         self.log(f"[✓] Controller layout configured: {choice_name}")
         self.progress_bar.set(0.75)
 
-        # 3. Controller Guide Text File
+        # 4. Controller Guide & English Readme
         if self.var_create_guide.get():
             try:
-                g_path = os.path.join(target, "README-CONTROLLER.txt")
+                g_path = os.path.join(target, "CONTROLLER_GUIDE.txt")
                 with open(g_path, "w", encoding="utf-8") as f:
                     f.write(CONTROLLER_GUIDE_TEXT)
                 self.log(f"[✓] Created {g_path}")
+
+                r_path = os.path.join(target, "README.txt")
+                with open(r_path, "w", encoding="utf-8") as f:
+                    f.write(README_TEXT)
+                self.log(f"[✓] Created {r_path}")
+
+                desktop_dir = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
+                if os.path.isdir(desktop_dir):
+                    g_desk = os.path.join(desktop_dir, "DKB_CONTROLLER_GUIDE.txt")
+                    with open(g_desk, "w", encoding="utf-8") as f:
+                        f.write(CONTROLLER_GUIDE_TEXT)
+                    r_desk = os.path.join(desktop_dir, "DKB_README.txt")
+                    with open(r_desk, "w", encoding="utf-8") as f:
+                        f.write(README_TEXT)
+                    self.log("[✓] Created English README and Controller Guide on Desktop.")
             except Exception as e:
-                self.log(f"[!] Warning creating guide: {e}")
+                self.log(f"[!] Warning creating guides: {e}")
         self.progress_bar.set(0.85)
 
-        # 4. Shortcut
+        # 5. Desktop Shortcut
         if self.var_create_shortcut.get():
             ok = create_desktop_shortcut(target, shortcut_name="Donkey Kong Bananza", target_exe="DKBLauncher.exe")
             if ok:
