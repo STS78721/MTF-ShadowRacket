@@ -74,3 +74,9 @@ desktop.ini
 
 # Agent task worktrees (tools/worktree.py)
 /.worktrees/
+# Launcher configuration and local build output
+/launcher/launcher_config.json
+/launcher/*.tmp
+/launcher/build/
+/launcher/dist/
+/dist/
