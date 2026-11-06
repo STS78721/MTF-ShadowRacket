@@ -36,7 +36,7 @@ python -m pip install Pillow PyInstaller
 python -m PyInstaller --noconfirm --clean --onefile --noconsole --name DKBLauncher --icon launcher/assets/dkb.ico --add-data "launcher/assets;assets" launcher/DKBLauncher.py
 ```
 
-The executable is written to `dist/`. Copy it next to the existing local `jogo` folder if you want automatic game discovery. Do not copy any game-derived data into this repository.
+The executable is written to `dist/`. The checked-in PyInstaller spec excludes unrelated scientific Python packages to keep the launcher smaller. Copy the executable next to the existing local `jogo` folder if you want automatic game discovery. Do not copy any game-derived data into this repository.
 
 ## User data and release status
 

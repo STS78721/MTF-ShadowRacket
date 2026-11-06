@@ -108,21 +108,28 @@ def place_window_on_monitor(window, monitor):
     window.geometry(f"{w}x{h}+{left}+{top}")
 
 
+def classify_gpu_name(name):
+    low=name.lower()
+    vendor="NVIDIA" if any(v in low for v in ("nvidia","geforce")) else "AMD" if any(v in low for v in ("amd","radeon")) else "Intel" if "intel" in low else "Other"
+    return name,vendor
+
 def detect_gpu():
-    if os.name != "nt": return "GPU detection is available on Windows", "Other"
-    try:
-        cmd="Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name | ConvertTo-Json -Compress"
-        r=subprocess.run(["powershell.exe","-NoProfile","-NonInteractive","-Command",cmd],capture_output=True,text=True,timeout=8,
-                         creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
-        names=json.loads(r.stdout.strip()) if r.returncode==0 and r.stdout.strip() else []
-        if isinstance(names,str): names=[names]
-        if names:
-            names.sort(key=lambda n:(not any(v in n.lower() for v in ("nvidia","geforce","amd","radeon")),n))
-            name=names[0]; low=name.lower()
-            vendor="NVIDIA" if any(v in low for v in ("nvidia","geforce")) else "AMD" if any(v in low for v in ("amd","radeon")) else "Intel" if "intel" in low else "Other"
-            return name,vendor
-    except Exception: pass
-    return "GPU not detected","Other"
+    if hasattr(detect_gpu,"result"):return detect_gpu.result
+    if os.name != "nt": result=("GPU detection is available on Windows", "Other")
+    else:
+        try:
+            cmd="Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name | ConvertTo-Json -Compress"
+            r=subprocess.run(["powershell.exe","-NoProfile","-NonInteractive","-Command",cmd],capture_output=True,text=True,timeout=8,
+                             creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0))
+            names=json.loads(r.stdout.strip()) if r.returncode==0 and r.stdout.strip() else []
+            if isinstance(names,str):names=[names]
+            if names:
+                names.sort(key=lambda n:(not any(v in n.lower() for v in ("nvidia","geforce","amd","radeon")),n))
+                result=classify_gpu_name(names[0])
+            else:result=("GPU not detected","Other")
+        except Exception:result=("GPU not detected","Other")
+    detect_gpu.result=result
+    return result
 
 
 APP_CONFIG = app_dir() / "launcher_config.json"
@@ -256,19 +263,23 @@ def create_mod_folder():
 def rebuild_mod_overlay():
     """Compose enabled per-mod RomFS trees for the runtime's single overlay directory."""
     mods=scan_mod_folders(); enabled=[m for m in mods if m["enabled"]]
+    if not INI_PATH or not INI_PATH.is_file():
+        raise FileNotFoundError("The selected DKB game folder is missing its runtime settings file.")
     owner=GAME_DIR/".romfs-mods-active.owner.json"
     if ACTIVE_MODS_DIR.exists() and not owner.is_file():
         raise RuntimeError("The active RomFS overlay exists without this launcher's ownership marker; it was left untouched.")
-    stage=GAME_DIR/f".romfs-mods-stage-{os.getpid()}"
+    stage=GAME_DIR/f".romfs-mods-stage-{os.getpid()}-{threading.get_ident()}"
     shutil.rmtree(stage,ignore_errors=True)
     if enabled:
         stage.mkdir(parents=True)
         seen={}
         for mod in enabled:
             for source in mod["path"].rglob("*"):
-                if source.is_symlink(): continue
-                if not source.is_file(): continue
+                if source.is_symlink():continue
+                if not source.is_file():continue
                 rel=source.relative_to(mod["path"]); dest=stage/rel
+                try:dest.resolve().relative_to(stage.resolve())
+                except ValueError:raise ValueError(f"Mod path escapes the overlay folder: {rel}") from None
                 dest.parent.mkdir(parents=True,exist_ok=True)
                 # Deterministic precedence follows the alphabetical package order shown in the manager.
                 shutil.copy2(source,dest); seen[rel]=mod["name"]
@@ -276,7 +287,7 @@ def rebuild_mod_overlay():
             old=GAME_DIR/f".romfs-mods-old-{time.time_ns()}"; ACTIVE_MODS_DIR.rename(old)
             stage.rename(ACTIVE_MODS_DIR); shutil.rmtree(old,ignore_errors=True)
         else: stage.rename(ACTIVE_MODS_DIR)
-        owner_tmp=owner.with_suffix(".tmp")
+        owner_tmp=owner.with_name(owner.name+f".{os.getpid()}.tmp")
         owner_tmp.write_text(json.dumps({"owner":"DKBLauncher","format":1},indent=2),encoding="utf-8")
         owner_tmp.replace(owner)
         save_ini_settings(INI_PATH,{"romfs_mods":str(ACTIVE_MODS_DIR)})
@@ -314,11 +325,15 @@ def create_save_snapshot(profile_dir,backups_dir=None,suffix=""):
     backups_dir.mkdir(parents=True,exist_ok=True); stamp=datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     base=f"save_{stamp}"+(f"_{suffix}" if suffix else ""); dest=backups_dir/base; n=2
     while dest.exists(): dest=backups_dir/f"{base}_{n}"; n+=1
-    shutil.copytree(save_dir,dest); return dest
+    try:shutil.copytree(save_dir,dest)
+    except Exception:
+        shutil.rmtree(dest,ignore_errors=True)
+        raise
+    return dest
 
 def restore_save_snapshot(profile_dir,snapshot_dir):
     profile_dir=Path(profile_dir); snapshot_dir=Path(snapshot_dir); save_dir=profile_dir/"save"; backups=profile_dir/"backups"
-    try: snapshot_dir.resolve().relative_to(backups.resolve())
+    try:snapshot_dir.resolve().relative_to(backups.resolve())
     except ValueError: raise ValueError("Selected snapshot is outside the DKB backup folder.") from None
     if not snapshot_dir.is_dir() or not any(snapshot_dir.iterdir()): raise ValueError("Selected snapshot is missing or empty.")
     safety=create_save_snapshot(profile_dir,backups,"before-restore")
@@ -327,7 +342,9 @@ def restore_save_snapshot(profile_dir,snapshot_dir):
         shutil.copytree(snapshot_dir,staged)
         if save_dir.exists(): save_dir.rename(old)
         staged.rename(save_dir)
-        if old.exists(): shutil.rmtree(old)
+        if old.exists():
+            try:shutil.rmtree(old)
+            except OSError:pass
     except Exception:
         if not save_dir.exists() and old.exists(): old.rename(save_dir)
         shutil.rmtree(staged,ignore_errors=True); raise
@@ -367,7 +384,16 @@ class DKBSettingsDialog(tk.Toplevel):
         saved=parent.launcher_cfg.get("target_display")
         self.target_monitor=next((m for m in self.monitors if m["device"]==saved),next((m for m in self.monitors if m["primary"]),self.monitors[0]))
         self.display_resolution=self.target_monitor["resolution"]; self.display_refresh=self.target_monitor["refresh"]
-        self.gpu_name,self.gpu_vendor=detect_gpu(); self.setup_ui(); place_window_on_monitor(self,self.target_monitor)
+        self.gpu_name,self.gpu_vendor=("Detecting graphics adapter…","Other")
+        self.setup_ui(); place_window_on_monitor(self,self.target_monitor)
+        threading.Thread(target=self._detect_gpu_worker,daemon=True).start()
+    def _detect_gpu_worker(self):
+        name,vendor=detect_gpu()
+        try:self.after(0,lambda:self._show_detected_gpu(name,vendor))
+        except tk.TclError:pass
+    def _show_detected_gpu(self,name,vendor):
+        self.gpu_name,self.gpu_vendor=name,vendor
+        self.gpu_header.config(text=f"Detected: {name}",fg=COLOR_ACCENT_GREEN if vendor!="Other" else COLOR_TEXT_DIM)
     def get_val(self,key,default=""): return self.ini_values.get(key.lower(),default)
     def setup_ui(self):
         header=tk.Frame(self,bg=COLOR_CARD,height=58); header.pack(fill=tk.X,side=tk.TOP); header.pack_propagate(False)
@@ -724,7 +750,7 @@ class DKBLauncherApp(tk.Tk):
             p=subprocess.Popen(command,cwd=str(GAME_DIR),env=env,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0) if command[0].lower().endswith("powershell.exe") else 0)
             if not self.keep_launcher_var.get():
                 self.after(900,self.safe_quit)
-            elif p.pid:
+            elif p.pid and not script.is_file():
                 threading.Thread(target=self._place_game_window,args=(p.pid,self.target_monitor),daemon=True).start()
         except Exception as exc:messagebox.showerror("Launch Error",f"Could not start dkb.exe:\n{exc}",parent=self)
     def _place_game_window(self,pid,monitor):
@@ -742,7 +768,8 @@ class DKBLauncherApp(tk.Tk):
             if found:user32.SetWindowPos(found[0],None,monitor["left"],monitor["top"],monitor["monitor_width"],monitor["monitor_height"],0x0040|0x0010)
         except Exception:pass
     def check_for_updates(self):
-        self.release_btn.pack_forget(); self.update_status.config(text="Checking the DKB fork for a published release…",fg=COLOR_TEXT_DIM)
+        if getattr(self,"release_check_active",False):return
+        self.release_check_active=True; self.release_btn.pack_forget(); self.update_status.config(text="Checking the DKB fork for a published release…",fg=COLOR_TEXT_DIM)
         threading.Thread(target=self._check_release_worker,daemon=True).start()
     def _check_release_worker(self):
         try:
@@ -755,6 +782,7 @@ class DKBLauncherApp(tk.Tk):
             if "404" in detail or "Not Found" in detail:self.after(0,lambda:self._show_release(None,"No DKB releases are published yet; this prototype will not self-update."))
             else:self.after(0,lambda:self._show_release(None,"Release check failed: "+detail))
     def _show_release(self,result,error):
+        self.release_check_active=False
         if error:self.update_status.config(text=error,fg=COLOR_TEXT_DIM); return
         self.latest_release=result; self.update_status.config(text=f"Published DKB release available: {result[0]}",fg=COLOR_ACCENT_GREEN); self.release_btn.pack(anchor="e",pady=(5,0))
     def open_latest_release(self):webbrowser.open(self.latest_release[1] if self.latest_release else RELEASES_URL)
