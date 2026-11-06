@@ -576,38 +576,21 @@ class ModernDkbInstaller(ctk.CTk):
         self.log(f"[*] Found payload sources at: {payload_dir}")
         if os.path.abspath(payload_dir) != os.path.abspath(target):
             self.log("[*] Deploying Donkey Kong Bananza recompiled binaries...")
-            essential_files = [
-                "dkb.exe", "DKBLauncher.exe", "totk.ini", "romfs-index.bin", "dkb.ico",
-                "pipeline-cache.bin", "pipeline-keys.bin", "shader-answers.bin", "shader-programs.bin",
-                "SDL3.dll", "libopus-0.dll", "libiconv-2.dll", "libxess.dll", "libxess_dx11.dll", "libxess_fg.dll",
-                "nvngx_dlss.dll", "nvngx_dlssg.dll", "nvngx_dlssnr.dll",
-                "sl.common.dll", "sl.dlss.dll", "sl.dlss_g.dll", "sl.dlss_nr.dll", "sl.interposer.dll", "sl.reflex.dll",
-                "totk_xlate.exe", "totk_xlate.id"
-            ]
-            for ef in essential_files:
-                src_file = os.path.join(payload_dir, ef)
-                dst_file = os.path.join(target, ef)
-                if os.path.isfile(src_file):
+            for item in os.listdir(payload_dir):
+                s = os.path.join(payload_dir, item)
+                d = os.path.join(target, item)
+                if os.path.isfile(s):
                     try:
-                        shutil.copy2(src_file, dst_file)
-                        self.log(f"  -> Installed {ef}")
+                        shutil.copy2(s, d)
+                        self.log(f"  -> Installed {item}")
                     except Exception as e:
-                        self.log(f"  [!] Notice copying {ef}: {e}")
-
-            # Also copy assets directory (launcher background, sounds, icons)
-            src_assets = os.path.join(payload_dir, "assets")
-            if os.path.isdir(src_assets):
-                try:
-                    shutil.copytree(src_assets, os.path.join(target, "assets"), dirs_exist_ok=True)
-                    self.log("  -> Installed launcher assets.")
-                except Exception as e:
-                    self.log(f"  [!] Notice copying assets: {e}")
-            src_bin = os.path.join(payload_dir, "bin")
-            if os.path.isdir(src_bin):
-                try:
-                    shutil.copytree(src_bin, os.path.join(target, "bin"), dirs_exist_ok=True)
-                except Exception:
-                    pass
+                        self.log(f"  [!] Notice copying {item}: {e}")
+                elif os.path.isdir(s):
+                    try:
+                        shutil.copytree(s, d, dirs_exist_ok=True)
+                        self.log(f"  -> Installed {item}/")
+                    except Exception as e:
+                        self.log(f"  [!] Notice copying {item}/: {e}")
 
         # Deploy DKBLauncher.exe if not yet in target
         dst_launcher = os.path.join(target, "DKBLauncher.exe")
