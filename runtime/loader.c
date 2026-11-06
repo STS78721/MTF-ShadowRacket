@@ -118,11 +118,8 @@ static size_t lz4_decompress(const uint8_t *src, size_t srclen, uint8_t *dst, si
 }
 
 typedef struct { uint32_t file_off, mem_off, size, csize; int compressed, zbic; } Seg;
+size_t rt_zbic_decompress(void *dst, size_t dstCap, const void *src, size_t srcSize);
 
-#include <zstd.h>
-size_t rt_zbic_decompress(void *dst, size_t dstCap, const void *src, size_t srcSize) {
-    return ZSTD_decompress(dst, dstCap, src, srcSize);
-}
 
 static uint64_t nso_segments(const uint8_t *raw, size_t len, const char *name, Seg seg[3]) {
     if (len < 0x100 || memcmp(raw, "NSO0", 4)) rt_fatal("loader: %s is not an NSO", name);

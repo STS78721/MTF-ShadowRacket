@@ -21,7 +21,6 @@
 #include "platform/platform.h"
 #include "vk.h"
 
-const uint64_t rt_application_id = 0x040074a01bf12000ull;
 
 #define SYM_INIT_START "_ZN2nn4init5StartEmmPFvvES2_S2_"
 // main: return addresses of nnMain's SetFocusHandlingMode call (1.1.1 and 1.2.1 from this port's analysis of main;

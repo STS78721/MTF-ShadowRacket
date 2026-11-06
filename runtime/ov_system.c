@@ -826,6 +826,26 @@ static void ov_nsd_resolve(Cpu *c) {
     ret_x(c, 0);
 }
 static void ov_account_offline(Cpu *c) { ret_x(c, 0x1f4000u | 124u); }   // account network unavailable
+static void ov_report_send(Cpu *c) {
+    int64_t n = plat_inc64(&reports);
+    if (n % 100 == 1) rt_log("prepo: play report kept local (not sent), %lld so far", (long long)n);
+    void *out = (void *)(uintptr_t)c->x[8];
+    if (out) memset(out, 0, 16);
+    ret_x(c, c->x[8]);
+}
+static void ov_async_event(Cpu *c) {
+    uint64_t ev = arg_x(c, 1);
+    if (ev) {   // stack-allocated event: create it fresh each time (the bind table caches by address, stale on reuse)
+        static uint64_t create, getw;
+        if (!create) {
+            create = ldr_symbol("_ZN2nn2os17CreateSystemEventEPNS0_15SystemEventTypeENS0_14EventClearModeEb");
+            getw = ldr_symbol("_ZN2nn2os30GetWritableHandleOfSystemEventEPKNS0_15SystemEventTypeE");
+        }
+        rt_call(c, create, 3, ev, (uint64_t)0, (uint64_t)1);
+        kern_event_signal((uint32_t)rt_call(c, getw, 1, ev));
+    }
+    ret_x(c, 0);
+}
 static volatile uint32_t sock_errno;
 static void ov_sock_fail(Cpu *c) { sock_errno = 38; ret_x(c, (uint64_t)(int64_t)-1); }
 static void ov_sock_get_errno(Cpu *c) { ret_x(c, sock_errno); }
@@ -1038,8 +1058,13 @@ HOST_OVERRIDE("_ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifier
 HOST_OVERRIDE("_ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_", ov_nsd_resolve);
 HOST_OVERRIDE("_ZN2nn2ro12ProtectRelroEPKvS2_S2_S2_S2_", ov_noop);
 HOST_OVERRIDE("_ZN2nn2pl17RequestLoadNxFontEPvm", ov_noop);
-HOST_OVERRIDE("_ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE", ov_report_save);
+HOST_OVERRIDE("_ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE", ov_report_send);
+HOST_OVERRIDE("_ZN2nn5prepo12AsyncContext18GetCompletionEventEPNS_2os11SystemEventE", ov_async_event);
+HOST_OVERRIDE("_ZN2nn5prepo12AsyncContext9GetResultEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn5prepo12AsyncContextD1Ev", ov_noop);
 HOST_OVERRIDE("_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERKNS0_10UserHandleE", ov_account_offline);
 HOST_OVERRIDE("_ZN2nn7account36EnsureNetworkServiceAccountAvailableERKNS0_10UserHandleE", ov_account_offline);
 HOST_OVERRIDE("_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_10UserHandleE", ov_account_offline);
 HOST_OVERRIDE("_ZN2nn7account44EnsureNetworkServiceAccountIdTokenCacheAsyncEPNS0_12AsyncContextERKNS0_10UserHandleE", ov_account_offline);
+HOST_OVERRIDE("_ZN2nn7account12AsyncContext14GetSystemEventEPNS_2os11SystemEventE", ov_async_event);
+HOST_OVERRIDE("_ZN2nn7account12AsyncContext9GetResultEv", ov_account_offline);

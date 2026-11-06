@@ -354,9 +354,9 @@ class ModernDkbInstaller(ctk.CTk):
         if d: var.set(d)
 
     def browse_source(self, var):
-        # Allow choosing either a file (.nsp / .xci) or a directory (dump containing exefs/romfs)
-        f = filedialog.askopenfilename(title="Select Game Dump File (.nsp or .xci)",
-                                       filetypes=[("Nintendo Switch Game", "*.nsp *.xci"), ("All Files", "*.*")])
+        # Allow choosing either a file (.nsp / .xci / .nup) or a directory (dump containing exefs/romfs)
+        f = filedialog.askopenfilename(title="Select Game Dump File (.nsp, .xci, or .nup)",
+                                       filetypes=[("Game Dump (.nsp, .xci, .nup)", "*.nsp *.xci *.nup"), ("All Files", "*.*")])
         if f:
             var.set(f)
         else:
@@ -391,7 +391,7 @@ class ModernDkbInstaller(ctk.CTk):
         r1.pack(fill="x", padx=15, pady=(0, 10))
         ctk.CTkEntry(r1, textvariable=self.var_game_source, placeholder_text="Path to folder with exefs/romfs, or .nsp / .xci file").pack(side="left", fill="x", expand=True, padx=(0, 10))
         ctk.CTkButton(r1, text="Browse File...", width=105, fg_color="#202b25", hover_color="#2e3d34",
-                      command=lambda: self.browse_file(self.var_game_source, [("Game Dump (.nsp, .xci)", "*.nsp *.xci"), ("All Files", "*.*")])).pack(side="left", padx=(0, 5))
+                      command=lambda: self.browse_file(self.var_game_source, [("Game Dump (.nsp, .xci, .nup)", "*.nsp *.xci *.nup"), ("All Files", "*.*")])).pack(side="left", padx=(0, 5))
         ctk.CTkButton(r1, text="Browse Folder...", width=115, fg_color="#202b25", hover_color="#2e3d34",
                       command=lambda: self.browse_folder(self.var_game_source)).pack(side="right")
 
@@ -489,7 +489,7 @@ class ModernDkbInstaller(ctk.CTk):
 
     def update_nav_buttons(self):
         cur = self.tabview.get()
-        if cur == "1. Destination & Setup":
+        if cur == "1. Legal Game Files & Keys":
             self.btn_back.configure(state="disabled")
             self.btn_next.configure(text="Next ▶", state="normal", fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, command=self.next_tab)
         elif cur == "2. DLSS & Controllers":
@@ -497,10 +497,14 @@ class ModernDkbInstaller(ctk.CTk):
             self.btn_next.configure(text="Next ▶", state="normal", fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, command=self.next_tab)
         elif cur == "3. Controller Guide":
             self.btn_back.configure(state="normal")
-            self.btn_next.configure(text="Install & Launch ▶", state="normal", fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, command=self.next_tab)
+            self.btn_next.configure(text="Proceed to Install ▶", state="normal", fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, command=self.next_tab)
         elif cur == "4. Finalize & Launch":
             self.btn_back.configure(state="disabled")
-            self.btn_next.configure(text="Start Installation", state="normal", fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, command=self.start_install)
+            if getattr(self, "install_finished", False):
+                target = self.var_install_dir.get().strip()
+                self.btn_next.configure(text="🚀 Launch DKB Launcher", state="normal", fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, command=lambda: self.launch_game(target))
+            else:
+                self.btn_next.configure(text="Start Installation", state="normal", fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, command=self.start_install)
 
     def prev_tab(self):
         cur = self.tabview.get()
@@ -543,42 +547,64 @@ class ModernDkbInstaller(ctk.CTk):
         self.log(f"[*] Verified user console prod.keys from: {keys}")
         self.progress_bar.set(0.15)
 
-        # 1. Deploy Game Binaries (dkb.exe, launcher, config, icon)
+        # 1. Deploy Game Binaries (dkb.exe, launcher, config, icon, DLLs)
+        meipass = getattr(sys, '_MEIPASS', None)
+        exe_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        py_exe_dir = os.path.dirname(os.path.abspath(sys.executable))
         payload_candidates = [
-            r"C:\DK-Bananza-Instalador\jogo\build\dkb100",
-            os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "build", "dkb100"),
-            os.path.dirname(os.path.abspath(sys.executable)),
+            os.path.join(meipass, "payload") if meipass else None,
+            meipass if meipass else None,
+            os.path.join(exe_dir, "payload"),
+            os.path.join(exe_dir, "build", "dkb100"),
+            exe_dir,
+            os.path.join(py_exe_dir, "payload"),
+            os.path.join(py_exe_dir, "build", "dkb100"),
+            py_exe_dir,
             os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "build", "dkb100")),
+            r"C:\DK-Bananza-Instalador\jogo\build\dkb100",
             r"C:\Games\DKB PC\build\dkb100",
         ]
-        payload_dir = next((c for c in payload_candidates if os.path.isfile(os.path.join(c, "dkb.exe"))), None)
-        if payload_dir and os.path.abspath(payload_dir) != os.path.abspath(target):
+        payload_dir = next((c for c in payload_candidates if c and os.path.isfile(os.path.join(c, "dkb.exe"))), None)
+        if not payload_dir:
+            self.log("[!] ERROR: Recompiled game binaries (dkb.exe) not found in installer package.")
+            messagebox.showerror("Game Payload Missing",
+                                 "Could not locate the recompiled Donkey Kong Bananza game binaries (dkb.exe).\n\n"
+                                 "Please ensure the installer package contains dkb.exe and the payload files.")
+            self.btn_next.configure(state="normal", text="Retry Installation", command=self.start_install)
+            return
+
+        self.log(f"[*] Found payload sources at: {payload_dir}")
+        if os.path.abspath(payload_dir) != os.path.abspath(target):
             self.log("[*] Deploying Donkey Kong Bananza recompiled binaries...")
             essential_files = [
-                "dkb.exe", "totk.ini", "romfs-index.bin", "dkb.ico",
-                "totk_xlate.exe", "totk_xlate.id", "pipeline-cache.bin"
+                "dkb.exe", "DKBLauncher.exe", "totk.ini", "romfs-index.bin", "dkb.ico",
+                "pipeline-cache.bin", "pipeline-keys.bin", "shader-answers.bin", "shader-programs.bin",
+                "SDL3.dll", "libopus-0.dll", "libiconv-2.dll", "libxess.dll", "libxess_dx11.dll", "libxess_fg.dll",
+                "nvngx_dlss.dll", "nvngx_dlssg.dll", "nvngx_dlssnr.dll",
+                "sl.common.dll", "sl.dlss.dll", "sl.dlss_g.dll", "sl.dlss_nr.dll", "sl.interposer.dll", "sl.reflex.dll",
+                "totk_xlate.exe", "totk_xlate.id"
             ]
             for ef in essential_files:
                 src_file = os.path.join(payload_dir, ef)
                 dst_file = os.path.join(target, ef)
-                if os.path.isfile(src_file) and not os.path.exists(dst_file):
+                if os.path.isfile(src_file):
                     try:
                         shutil.copy2(src_file, dst_file)
                         self.log(f"  -> Installed {ef}")
                     except Exception as e:
                         self.log(f"  [!] Notice copying {ef}: {e}")
 
-        # Deploy DKBLauncher.exe
-        launcher_candidates = [
-            os.path.join(payload_dir, "DKBLauncher.exe") if payload_dir else None,
-            r"C:\DK-Bananza-Instalador\DKBLauncher.exe",
-            os.path.join(os.path.dirname(sys.executable), "DKBLauncher.exe"),
-            r"C:\DK-Bananza-Instalador\jogo\dist\DKBLauncher.exe",
-        ]
-        launcher_src = next((cand for cand in launcher_candidates if cand and os.path.isfile(cand)), None)
-        if launcher_src:
-            dst_launcher = os.path.join(target, "DKBLauncher.exe")
-            if os.path.abspath(launcher_src) != os.path.abspath(dst_launcher):
+        # Deploy DKBLauncher.exe if not yet in target
+        dst_launcher = os.path.join(target, "DKBLauncher.exe")
+        if not os.path.isfile(dst_launcher):
+            launcher_candidates = [
+                os.path.join(payload_dir, "DKBLauncher.exe") if payload_dir else None,
+                r"C:\DK-Bananza-Instalador\DKBLauncher.exe",
+                os.path.join(exe_dir, "DKBLauncher.exe"),
+                os.path.join(py_exe_dir, "DKBLauncher.exe"),
+            ]
+            launcher_src = next((cand for cand in launcher_candidates if cand and os.path.isfile(cand)), None)
+            if launcher_src:
                 try:
                     shutil.copy2(launcher_src, dst_launcher)
                     self.log("[✓] Installed DKBLauncher.exe to target directory.")
@@ -613,6 +639,24 @@ class ModernDkbInstaller(ctk.CTk):
                     self.log("[✓] Linked romfs.bin image.")
                 except Exception:
                     shutil.copy2(os.path.join(src, "romfs.bin"), dst_bin)
+        elif src.lower().endswith(".nup"):
+            self.log("[*] NUP container detected (.nup). Extracting package to target...")
+            try:
+                tools_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tools"))
+                if os.path.isdir(tools_dir) and tools_dir not in sys.path:
+                    sys.path.insert(0, tools_dir)
+                from extract_nup import Nup, Zstd, pick, extract_tree
+                nup = Nup(Path(src))
+                zstd = Zstd()
+                pkg = pick(nup, "base")
+                self.log(f"[*] Extracting package [{pkg.index}] {pkg.kind_name} (title {pkg.title_id:016x})...")
+                for which in ('exefs', 'romfs'):
+                    dst_folder = Path(target) / which
+                    dst_folder.mkdir(parents=True, exist_ok=True)
+                    count, total, _ = extract_tree(nup, zstd, pkg, which, dst_folder, False, True)
+                    self.log(f"[✓] Extracted {which}: {count} files ({total / 1e9:.2f} GB).")
+            except Exception as e:
+                self.log(f"[!] Extraction notice: {e}")
         elif src.lower().endswith((".nsp", ".xci")):
             self.log("[*] Packed container selected (.nsp/.xci). Extracting with user keys...")
             hactool_candidates = [
@@ -670,22 +714,28 @@ class ModernDkbInstaller(ctk.CTk):
                 self.log("[!] Shortcut creation fallback was logged.")
         self.progress_bar.set(1.0)
 
+        self.install_finished = True
+        self.progress_bar.set(1.0)
         self.status_lbl.configure(text="✅ Donkey Kong Bananza PC Recomp is ready to play!", text_color="#65db83")
         self.btn_next.configure(state="normal", text="🚀 Launch DKB Launcher", command=lambda: self.launch_game(target))
 
     def launch_game(self, target):
         launcher = os.path.join(target, "DKBLauncher.exe")
         if not os.path.isfile(launcher):
-            launcher = os.path.join(target, "..", "DKBLauncher.exe")
-        if not os.path.isfile(launcher):
             launcher = os.path.join(target, "dkb.exe")
+        if not os.path.isfile(launcher):
+            launcher = os.path.join(target, "build", "dkb100", "DKBLauncher.exe")
+        if not os.path.isfile(launcher):
+            launcher = os.path.join(target, "build", "dkb100", "dkb.exe")
+        if not os.path.isfile(launcher):
+            launcher = os.path.join(target, "..", "DKBLauncher.exe")
             
         if os.path.isfile(launcher):
             import subprocess
             subprocess.Popen([launcher], cwd=os.path.dirname(launcher))
             self.destroy()
         else:
-            messagebox.showerror("Not Found", f"Executable not found at {launcher}")
+            messagebox.showerror("Not Found", f"Executable not found at {launcher}\nPlease ensure target installation folder contains dkb.exe.")
 
 def main():
     app = ModernDkbInstaller()
