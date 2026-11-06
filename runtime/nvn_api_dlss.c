@@ -566,6 +566,7 @@ static struct {
     VkImageView mv_view;
     VkImageView src_view;
     uint32_t buf_w, buf_h;
+    uint32_t buf_in_w, buf_in_h;
 } D;
 
 static void free_dlss_images(VkCtx *c) {
@@ -576,11 +577,11 @@ static void free_dlss_images(VkCtx *c) {
     if (D.depth_img) { vmaDestroyImage(c->vma, D.depth_img, D.depth_alloc); D.depth_img = VK_NULL_HANDLE; }
     if (D.mv_view) { vkDestroyImageView(c->device, D.mv_view, NULL); D.mv_view = VK_NULL_HANDLE; }
     if (D.mv_img) { vmaDestroyImage(c->vma, D.mv_img, D.mv_alloc); D.mv_img = VK_NULL_HANDLE; }
-    D.buf_w = D.buf_h = 0;
+    D.buf_w = D.buf_h = D.buf_in_w = D.buf_in_h = 0;
 }
 
 static int ensure_dlss_images(VkCtx *c, uint32_t ow, uint32_t oh, uint32_t iw, uint32_t ih) {
-    if (D.out_img && D.buf_w == ow && D.buf_h == oh) return 1;
+    if (D.out_img && D.buf_w == ow && D.buf_h == oh && D.buf_in_w == iw && D.buf_in_h == ih) return 1;
     vk_queue_lock();
     vkDeviceWaitIdle(c->device);
     vk_queue_unlock();
@@ -622,6 +623,8 @@ static int ensure_dlss_images(VkCtx *c, uint32_t ow, uint32_t oh, uint32_t iw, u
 
     D.buf_w = ow;
     D.buf_h = oh;
+    D.buf_in_w = iw;
+    D.buf_in_h = ih;
     return 1;
 }
 
@@ -694,18 +697,21 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
         }
         unsigned pr = dlss_hint_preset();
         int q = dlss_perf_quality();
+        p_setu(D.params, "CreationNodeMask", 1);
+        p_setu(D.params, "VisibilityNodeMask", 1);
+        p_setu(D.params, "Width", (unsigned)cw);
+        p_setu(D.params, "Height", (unsigned)ch);
+        p_setu(D.params, "OutWidth", dw);
+        p_setu(D.params, "OutHeight", dh);
+        p_seti(D.params, "PerfQualityValue", q);
+        p_seti(D.params, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 6));
+        p_seti(D.params, "DLSS.Enable.Output.Subrects", 0);
         p_setu(D.params, "DLSS.Hint.Render.Preset.DLAA", pr);
+        p_setu(D.params, "DLSS.Hint.Render.Preset.UltraQuality", pr);
         p_setu(D.params, "DLSS.Hint.Render.Preset.Quality", pr);
         p_setu(D.params, "DLSS.Hint.Render.Preset.Balanced", pr);
         p_setu(D.params, "DLSS.Hint.Render.Preset.Performance", pr);
         p_setu(D.params, "DLSS.Hint.Render.Preset.UltraPerformance", pr);
-        p_seti(D.params, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 6));
-        p_seti(D.params, "DLSS.Enable.Output.Subrects", 0);
-        p_setu(D.params, "InWidth", (unsigned)cw);
-        p_setu(D.params, "InHeight", (unsigned)ch);
-        p_setu(D.params, "OutWidth", dw);
-        p_setu(D.params, "OutHeight", dh);
-        p_seti(D.params, "PerfQualityValue", q);
 
         NgxResult r = N.create(cb, NGX_FEATURE_SUPERSAMPLING, D.params, &D.feat);
         if (!NGX_OK(r) || !D.feat) {
@@ -753,6 +759,9 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
     int sharp = cfg_int("TOTK_SHARPNESS");
     p_setf(D.params, "Sharpness", sharp > 0 ? (float)sharp / 100.0f : 0.0f);
     p_seti(D.params, "Reset", D.reset);
+    p_setp(D.params, "DLSS.Input.Bias.Current.Color.Mask", NULL);
+    p_setu(D.params, "DLSS.Input.Bias.Current.Color.Subrect.Base.X", 0);
+    p_setu(D.params, "DLSS.Input.Bias.Current.Color.Subrect.Base.Y", 0);
     p_setf(D.params, "MV.Scale.X", g_live_dlss_params.mv_scale_x != 0.0f ? g_live_dlss_params.mv_scale_x : 1.0f);
     p_setf(D.params, "MV.Scale.Y", g_live_dlss_params.mv_scale_y != 0.0f ? g_live_dlss_params.mv_scale_y : 1.0f);
     p_setu(D.params, "DLSS.Render.Subrect.Dimensions.Width", (unsigned)cw);
