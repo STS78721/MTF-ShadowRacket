@@ -53,8 +53,15 @@ Lowered *lower(const uint8_t *control, const uint8_t *code) {
     }
     const auto lowered = Shader::Ampere::LowerToMaxwell(native, "full");
     if (!lowered) {
-        rt_log("nvn2: Ampere lowering failed at +%#x: %.*s", lowered.error_offset, (int)lowered.error.size(),
-               lowered.error.data());
+        rt_log("nvn2: Ampere lowering failed shader %016llx stage %u code %#x at +%#x: %.*s",
+               (unsigned long long)gfx_shader_nvn2_hash(control, code), (w0 >> 10) & 15, code_len,
+               lowered.error_offset, (int)lowered.error.size(), lowered.error.data());
+        if (lowered.error == "native texture dimension query mode" && lowered.error_offset / 16 < native.size()) {
+            const auto &i = native[lowered.error_offset / 16];
+            rt_log("nvn2: TXQ fields op=%#x rd=%u ra=%u mask=%#x second_rd=%u tex=%u off=%#x mode=%#x reserved=%#x bit91=%u",
+                   i.Bits(0, 12), i.Bits(16, 8), i.Bits(24, 8), i.Bits(72, 4), i.Bits(64, 8), i.Bits(54, 5),
+                   i.Bits(40, 14), i.Bits(76, 14), i.Bits(59, 5), i.Bits(91, 1));
+        }
         return nullptr;
     }
 

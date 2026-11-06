@@ -353,25 +353,41 @@ static void ov_calc_size(Cpu *c) {
     ret_x(c, 0);
 }
 
-// A guest SystemEventType (manual clear) standing for the game object at `key`: the same one for the same object, so
-// movie after movie reuses the events instead of filling the kernel's table of bound events. Guest thread only.
-// ponytail: 64 objects, linear scan; the player has one decoder and 15 sync point events.
-static uint64_t event_for(Cpu *c, uint64_t key) {
-    static struct { uint64_t key, ev; } tab[64];
-    static int n;
-    static PlatMutex tlock = PLAT_MUTEX_INIT;
-    plat_mutex_lock(&tlock);
+// One manual-clear guest SystemEventType per decoder/event object. A SyncPointEventType is itself the storage passed to
+// CreateSyncPointEvent; the decoder's submission-ready event has no guest storage, so allocate one for it.
+static struct { uint64_t key, ev; } event_tab[64];
+static int event_n;
+static PlatMutex event_lock = PLAT_MUTEX_INIT;
+static uint64_t event_at(Cpu *c, uint64_t key, uint64_t storage) {
+    plat_mutex_lock(&event_lock);
     uint64_t ev = 0;
-    for (int i = 0; i < n && !ev; i++)
-        if (tab[i].key == key) ev = tab[i].ev;
+    for (int i = 0; i < event_n && !ev; i++)
+        if (event_tab[i].key == key) ev = event_tab[i].ev;
     if (!ev) {
-        if (n == 64) rt_fatal("codec: more than 64 decoder and sync point objects");
-        ev = (uint64_t)(uintptr_t)mem_kernel_alloc(0x100, 16);
-        tab[n].key = key, tab[n++].ev = ev;
+        if (event_n == 64) rt_fatal("codec: more than 64 decoder and sync point objects");
+        ev = storage;
+        event_tab[event_n].key = key, event_tab[event_n++].ev = ev;
     }
-    plat_mutex_unlock(&tlock);
-    kern_bind_system_event(c, ev, 0);   // once per event; leaves the event's handles in x0-x2
+    plat_mutex_unlock(&event_lock);
+    kern_bind_system_event(c, ev, 0);
     return ev;
+}
+static uint64_t event_for(Cpu *c, uint64_t key) {
+    plat_mutex_lock(&event_lock);
+    uint64_t ev = 0;
+    for (int i = 0; i < event_n && !ev; i++)
+        if (event_tab[i].key == key) ev = event_tab[i].ev;
+    plat_mutex_unlock(&event_lock);
+    if (!ev) ev = event_at(c, key, (uint64_t)(uintptr_t)mem_kernel_alloc(0x100, 16));
+    else kern_bind_system_event(c, ev, 0);
+    return ev;
+}
+
+static void codec_signal_event(Cpu *c, uint64_t ev) {
+    static uint64_t signal;
+    if (!signal && !(signal = ldr_symbol("_ZN2nn2os17SignalSystemEventEPNS0_15SystemEventTypeE")))
+        rt_fatal("codec: nn::os::SignalSystemEvent is not loaded");
+    rt_call(c, signal, 1, ev);
 }
 
 // Result GetVp9DecoderSubmissionReadyEvent(nn::os::SystemEventType **out, Vp9DecoderType *): signalled while the
@@ -380,7 +396,7 @@ static uint64_t event_for(Cpu *c, uint64_t key) {
 static void ov_vp9_ready_event(Cpu *c) {
     uint64_t *out = arg_p(c, 0), dec = arg_x(c, 1);
     uint64_t ev = event_for(c, dec);
-    kern_signal_system_event(ev);
+    codec_signal_event(c, ev);
     *out = ev;
     TRACE("submission-ready event %#llx handed out (signalled)", (unsigned long long)ev);
     ret_x(c, 0);
@@ -420,7 +436,7 @@ static void ov_vp9_submit(Cpu *c) {
     int n = decode_into(d, s, data, size, pts, end, wake);
     if (id) *id = d->seq;
     plat_mutex_unlock(&lock);
-    for (int k = 0; k < n; k++) kern_signal_system_event(wake[k]);
+    for (int k = 0; k < n; k++) codec_signal_event(c, wake[k]);
     ret_x(c, 0);
 }
 
@@ -454,10 +470,10 @@ static void ov_vp9_acquire(Cpu *c) {
     plat_mutex_unlock(&lock);
     if (got < 0) rt_log("codec: AcquireVp9DecoderOutputBuffer with every registered buffer reserved");
     else TRACE("acquire: buffer %d", got);
-    for (int k = 0; k < n; k++) kern_signal_system_event(wake[k]);
+    for (int k = 0; k < n; k++) codec_signal_event(c, wake[k]);
     // A reserved buffer lets the next packet in: wake a player that waits for the submission-ready event after a not
     // ready submission. Without this, the tutorial's guide movies stopped at their second picture.
-    if (got >= 0) kern_signal_system_event(event_for(c, key));
+    if (got >= 0) codec_signal_event(c, event_for(c, key));
     ret_x(c, got < 0 ? R_NOT_READY : 0);
 }
 
@@ -516,6 +532,30 @@ static void ov_read_nv12(Cpu *c) {
             memcpy(luv + r * uvp, uv + (size_t)(uy + r) * 2 * cw(s->w) + ux, n);
     }
     int64_t pts = s ? s->pts : -1;
+    static volatile int32_t image_stats;
+    static const int64_t stats_pts[] = {500000000ll, 1000000000ll, 2000000000ll, 5000000000ll, 10000000000ll, 20000000000ll};
+    int32_t stat_index = __atomic_load_n(&image_stats, __ATOMIC_RELAXED);
+    if (s && s->nv12 && stat_index < 6 && pts >= stats_pts[stat_index]) {
+        uint64_t sum = 0;
+        unsigned lo = 255, hi = 0, count = 0;
+        size_t pixels = (size_t)s->w * s->h;
+        for (size_t i = 0; i < pixels; i += pixels / 1024 ? pixels / 1024 : 1) {
+            unsigned yv = s->nv12[i];
+            sum += yv;
+            if (yv < lo) lo = yv;
+            if (yv > hi) hi = yv;
+            count++;
+        }
+        const uint8_t *uv = s->nv12 + pixels;
+        uint64_t uv_sum = 0;
+        unsigned uv_count = 0;
+        size_t chroma = 2 * (size_t)cw(s->w) * ch(s->h);
+        for (size_t i = 0; i < chroma; i += chroma / 1024 ? chroma / 1024 : 1) uv_sum += uv[i], uv_count++;
+        int32_t sample = __atomic_add_fetch(&image_stats, 1, __ATOMIC_RELAXED);
+        rt_log("codec: NV12 sample #%d pts %lld: Y mean %u range %u..%u, U mean %u",
+               sample, (long long)pts, count ? (unsigned)(sum / count) : 0, lo, hi,
+               uv_count ? (unsigned)(uv_sum / uv_count) : 0);
+    }
     plat_mutex_unlock(&lock);
     LOG_FIRST("codec: first NV12 read %ux%u (%s)", w, h, s ? "a decoded picture" : "no picture for this pool");
     TRACE("read pool %#llx: pts %lld", (unsigned long long)pool, (long long)pts);
@@ -533,7 +573,8 @@ static void ov_pool_image(Cpu *c) {
 // guest system event; a request is signalled at once, as the host has no sync point to wait for.
 // Result CreateSyncPointEvent(SyncPointEventType *)
 static void ov_sp_create(Cpu *c) {
-    event_for(c, arg_x(c, 0));
+    uint64_t key = arg_x(c, 0);
+    event_at(c, key, key);
     ret_x(c, 0);
 }
 // void InitializeMultiWaitHolder(nn::os::MultiWaitHolderType *, SyncPointEventType *): the system event's holder
@@ -552,6 +593,10 @@ static void ov_sp_trywait(Cpu *c) {
     uint64_t ev = event_for(c, arg_x(c, 0));
     ret_x(c, rt_call(c, trywait, 1, ev) & 1);
 }
+// The host AV1/VP9 decoder completes synchronously before signaling its guest event, so any fence polled by the
+// movie event manager is already complete. The SDK implementation otherwise dispatches through the uninitialized
+// console sync-point service backend.
+static void ov_sp_trywait_handle(Cpu *c) { ret_x(c, 1); }
 static void clear_event(Cpu *c, uint64_t ev) {
     static uint64_t clear;
     if (!clear && !(clear = ldr_symbol("_ZN2nn2os16ClearSystemEventEPNS0_15SystemEventTypeE")))
@@ -580,7 +625,7 @@ static void ov_sp_request(Cpu *c) {
         plat_mutex_unlock(&lock);
     }
     TRACE("sync point request %#x: %s", tok, now ? "signalled at once" : "waits for its picture");
-    if (now) kern_signal_system_event(ev);
+    if (now) codec_signal_event(c, ev);
 }
 // void CancelSyncPointEvent(SyncPointEventType *): the request is dropped and the event cleared
 static void ov_sp_cancel(Cpu *c) {
@@ -641,6 +686,7 @@ HOST_OVERRIDE("_ZN2nn6syncpt3sdk20CreateSyncPointEventEPNS1_18SyncPointEventType
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk25InitializeMultiWaitHolderEPNS_2os19MultiWaitHolderTypeEPNS1_18SyncPointEventTypeE",
               ov_sp_holder);
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk21TryWaitSyncPointEventEPKNS1_18SyncPointEventTypeE", ov_sp_trywait);
+HOST_OVERRIDE("_ZN2nn6syncpt3sdk16TryWaitSyncPointERKNS1_15SyncPointHandleE", ov_sp_trywait_handle);
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk21RequestSyncPointEventEPNS1_18SyncPointEventTypeERKNS1_15SyncPointHandleE",
               ov_sp_request);
 HOST_OVERRIDE("_ZN2nn6syncpt3sdk20CancelSyncPointEventEPNS1_18SyncPointEventTypeE", ov_sp_cancel);
@@ -665,7 +711,7 @@ static void ov_props2(Cpu *c) {
 // SystemEventType *Get{Vp9,Av1}DecoderSubmissionReadyEvent(Type *)
 static void ov_ready2(Cpu *c) {
     uint64_t ev = event_for(c, arg_x(c, 0));
-    kern_signal_system_event(ev);
+    codec_signal_event(c, ev);
     ret_x(c, ev);
 }
 // Result UnregisterXxxDecoderBuffer(Type *, u32 index)

@@ -1,4 +1,4 @@
-﻿#define COVER_best_destroy zbic_COVER_best_destroy
+#define COVER_best_destroy zbic_COVER_best_destroy
 #define COVER_best_finish zbic_COVER_best_finish
 #define COVER_best_init zbic_COVER_best_init
 #define COVER_best_start zbic_COVER_best_start

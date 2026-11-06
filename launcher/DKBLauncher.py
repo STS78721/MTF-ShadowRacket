@@ -41,6 +41,21 @@ def app_dir():
     return Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 
 
+def find_asset(filename):
+    candidates = [
+        resource_dir() / "assets" / filename,
+        app_dir() / "assets" / filename,
+        Path.cwd() / "assets" / filename,
+        resource_dir() / filename,
+        app_dir() / filename,
+        Path.cwd() / "launcher" / "assets" / filename,
+        Path(__file__).resolve().parent / "assets" / filename,
+    ]
+    for c in candidates:
+        if c.is_file(): return c
+    return None
+
+
 def open_folder(path):
     path = Path(path)
     path.mkdir(parents=True, exist_ok=True)
@@ -55,8 +70,8 @@ def play_ui_sound(kind):
     if not getattr(play_ui_sound, "enabled", True): return
     try:
         import winsound
-        sound = resource_dir() / "assets" / ("hover.wav" if kind == "hover" else "click.wav")
-        winsound.PlaySound(str(sound), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+        sound = find_asset("hover.wav" if kind == "hover" else "click.wav")
+        if sound: winsound.PlaySound(str(sound), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
     except Exception: pass
 
 
@@ -150,7 +165,7 @@ def find_game_dir(cfg):
     choices=[]
     if cfg.get("game_dir"): choices.append(Path(cfg["game_dir"]))
     if os.environ.get("DKB_GAME_DIR"): choices.append(Path(os.environ["DKB_GAME_DIR"]))
-    a=app_dir(); choices += [a/"jogo"/"build"/"dkb100",a/"build"/"dkb100",a/"GAME",a.parent/"build"/"dkb100",Path.cwd()/"build"/"dkb100"]
+    a=app_dir(); choices += [a, Path.cwd(), a/"jogo"/"build"/"dkb100", a/"build"/"dkb100", a/"GAME", a.parent/"build"/"dkb100", Path.cwd()/"build"/"dkb100"]
     for path in choices:
         if valid_game_dir(path): return path.resolve()
     return None
@@ -739,8 +754,8 @@ class DKBLauncherApp(tk.Tk):
     def move_to_monitor(self,monitor):place_window_on_monitor(self,monitor)
     def setup_background(self):
         self.canvas=tk.Canvas(self,width=1120,height=630,highlightthickness=0,bg=COLOR_BG_DARK); self.canvas.pack(fill=tk.BOTH,expand=True)
-        path=resource_dir()/"assets"/"bananza_background.png"
-        if not path.is_file():return
+        path = find_asset("bananza_background.png")
+        if not path: return
         try:
             im=Image.open(path).convert("RGBA").resize((1120,630),Image.Resampling.LANCZOS)
             overlay=Image.new("RGBA",im.size,(0,0,0,0)); draw=ImageDraw.Draw(overlay)
@@ -794,8 +809,9 @@ class DKBLauncherApp(tk.Tk):
             command += args
             p=subprocess.Popen(command,cwd=str(GAME_DIR),env=env,creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0) if command[0].lower().endswith("powershell.exe") else 0)
             if not self.keep_launcher_var.get():
-                self.after(900,self.safe_quit)
-            elif p.pid and not script.is_file():
+                self.withdraw()
+                self.after(2500,self.safe_quit)
+            if p.pid and not script.is_file():
                 threading.Thread(target=self._place_game_window,args=(p.pid,self.target_monitor),daemon=True).start()
         except Exception as exc:messagebox.showerror("Launch Error",f"Could not start dkb.exe:\n{exc}",parent=self)
     def _place_game_window(self,pid,monitor):
@@ -810,7 +826,13 @@ class DKBLauncherApp(tk.Tk):
                 found.clear(); user32.EnumWindows(callback(visit),0)
                 if found:break
                 time.sleep(.25)
-            if found:user32.SetWindowPos(found[0],None,monitor["left"],monitor["top"],monitor["monitor_width"],monitor["monitor_height"],0x0040|0x0010)
+            if found:
+                hwnd = found[0]
+                user32.ShowWindow(hwnd, 1) # SW_SHOWNORMAL
+                user32.SetForegroundWindow(hwnd)
+                user32.BringWindowToTop(hwnd)
+                user32.SetWindowPos(hwnd, -1, monitor["left"], monitor["top"], monitor["monitor_width"], monitor["monitor_height"], 0x0040 | 0x0001)
+                user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0040 | 0x0002 | 0x0001)
         except Exception:pass
     def check_for_updates(self):
         if getattr(self,"release_check_active",False):return

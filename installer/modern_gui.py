@@ -594,6 +594,21 @@ class ModernDkbInstaller(ctk.CTk):
                     except Exception as e:
                         self.log(f"  [!] Notice copying {ef}: {e}")
 
+            # Also copy assets directory (launcher background, sounds, icons)
+            src_assets = os.path.join(payload_dir, "assets")
+            if os.path.isdir(src_assets):
+                try:
+                    shutil.copytree(src_assets, os.path.join(target, "assets"), dirs_exist_ok=True)
+                    self.log("  -> Installed launcher assets.")
+                except Exception as e:
+                    self.log(f"  [!] Notice copying assets: {e}")
+            src_bin = os.path.join(payload_dir, "bin")
+            if os.path.isdir(src_bin):
+                try:
+                    shutil.copytree(src_bin, os.path.join(target, "bin"), dirs_exist_ok=True)
+                except Exception:
+                    pass
+
         # Deploy DKBLauncher.exe if not yet in target
         dst_launcher = os.path.join(target, "DKBLauncher.exe")
         if not os.path.isfile(dst_launcher):
@@ -642,10 +657,16 @@ class ModernDkbInstaller(ctk.CTk):
         elif src.lower().endswith(".nup"):
             self.log("[*] NUP container detected (.nup). Extracting package to target...")
             try:
-                tools_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tools"))
-                if os.path.isdir(tools_dir) and tools_dir not in sys.path:
-                    sys.path.insert(0, tools_dir)
-                from extract_nup import Nup, Zstd, pick, extract_tree
+                try:
+                    from installer.extract_nup import Nup, Zstd, pick, extract_tree
+                except ImportError:
+                    try:
+                        from extract_nup import Nup, Zstd, pick, extract_tree
+                    except ImportError:
+                        tools_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tools"))
+                        if os.path.isdir(tools_dir) and tools_dir not in sys.path:
+                            sys.path.insert(0, tools_dir)
+                        from extract_nup import Nup, Zstd, pick, extract_tree
                 nup = Nup(Path(src))
                 zstd = Zstd()
                 pkg = pick(nup, "base")
@@ -660,6 +681,8 @@ class ModernDkbInstaller(ctk.CTk):
         elif src.lower().endswith((".nsp", ".xci")):
             self.log("[*] Packed container selected (.nsp/.xci). Extracting with user keys...")
             hactool_candidates = [
+                os.path.join(payload_dir, "bin", "hactool.exe") if payload_dir else None,
+                os.path.join(target, "bin", "hactool.exe"),
                 r"C:\DK-Bananza-Instalador\jogo\bin\hactool.exe",
                 os.path.join(os.path.dirname(sys.executable), "bin", "hactool.exe"),
                 r"C:\Games\DKB PC\dkb-BANANAS\bin\hactool.exe",
@@ -667,16 +690,38 @@ class ModernDkbInstaller(ctk.CTk):
             ]
             hactool = next((h for h in hactool_candidates if h and os.path.isfile(h)), None)
             os.makedirs(dst_romfs, exist_ok=True)
+            dst_exefs = os.path.join(target, "exefs")
+            os.makedirs(dst_exefs, exist_ok=True)
             if hactool and keys:
-                cmd = [hactool, "-k", keys, f"--romfsdir={dst_romfs}", src]
+                cmd = [hactool, "-k", keys, f"--romfsdir={dst_romfs}", f"--exefsdir={dst_exefs}", src]
                 try:
                     res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
                     if res.returncode == 0:
-                        self.log("[✓] Successfully extracted RomFS from container.")
+                        self.log("[✓] Successfully extracted ExeFS and RomFS from container.")
                     else:
                         self.log(f"[*] Hactool result logged (code {res.returncode}).")
                 except Exception as e:
                     self.log(f"[!] Extraction notice: {e}")
+
+        # Fallback / validation: ensure exefs/main.npdm is in place
+        dst_npdm = os.path.join(target, "exefs", "main.npdm")
+        if not os.path.isfile(dst_npdm):
+            payload_exefs = os.path.join(payload_dir, "exefs") if payload_dir else None
+            if payload_exefs and os.path.isdir(payload_exefs):
+                try:
+                    self.log("[*] Deploying base ExeFS modules from package...")
+                    shutil.copytree(payload_exefs, os.path.join(target, "exefs"), dirs_exist_ok=True)
+                    self.log("[✓] ExeFS verified and installed.")
+                except Exception as e:
+                    self.log(f"[!] Notice copying ExeFS: {e}")
+
+        if not os.path.isfile(os.path.join(target, "exefs", "main.npdm")):
+            self.log("[!] ERROR: ExeFS (main.npdm) was not found in destination.")
+            messagebox.showerror("Installation Incomplete",
+                "Could not locate or extract the game ExeFS (main.npdm).\n\n"
+                "Please verify that your dump contains exefs/main.npdm or supply a valid .nup dump.")
+            self.btn_next.configure(state="normal", text="Retry Installation", command=self.start_install)
+            return
 
         self.progress_bar.set(0.35)
 
