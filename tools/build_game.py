@@ -772,7 +772,19 @@ def main():
         TOOLCHAIN_BIN = (args.toolchain / 'bin').resolve()
         CLANG = TOOLCHAIN_BIN / f'clang{suffix}'
         AR = TOOLCHAIN_BIN / f'llvm-ar{suffix}'
+        if not AR.is_file():
+            # MSYS2 UCRT64 keeps ar in the target triplet directory instead of bin/
+            ar = TOOLCHAIN_BIN.parent / 'x86_64-w64-mingw32' / 'bin' / f'ar{suffix}'
+            AR = ar if ar.is_file() else on_path('ar')
         WINDRES = TOOLCHAIN_BIN / 'llvm-windres.exe'
+        if not WINDRES.is_file():
+            # MSYS2 UCRT64 ships the binutils windres, not llvm-windres
+            WINDRES = TOOLCHAIN_BIN / f'windres{suffix}'
+        if WIN and not any((args.toolchain / p / 'libc++.a').is_file()
+                           for p in ('lib', 'x86_64-w64-mingw32/lib')):
+            # An MSYS2 UCRT64 tree has GCC's libstdc++ instead of libc++: the C++ sources
+            # compiled against its headers must link the matching runtime.
+            LLVM_LINK_LIBS[:] = LINK_LIBS
     if args.toolchain and WIN or args.deps and (args.toolchain or not WIN):   # Linux: --deps only, never deps-mingw
         DEPS = (args.deps or DEFAULT_DEPS).resolve()
         dlls = sorted((DEPS / 'bin').glob('*.dll')) if WIN else []
