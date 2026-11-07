@@ -38,7 +38,7 @@ static const Nvn2C0Layout *c0_lay;
 static const uint32_t (*c0_push)[NVN2_ROOT_WORDS];
 #define MAX_DESC 1024
 #define CHUNK_BYTES (4u << 20)
-#define ZERO_BYTES 65536u
+#define ZERO_BYTES 1048576u   // 1 MiB dummy buffer (was 64 KiB) to safely absorb unbacked/out-of-bounds GPU buffer stores
 #define SUPPORT_BYTES 1408u   // Ryujinx SupportBuffer (std140): alpha_test, is_bgra[8], viewport_inverse, viewport_size, ...
 #define NVN_STAGE_VS 0
 #define NVN_STAGE_FS 1
@@ -1273,9 +1273,8 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
                   r->cbuf_slot, r->handle * 4, st);
     }
     bi = zero_info(max);
-    // Vulkan requires a nonzero descriptor range. One byte is zero elements of the shader's uint runtime array;
-    // the guarded operation branches away without touching it. Unguarded users retain the existing 64 KiB dummy.
-    if (guarded) bi.range = 1;
+    // Vulkan requires a nonzero descriptor range. Both unguarded and guarded unbacked fallback users bind the full dummy buffer
+    // so any out-of-bounds writes (such as offset 0x1000) land safely in mapped zero storage without triggering GPU MMU page faults on AMD LLPC.
     return bi;
 }
 

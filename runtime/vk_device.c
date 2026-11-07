@@ -9,6 +9,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "vk.h"
+#include "vk_xess.h"
 #include "platform/platform.h"
 #include "nvn_api_dlss.h"
 
@@ -179,7 +180,22 @@ static int pick_device(void) {
             break;
         }
     free(qp);
-    rt_log("vk: using gpu %d: %s", best, g_vk.props.deviceName);
+    g_vk.gpu_is_nvidia = g_vk.props.vendorID == 0x10de;
+    g_vk.gpu_is_rtx50 = g_vk.gpu_is_nvidia &&
+                        (strstr(g_vk.props.deviceName, "RTX 50") != NULL || g_vk.props.deviceID >= 0x2b00);
+    g_vk.gpu_is_rtx40_plus = g_vk.gpu_is_rtx50 ||
+                             (g_vk.gpu_is_nvidia &&
+                              (strstr(g_vk.props.deviceName, "RTX 40") != NULL || g_vk.props.deviceID >= 0x2600));
+    g_vk.gpu_is_rx9000 = g_vk.props.vendorID == 0x1002 &&
+                         (strstr(g_vk.props.deviceName, "RX 90") != NULL || strstr(g_vk.props.deviceName, "RX90") != NULL);
+    g_vk.gpu_is_intel = g_vk.props.vendorID == 0x8086;
+    g_vk.gpu_is_intel_arc = g_vk.gpu_is_intel &&
+                            (strstr(g_vk.props.deviceName, "Arc") != NULL ||
+                             strstr(g_vk.props.deviceName, "ARC") != NULL ||
+                             strstr(g_vk.props.deviceName, "Battlemage") != NULL ||
+                             strstr(g_vk.props.deviceName, "Alchemist") != NULL);
+    rt_log("vk: using gpu %d: %s (nvidia=%d, rtx40+=%d, rtx50=%d, rx9000=%d, intel=%d, intel_arc=%d)", best, g_vk.props.deviceName,
+           g_vk.gpu_is_nvidia, g_vk.gpu_is_rtx40_plus, g_vk.gpu_is_rtx50, g_vk.gpu_is_rx9000, g_vk.gpu_is_intel, g_vk.gpu_is_intel_arc);
     vk_mem_class_log(&g_vk.props, &g_vk.mem_props);
     return 1;
 }
@@ -204,6 +220,7 @@ typedef struct {
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl;
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT fbl;
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr;
+    VkPhysicalDevicePresentIdFeaturesKHR pid;
 } FeatureChain;
 
 static int create_device(void) {
@@ -251,6 +268,16 @@ static int create_device(void) {
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
     // GPU breadcrumbs for a lost device (vk_crumbs.c): AMD's drivers and RADV report it.
     if (has_ext(ep, ne, VK_AMD_BUFFER_MARKER_EXTENSION_NAME)) { g_vk.has_buffer_marker = 1; ext[n_ext++] = VK_AMD_BUFFER_MARKER_EXTENSION_NAME; }
+    if (has_ext(ep, ne, VK_KHR_PRESENT_ID_EXTENSION_NAME) && has_ext(ep, ne, "VK_NV_low_latency2")) {
+        g_vk.has_nv_reflex = 1;
+        ext[n_ext++] = VK_KHR_PRESENT_ID_EXTENSION_NAME;
+        ext[n_ext++] = "VK_NV_low_latency2";
+        CHAIN(pid, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR);
+    }
+    if (has_ext(ep, ne, "VK_AMD_anti_lag")) {
+        g_vk.has_amd_antilag = 1;
+        ext[n_ext++] = "VK_AMD_anti_lag";
+    }
     // Graphics pipeline library: chained last so it can be dropped again when vk_caps_gpl declines it.
     void **gpl_link = NULL;
     if (has_ext(ep, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME) && has_ext(ep, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)) {
@@ -267,6 +294,11 @@ static int create_device(void) {
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &c->f2);
     vk_caps_driver(g_vk.phys);
     vk_caps_features(&c->f2.features);
+    c->f2.features.robustBufferAccess = VK_TRUE;
+    if (g_vk.has_robustness2) {
+        c->rob2.robustBufferAccess2 = VK_TRUE;
+        c->rob2.nullDescriptor = VK_TRUE;
+    }
     if (gpl_link) {
         VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT gp = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
@@ -347,7 +379,7 @@ static int create_device(void) {
 static long g_errors_total;     // outlives the device so the probe can print it after vk_shutdown
 
 static void destroy_all(void) {
-    gfx_window_release_vk();
+    vk_xess_release(); gfx_window_release_vk();
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
     if (g_vk.device) vk_clear_shutdown(g_vk.device);
     if (g_vk.device) vk_astc_release();
@@ -372,7 +404,7 @@ int vk_init(void) {
     plat_mutex_lock(&g_lock);
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
-        if (create_instance() && pick_device() && create_device()) g_ready = 1, vk_headroom_start(), vk_dlss_init();
+        if (create_instance() && pick_device() && create_device()) { g_ready = 1; vk_headroom_start(); vk_dlss_init(); vk_xess_init(); }
         else destroy_all();
     }
     int ok = g_ready;
@@ -500,3 +532,10 @@ int probe_vkdevice(void) {
     printf("probe-vkdevice: %s (validation errors %ld)\n", g_errors_total ? "FAILED" : "passed", g_errors_total);
     return g_errors_total ? 1 : 0;
 }
+int vk_gpu_is_nvidia(void) { return g_ready && g_vk.gpu_is_nvidia; }
+int vk_gpu_is_rtx40_plus(void) { return g_ready && g_vk.gpu_is_rtx40_plus; }
+int vk_gpu_is_rtx50(void) { return g_ready && g_vk.gpu_is_rtx50; }
+int vk_gpu_is_rx9000(void) { return g_ready && g_vk.gpu_is_rx9000; }
+int vk_gpu_is_intel(void) { return g_ready && g_vk.gpu_is_intel; }
+int vk_gpu_is_intel_arc(void) { return g_ready && g_vk.gpu_is_intel_arc; }
+int vk_has_amd_antilag(void) { return g_ready && g_vk.has_amd_antilag; }
