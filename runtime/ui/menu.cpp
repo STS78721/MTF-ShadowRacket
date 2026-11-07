@@ -56,6 +56,8 @@ int vk_gpu_is_rx9000(void);
 int vk_gpu_is_intel(void);
 int vk_gpu_is_intel_arc(void);
 int vk_has_amd_antilag(void);
+int vk_fsr3_available(void);
+int vk_fsr3_fg_available(void);
 int vk_xess_available(void);
 int vk_xess_is_xmx(void);
 int vk_xefg_available(void);
@@ -654,13 +656,14 @@ static void tab_screen(float scale) {
     opt_choice("DKB_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
     opt_group_text("AI Super Resolution & Anti-Aliasing");
     row_render_scale();
-    static const char *const up_vals[] = {"dlss", "xess", "fsr", "bilinear"};
+    static const char *const up_vals[] = {"dlss", "xess", "fsr3", "fsr", "bilinear"};
     const char *dp = cfg_value("DKB_DLSS_PRESET");
     const char *dlss_title = (!strcmp(dp, "preset_m") || !strcmp(dp, "preset_l")) ? "NVIDIA DLSS 4.5"
                            : (!strcmp(dp, "preset_k") || !strcmp(dp, "preset_j")) ? "NVIDIA DLSS 4"
                            : "NVIDIA DLSS 4 / 4.5";
-    const char *up_names[] = {dlss_title, "Intel XeSS 1.3 / 2.0+", menu_text(UI_MENU_UPSCALER_FSR), menu_text(UI_MENU_UPSCALER_BILINEAR)};
-    if (opt_choice_list("DKB_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 4, UI_MENU_UPSCALER_DESC)) {
+    const char *fsr3_title = vk_fsr3_available() ? "AMD FSR 3.1 (Hardware)" : "AMD FSR 3.1 (Universal)";
+    const char *up_names[] = {dlss_title, "Intel XeSS 1.3 / 2.0+", fsr3_title, "AMD FSR 1.0 (Native)", menu_text(UI_MENU_UPSCALER_BILINEAR)};
+    if (opt_choice_list("DKB_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 5, UI_MENU_UPSCALER_DESC)) {
         const char *u = cfg_value("DKB_UPSCALER");
         const char *rs = cfg_value("DKB_RENDER_SCALE");
         int is_100 = (!strcmp(rs, "100") || !strcmp(cfg_value("DKB_UPSCALER_PRESET"), "native"));
@@ -670,8 +673,9 @@ static void tab_screen(float scale) {
     const char *up = cfg_value("DKB_UPSCALER");
     bool is_dlss = !strcmp(up, "dlss");
     bool is_xess = !strcmp(up, "xess");
+    bool is_fsr3 = !strcmp(up, "fsr3");
     bool is_fsr = !strcmp(up, "fsr");
-    if (is_dlss || is_xess) {
+    if (is_dlss || is_xess || is_fsr3) {
         static const struct { const char *name, *label, *scale, *model; } p[] = {
             {"native", "Native / AA (100%)", "100", "preset_k"},
             {"quality", "Quality (67%)", "67", "preset_k"},
@@ -711,27 +715,19 @@ static void tab_screen(float scale) {
         opt_choice_list("DKB_XESS_QUALITY", UI_MENU_XESS_QUALITY, xess_vals, xess_names, 7,
                         UI_MENU_XESS_QUALITY_DESC, -1, xess_note);
     }
-    if (is_fsr) {
+    if (is_fsr || is_fsr3) {
         opt_slider("DKB_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     }
     opt_toggle("DKB_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
     opt_toggle("DKB_SMAA", UI_MENU_SMAA, UI_MENU_SMAA_DESC);
 
-    static const char *const ao_vals[] = {"off", "ssao", "hbao"};
-    static const char *const ao_names[] = {"Off", "SSAO (Fast Hemisphere)", "HBAO (Horizon-Based Physical)"};
-    opt_choice_list("DKB_AO", UI_MENU_AO, ao_vals, ao_names, 3, UI_MENU_AO_DESC);
-
-    const char *cur_ao = cfg_value("DKB_AO");
-    if (cur_ao && strcmp(cur_ao, "off") != 0 && strcmp(cur_ao, "0") != 0) {
-        opt_slider("DKB_AO_INTENSITY", UI_MENU_AO_INTENSITY, 0.1f, 3.0f, UI_MENU_AO_INTENSITY_DESC, 0.1f, "%.1fx");
-    }
-
     // Frame Generation / Super Motion (Nodix Super Motion and DLSS MFG)
     opt_group_text("Frame Generation (Nodix Super Motion and DLSS MFG)");
-    static const char *const fg_gen_vals[] = {"off", "dlss_fg", "xefg", "msm_fg"};
+    static const char *const fg_gen_vals[] = {"off", "dlss_fg", "fsr3_fg", "xefg", "msm_fg"};
     static const char *const fg_gen_names[] = {
         "Off",
         "DLSS MFG (NVIDIA RTX)",
+        "AMD FSR 3.1 FG (Universal)",
         "XeSS MFG (Intel Universal)",
         "MSM FG 1.1 (Nodix Compute)"
     };
@@ -739,12 +735,14 @@ static void tab_screen(float scale) {
     const char *cur_fg = cfg_value("DKB_FG_MODE");
     if (!strcmp(cur_fg, "dlss_fg")) {
         fg_note = vk_gpu_is_nvidia() ? "NVIDIA Hardware Optical Flow Active" : "Requires NVIDIA RTX GPU";
+    } else if (!strcmp(cur_fg, "fsr3_fg")) {
+        fg_note = vk_fsr3_fg_available() ? "AMD FidelityFX FSR 3.1 Optical Flow Active" : "AMD FSR 3.1 FG (Universal Fallback Active)";
     } else if (!strcmp(cur_fg, "xefg")) {
         fg_note = "Intel XeSS Frame Generation Active";
     } else if (!strcmp(cur_fg, "msm_fg")) {
         fg_note = "Nodix Compute Optical Flow Active";
     }
-    opt_choice_list("DKB_FG_MODE", UI_MENU_FG_MODE, fg_gen_vals, fg_gen_names, 4, UI_MENU_FG_MODE_DESC, -1, fg_note);
+    opt_choice_list("DKB_FG_MODE", UI_MENU_FG_MODE, fg_gen_vals, fg_gen_names, 5, UI_MENU_FG_MODE_DESC, -1, fg_note);
 
     if (strcmp(cur_fg, "off") != 0) {
         static const char *const mode_vals[] = {"fixed", "adaptive"};
@@ -1290,6 +1288,7 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
             bool is_dlaa = cfg_bool("DKB_DLAA") || !strcmp(cfg_value("DKB_UPSCALER_PRESET"), "native");
             bool is_dlss = !strcmp(up, "dlss");
             bool is_xess = !strcmp(up, "xess");
+            bool is_fsr3 = !strcmp(up, "fsr3");
             bool is_fsr = !strcmp(up, "fsr");
 
             unsigned out[2], scene[2];
@@ -1309,9 +1308,12 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
             } else if (is_xess) {
                 g_perf_theme = 3;
                 snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "XeSS 1.3 (%s)", cfg_value("DKB_UPSCALER_PRESET"));
+            } else if (is_fsr3) {
+                g_perf_theme = 1;
+                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "FSR 3.1 (%s)", cfg_value("DKB_UPSCALER_PRESET"));
             } else if (is_fsr) {
                 g_perf_theme = 1;
-                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "FSR 3 / RCAS");
+                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "FSR 1.0 (EASU)");
             } else {
                 g_perf_theme = 2;
                 snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "Native");
@@ -1404,6 +1406,9 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
         }
     } else if (!strcmp(cfg_value("DKB_UPSCALER"), "xess")) {
         snprintf(v[3], sizeof v[3], "Intel XeSS 1.3 (%s)", cfg_value("DKB_UPSCALER_PRESET"));
+    } else if (!strcmp(cfg_value("DKB_UPSCALER"), "fsr3")) {
+        int s = cfg_int("DKB_SHARPNESS");
+        snprintf(v[3], sizeof v[3], "AMD FSR 3.1 (%d%%, %s)", s < 0 ? 0 : s > 100 ? 100 : s, cfg_value("DKB_UPSCALER_PRESET"));
     } else if (t->scaler == 2) {
         int s = cfg_int("DKB_SHARPNESS");
         snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
@@ -1425,7 +1430,7 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     int fg_mult = vk_fg_active_multiplier();
     const char *fg_m = cfg_value("DKB_FG_MODE");
     if (fg_mult > 1 && fg_m && strcmp(fg_m, "off") != 0) {
-        const char *gen = !strcmp(fg_m, "dlss_fg") ? "DLSS MFG" : !strcmp(fg_m, "xefg") ? "XeSS MFG" : "MSM-FG 1.1";
+        const char *gen = !strcmp(fg_m, "dlss_fg") ? "DLSS MFG" : !strcmp(fg_m, "fsr3_fg") ? "FSR 3.1 FG" : !strcmp(fg_m, "xefg") ? "XeSS MFG" : "MSM-FG 1.1";
         snprintf(v[5], sizeof v[5], "%s (%dx Active)", gen, fg_mult);
     } else {
         snprintf(v[5], sizeof v[5], "Off");

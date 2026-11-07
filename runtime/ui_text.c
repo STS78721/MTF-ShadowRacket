@@ -63,7 +63,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_UPSCALER] = "Scaling to the window",
     [UI_MENU_UPSCALER_DESC] = "How the picture is scaled when the window is larger than the game resolution. FSR keeps "
                               "edges and detail sharper than bilinear.",
-    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_BILINEAR] = "Bilinear",
+    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_UPSCALER_FSR3_DESC] = "AMD FidelityFX Super Resolution 3.1 with decoupled temporal upscaling and frame pacing.",
+    [UI_MENU_UPSCALER_BILINEAR] = "Bilinear",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; nvngx_dlss.dll next to dkb.exe): smoother "
                           "edges and higher frame rates with AI reconstruction.",
@@ -410,7 +412,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_UPSCALER] = "Масштабирование под окно",
     [UI_MENU_UPSCALER_DESC] = "Как картинка растягивается, когда окно больше разрешения игры. FSR сохраняет края и "
                               "детали чётче билинейного.",
-    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_BILINEAR] = "Билинейное",
+    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_FSR3] = "AMD FSR 3.1",
+    [UI_MENU_UPSCALER_FSR3_DESC] = "AMD FidelityFX Super Resolution 3.1 с раздельным масштабированием и генерацией кадров.",
+    [UI_MENU_UPSCALER_BILINEAR] = "Билинейное",
     [UI_MENU_ASPECT] = "Подгонка картинки под окно",
     [UI_MENU_ASPECT_DESC] = "Когда форма окна отличается от разрешения игры (картинка 16:9 на экране 21:9): сохранить "
                             "форму картинки с чёрными полосами или растянуть её на всё окно. Обзор камеры не расширяется.",

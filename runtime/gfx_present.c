@@ -25,8 +25,8 @@
 #include "nvn_api.h"
 #include "nvn_api_dlss.h"
 #include "vk_xess.h"
+#include "vk_fsr3.h"
 #include "vk_smaa.h"
-#include "vk_ao.h"
 #include "ui/menu.h"
 #include "vk.h"
 #include "platform/platform.h"
@@ -465,6 +465,11 @@ static void fg_apply_locked(void) {
     if (!strcmp(mode, "dlss_fg") && !c->gpu_is_nvidia) {
         eff_mode = "msm_fg";
         hw_gate = "FALLBACK (DLSS MFG requires NVIDIA RTX GPU -> running Nodix MSM-FG)";
+    } else if (!strcmp(mode, "fsr3_fg")) {
+        if (!vk_fsr3_fg_available()) {
+            eff_mode = "msm_fg";
+            hw_gate = "FALLBACK (AMD FSR 3.1 FG DLL not found -> running universal Nodix MSM-FG 1.1 Compute)";
+        }
     }
     int mult = !strcmp(mult_s, "6x") ? 6 : !strcmp(mult_s, "4x") ? 4 : !strcmp(mult_s, "3x") ? 3 : 2;
     if (mult > 2 && !strcmp(eff_mode, "dlss_fg") && !c->gpu_is_rtx50) {
@@ -479,6 +484,7 @@ static void fg_apply_locked(void) {
         const char *mname = !strcmp(eff_mode, "dlss_fg") ? (c->gpu_is_rtx50 && mult > 2 ? "NVIDIA DLSS 4.5 Multi-Frame Gen"
                                                                                         : "NVIDIA DLSS Frame Generation")
                           : !strcmp(eff_mode, "xefg") ? "Intel XeSS Frame Generation"
+                          : !strcmp(eff_mode, "fsr3_fg") ? "AMD FidelityFX FSR 3.1 Frame Generation"
                           : !strcmp(eff_mode, "msm_fg") ? "Nodix Super Motion (MSM-FG 1.1 Compute)"
                           : "FSR Frame Generation";
         const char *pname = !strcmp(preset, "preset_c") ? "Performance · Preset C"
@@ -892,40 +898,44 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
-    // 1. Ambient Occlusion (DKB_AO: ssao / hbao):
-    VkImage ao_img = general ? vk_ao_record(cb, slot, src, fmt, w, h, rect) : VK_NULL_HANDLE;
-    const int zrect[4] = {0, 0, cw, ch};
+    // 1. Colour adjustment (DKB_COLOR_*, vk_color.c): an adjusted copy of the crop takes the game image's place below
+    VkImage graded = general ? vk_color_record(cb, slot, src, fmt, rect) : VK_NULL_HANDLE;
+    const int grect[4] = {0, 0, cw, ch};
+    VkImage smaa_src = graded ? graded : src;
+    VkFormat smaa_fmt = graded ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
+    const int *smaa_rect = graded ? grect : rect;
+    int smaa_w = graded ? cw : w;
+    int smaa_h = graded ? ch : h;
 
-    VkImage col_src = ao_img ? ao_img : src;
-    VkFormat col_fmt = ao_img ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
-    const int *col_rect = ao_img ? zrect : rect;
-
-    // 2. Colour adjustment (DKB_COLOR_*, vk_color.c):
-    VkImage graded = general ? vk_color_record(cb, slot, col_src, col_fmt, col_rect) : VK_NULL_HANDLE;
-    VkImage smaa_src = graded ? graded : col_src;
-    VkFormat smaa_fmt = (graded || ao_img) ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
-    const int *smaa_rect = (graded || ao_img) ? zrect : rect;
-    int smaa_w = (graded || ao_img) ? cw : w;
-    int smaa_h = (graded || ao_img) ? ch : h;
-
-    // 3. Subpixel Morphological Anti-Aliasing (DKB_SMAA):
+    // 2. Subpixel Morphological Anti-Aliasing (DKB_SMAA, vk_smaa.c):
     VkImage smaa_img = general ? vk_smaa_record(cb, slot, smaa_src, smaa_fmt, smaa_w, smaa_h, smaa_rect) : VK_NULL_HANDLE;
 
-    int intermediate = (ao_img || graded || smaa_img);
+    int intermediate = (graded || smaa_img);
     VkImage psrc = smaa_img ? smaa_img : smaa_src;
     VkFormat pfmt = intermediate ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
-    const int *prect = intermediate ? zrect : rect;
+    const int *prect = intermediate ? grect : rect;
     int pw = intermediate ? cw : w;
     int ph = intermediate ? ch : h;
 
-    // DLSS / XeSS / FSR / Bilinear upscaler:
-    int dlss = 0;
-    if (general && !strcmp(cfg_value("DKB_UPSCALER"), "dlss")) {
-        dlss = vk_dlss_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
+    // DLSS / XeSS / FSR 3.1 / FSR 1 / Bilinear upscaler:
+    int upscaler_done = 0;
+    const char *cfg_upscaler = cfg_value("DKB_UPSCALER");
+    if (!cfg_upscaler || !*cfg_upscaler) cfg_upscaler = cfg_value("TOTK_UPSCALER");
+
+    if (general && !strcmp(cfg_upscaler, "dlss")) {
+        upscaler_done = vk_dlss_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
+    } else if (general && (!strcmp(cfg_upscaler, "fsr3") || !strcmp(cfg_upscaler, "fsr3.1"))) {
+        upscaler_done = vk_fsr3_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
+        if (!upscaler_done) {
+            // Enhanced FSR fallback
+            upscaler_done = vk_fsr_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
+        }
+    } else if (general && (!strcmp(cfg_upscaler, "fsr") || !strcmp(cfg_upscaler, "fsr1"))) {
+        upscaler_done = vk_fsr_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
     }
-    int fsr = !dlss && general && vk_fsr_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
-    g_scaler = dlss ? 3 : fsr ? 2 : (cw != to[2] || ch != to[3]);
-    if (!dlss && !fsr) {
+
+    g_scaler = (!strcmp(cfg_upscaler, "dlss") && upscaler_done) ? 3 : upscaler_done ? 2 : (cw != to[2] || ch != to[3]);
+    if (!upscaler_done) {
         if (general)   // a GENERAL source (vk_texture.c images): earlier submissions' writes become visible to the blit here
             sync_barrier(cb, psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -1061,9 +1071,9 @@ void gfx_window_release_vk(void) {
         g_flip_on = 0;   // its blit is done (device idle); the swapchain goes away unpresented
         menu_vk_release();
         vk_fsr_release();
+        vk_fsr3_release();
         vk_xess_release();
         vk_smaa_release();
-        vk_ao_release();
         vk_color_release();
         free_capture();
         free_thumbs();

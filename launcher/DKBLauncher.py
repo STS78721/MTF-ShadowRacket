@@ -688,7 +688,7 @@ class DKBSettingsDialog(tk.Toplevel):
         messagebox.showinfo("Display Profile","Applied DKB's fit aspect mode and a wider camera view. This setting does not rewrite RomFS or HUD files.",parent=self)
     def build_upscale_tab(self):
         f=self.tab_upscale
-        self.create_row_dropdown(f,"Upscaler Technology","upscaler",["dlss","xess","fsr","bilinear"],"dlss","Upscaler: NVIDIA DLSS 4.5 (RTX GPUs), Intel XeSS 1.3 / XeLL, AMD FSR, or Bilinear.")
+        self.create_row_dropdown(f,"Upscaler Technology","upscaler",["dlss","xess","fsr3","fsr","bilinear"],"dlss","Upscaler: NVIDIA DLSS 4.5 (RTX GPUs), Intel XeSS 1.3 / XeLL, AMD FSR 3.1, AMD FSR 1.0, or Bilinear.")
         self.create_row_dropdown(f,"DLSS / Upscaler Preset","upscaler_preset",["native","quality","balanced","performance","ultra_performance"],"quality","Preset: Native / DLAA (100%), Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%).")
         self.create_row_dropdown(f,"DLSS Model Generation","dlss_preset",["preset_k","preset_j","preset_m","preset_l","default"],"preset_k","Model: DLSS 4 (Preset K/J), DLSS 4.5 Perf (Preset M), DLSS 4.5 UltraPerf (Preset L).")
         self.create_row_dropdown(f,"Low-Latency Mode","reflex",["boost","on","off"],"boost","Low Latency: NVIDIA Reflex (Boost/On), AMD Anti-Lag 2, Intel XeLL.")
@@ -698,7 +698,7 @@ class DKBSettingsDialog(tk.Toplevel):
         self.create_row_dropdown(f,"Device Profile","device_profile",["auto","desktop","deck"],"auto","Use the runtime's automatic desktop profile or select a preset profile.")
         self.create_row_dropdown(f,"Shader Pipeline Policy","pipe_wait",["default","draw"],"default","Default waits only when needed; Draw prioritizes avoiding pipeline stalls.")
         self.create_row_toggle(f,"Prebuild Vulkan Pipelines","pipe_prebuild","1","Build reusable Vulkan pipelines before play when supported.")
-        self._section_note(f,"NVIDIA DLSS 4.5, Intel XeSS 1.3 / XeLL, AMD FSR, NVIDIA Reflex, and AI Frame Generation are fully wired into DKB.")
+        self._section_note(f,"NVIDIA DLSS 4.5, Intel XeSS 1.3 / XeLL, AMD FSR 3.1, NVIDIA Reflex, and AI Frame Generation are fully wired into DKB.")
 
         def on_preset_changed(_e=None):
             p = self.vars["upscaler_preset"].get()
@@ -730,8 +730,6 @@ class DKBSettingsDialog(tk.Toplevel):
         self.create_row_dropdown(f,"Color Gamma","color_gamma",["0.8","0.9","1.0","1.1","1.2"],"1.0","Gamma adjustment.")
         self.create_row_toggle(f,"SMAA 1x Anti-Aliasing","smaa","0","Subpixel Morphological Anti-Aliasing: High-quality morphological edge smoothing with zero blur or ghosting.")
         self.create_row_toggle(f,"FXAA Anti-Aliasing","fxaa","1","Game's built-in FXAA edge smoothing. Can be disabled when using SMAA 1x or DLAA.")
-        self.create_row_dropdown(f,"Ambient Occlusion","ao",["off","ssao","hbao"],"off","Contact Shadows: SSAO (Fast Poisson hemisphere) or HBAO (Physically accurate horizon ray-marching).")
-        self.create_row_slider(f,"Ambient Occlusion Intensity","ao_intensity",1,30,10,"x","Darkness and depth of ambient occlusion contact shadows (0.1x to 3.0x).")
         self.create_row_toggle(f,"High-FPS Realtime Physics","realtime","1","Unlocks game physics calculation tickrate for smooth 60+ FPS without slow motion.")
         self.create_row_toggle(f,"Realtime Cloth & Fur Physics","cloth_realtime","1","Evaluates Donkey Kong fur and cloth physics in real time at high refresh rates.")
         self.create_row_toggle(f,"High-FPS Camera Smoothing Fix","highfps_fix","1","Fixes camera tracking jitter and maintains smooth animation pacing.")
@@ -808,7 +806,17 @@ class DKBSettingsDialog(tk.Toplevel):
         updates["low_latency"] = updates.get("reflex", "boost")
         fg = updates.get("frame_gen", "0")
         updates["frame_gen"] = fg
-        updates["fg_mode"] = "dlss_fg" if fg == "1" else "off"
+        if fg == "1":
+            if u == "fsr3":
+                updates["fg_mode"] = "fsr3_fg"
+            elif u == "xess":
+                updates["fg_mode"] = "xefg"
+            elif u == "dlss":
+                updates["fg_mode"] = "dlss_fg"
+            else:
+                updates["fg_mode"] = "msm_fg"
+        else:
+            updates["fg_mode"] = "off"
         try:
             save_ini_settings(INI_PATH,updates)
             self.parent_app.launcher_cfg["target_display"]=self.target_monitor["device"]

@@ -27,6 +27,13 @@ VENDOR_SDK_FILES = [
     {"name": "libxess_fg.dll", "desc": "Intel XeSS Frame Generation", "vendor": "Intel"},
     {"name": "libxell.dll", "desc": "Intel Low Latency", "vendor": "Intel"},
     {"name": "libxess_dx11.dll", "desc": "Intel XeSS DX11 Bridge", "vendor": "Intel"},
+
+    # AMD FidelityFX FSR 3.1 stack
+    {"name": "amd_fidelityfx_vk.dll", "desc": "AMD FidelityFX FSR 3.1 Vulkan Native", "vendor": "AMD"},
+    {"name": "amd_fidelityfx_dx12.dll", "desc": "AMD FidelityFX FSR 3.1 DirectX 12 Backend", "vendor": "AMD"},
+    {"name": "amd_fidelityfx_upscaler_vk.dll", "desc": "AMD FidelityFX FSR 3.1 Upscaler", "vendor": "AMD"},
+    {"name": "amd_fidelityfx_framegeneration_vk.dll", "desc": "AMD FidelityFX FSR 3.1 Decoupled Frame Generation", "vendor": "AMD"},
+    {"name": "sl.fsr3.dll", "desc": "AMD Streamline FSR 3 plugin", "vendor": "AMD"},
 ]
 
 def find_local_sdk_cache(dll_name: str) -> Optional[str]:

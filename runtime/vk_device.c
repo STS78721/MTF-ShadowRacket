@@ -11,6 +11,7 @@
 #include "host.h"
 #include "vk.h"
 #include "vk_xess.h"
+#include "vk_fsr3.h"
 #include "platform/platform.h"
 #include "nvn_api_dlss.h"
 
@@ -415,7 +416,7 @@ static int create_device(void) {
 static long g_errors_total;     // outlives the device so the probe can print it after vk_shutdown
 
 static void destroy_all(void) {
-    vk_xess_release(); gfx_window_release_vk();
+    vk_fsr3_release(); vk_xess_release(); gfx_window_release_vk();
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
     if (g_vk.device) vk_clear_shutdown(g_vk.device);
     if (g_vk.device) vk_astc_release();
@@ -440,7 +441,7 @@ int vk_init(void) {
     plat_mutex_lock(&g_lock);
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
-        if (create_instance() && pick_device() && create_device()) { g_ready = 1; vk_headroom_start(); vk_dlss_init(); vk_xess_init(); }
+        if (create_instance() && pick_device() && create_device()) { g_ready = 1; vk_headroom_start(); vk_dlss_init(); vk_xess_init(); vk_fsr3_init(); }
         else destroy_all();
     }
     int ok = g_ready;
