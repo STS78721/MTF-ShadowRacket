@@ -644,7 +644,6 @@ static void vertex_input(const VkPipeState *s, VtxInput *v) {
 }
 
 int vk_pipeline_vertex_input_dynamic(void) { return ensure_init() && P.dyn_vi; }
-VkPipelineCache vk_pipeline_cache(void) { return ensure_init() ? P.cache : VK_NULL_HANDLE; }
 
 PFN_vkCmdPushDescriptorSetKHR vk_pipeline_push_fn(void) { return ensure_init() ? P.push : NULL; }
 PFN_vkCmdPushDescriptorSetWithTemplateKHR vk_pipeline_push_tpl_fn(void) { return ensure_init() && P.tpl ? P.tpl_push : NULL; }
@@ -3633,8 +3632,8 @@ int vk_pipeline_warm_shaders(void) {
     char prp[PLAT_PATH_MAX * 2 + 32];
     snprintf(prp, sizeof prp, "%s/shader-prepared.bin", dir);
     if (!plat_file_exists(prp)) {
-        fprintf(stderr, "warm-shaders: no %s (tools/prepare_shaders.py writes it)\n", prp);
-        return 1;
+        // Prepare shaders into cache if prepared bundle is not present
+        return vk_pipeline_prepare_shaders();
     }
     lb_warm_prepared(dir);
     return 0;

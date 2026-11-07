@@ -240,11 +240,17 @@ def save_ini_settings(path, updates):
                 if "=" in line and line.split("=",1)[0].strip().casefold()==key.casefold():
                     lines[i]=f"{key} = {value}\n"; found=True; break
             if not found:
-                section_exists=any(line.strip().casefold()==f"[{target_section}]" for line in lines)
-                if not section_exists:
-                    if lines and lines[-1].strip():lines.append("\n")
+                sec_idx = -1
+                for idx, line in enumerate(lines):
+                    if line.strip().casefold() == f"[{target_section}]":
+                        sec_idx = idx
+                        break
+                if sec_idx != -1:
+                    lines.insert(sec_idx + 1, f"{key} = {value}\n")
+                else:
+                    if lines and lines[-1].strip(): lines.append("\n")
                     lines.append(f"[{target_section}]\n")
-                lines.append(f"{key} = {value}\n")
+                    lines.append(f"{key} = {value}\n")
         else:
             for i,line in enumerate(lines):
                 stripped=line.lstrip()
@@ -602,9 +608,13 @@ class DKBSettingsDialog(tk.Toplevel):
         threading.Thread(target=self._prewarm_worker,daemon=True).start()
     def _prewarm_worker(self):
         try:
+            logs_dir = GAME_DIR / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
             p=subprocess.run([str(GAME_DIR/"dkb.exe"),"--warm-shaders"],cwd=str(GAME_DIR),capture_output=True,text=True,timeout=1800)
+            log_content = f"=== DKB Shader Pre-Warm Log ===\nExit Code: {p.returncode}\n\n[STDOUT]\n{p.stdout}\n\n[STDERR]\n{p.stderr}\n"
+            (logs_dir / "prewarm.log").write_text(log_content, encoding="utf-8")
             if p.returncode==0:message,color="Shader cache preparation completed.",COLOR_ACCENT_GREEN
-            else:message,color=f"Shader pre-warm failed (exit {p.returncode}). Check the DKB logs folder.","#ff7373"
+            else:message,color=f"Shader pre-warm failed (exit {p.returncode}). Check logs/prewarm.log.","#ff7373"
         except Exception as exc:message,color=f"Shader pre-warm failed: {exc}","#ff7373"
         try:self.after(0,lambda:self._finish_prewarm(message,color))
         except tk.TclError:pass
@@ -931,11 +941,8 @@ class DKBLauncherApp(tk.Tk):
                 time.sleep(.25)
             if found:
                 hwnd = found[0]
-                user32.ShowWindow(hwnd, 1) # SW_SHOWNORMAL
                 user32.SetForegroundWindow(hwnd)
                 user32.BringWindowToTop(hwnd)
-                user32.SetWindowPos(hwnd, -1, monitor["left"], monitor["top"], monitor["monitor_width"], monitor["monitor_height"], 0x0040 | 0x0001)
-                user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0040 | 0x0002 | 0x0001)
         except Exception:pass
     def check_for_updates(self):
         if getattr(self,"release_check_active",False):return

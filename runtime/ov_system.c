@@ -99,7 +99,13 @@ const char *ov_language(void) {
         if (!strcmp(code, "zh-TW")) return "zh-Hant";
         for (size_t i = 0; i < sizeof codes / sizeof *codes; i++)
             if (!strcmp(code, codes[i])) return codes[i];
-        rt_fatal("TOTK_LANG '%s' is not a Switch language code", code);
+        const char *norm = switch_language(code);
+        if (norm && *norm) {
+            rt_log("oe: language '%s' mapped to Switch code '%s'", code, norm);
+            return norm;
+        }
+        rt_log("oe: warning: language '%s' not recognized, defaulting to en-US", code);
+        return "en-US";
     }
     const char *tag = cfg_get("TOTK_LOCALE");
     char sys[85] = "en-US";
@@ -829,22 +835,15 @@ static void ov_account_offline(Cpu *c) { ret_x(c, 0x1f4000u | 124u); }   // acco
 static void ov_report_send(Cpu *c) {
     int64_t n = plat_inc64(&reports);
     if (n % 100 == 1) rt_log("prepo: play report kept local (not sent), %lld so far", (long long)n);
-    // Return an already-completed context with no implementation. The OOT
-    // SDK's guest AsyncContext handles this synchronously; a failure result
-    // can send its completion path into an uninitialized event/mutex.
-    uint64_t *out = (uint64_t *)(uintptr_t)c->x[8];
+    void *out = (void *)(uintptr_t)c->x[8];
     if (out) memset(out, 0, 16);
+    ret_x(c, c->x[8]);
 }
 static void ov_async_event(Cpu *c) {
     uint64_t ev = arg_x(c, 1);
-    if (ev && !*(uint8_t *)(uintptr_t)(ev + 0x28)) {
-        static uint64_t create, signal;
-        if (!create) {
-            create = ldr_symbol("_ZN2nn2os17CreateSystemEventEPNS0_15SystemEventTypeENS0_14EventClearModeEb");
-            signal = ldr_symbol("_ZN2nn2os17SignalSystemEventEPNS0_15SystemEventTypeE");
-        }
-        rt_call(c, create, 3, ev, (uint64_t)0, (uint64_t)0);
-        rt_call(c, signal, 1, ev);
+    if (ev) {
+        kern_bind_system_event(c, ev, 0);
+        kern_signal_system_event(ev);
     }
     ret_x(c, 0);
 }
@@ -1061,7 +1060,9 @@ HOST_OVERRIDE("_ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_", ov_nsd_resolve);
 HOST_OVERRIDE("_ZN2nn2ro12ProtectRelroEPKvS2_S2_S2_S2_", ov_noop);
 HOST_OVERRIDE("_ZN2nn2pl17RequestLoadNxFontEPvm", ov_noop);
 HOST_OVERRIDE("_ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE", ov_report_send);
-HOST_OVERRIDE("_ZN2nn5prepo10PlayReport4SendEv", ov_report_send);
+HOST_OVERRIDE("_ZN2nn5prepo12AsyncContext18GetCompletionEventEPNS_2os11SystemEventE", ov_async_event);
+HOST_OVERRIDE("_ZN2nn5prepo12AsyncContext9GetResultEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn5prepo12AsyncContextD1Ev", ov_noop);
 HOST_OVERRIDE("_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERKNS0_10UserHandleE", ov_account_offline);
 HOST_OVERRIDE("_ZN2nn7account36EnsureNetworkServiceAccountAvailableERKNS0_10UserHandleE", ov_account_offline);
 HOST_OVERRIDE("_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_10UserHandleE", ov_account_offline);

@@ -273,7 +273,7 @@ static int hex32(const char *h, uint8_t out[32]) {        // 64 hex digits, then
 static void xlate_identity(void) {
     char text[256] = "";
     const char *how = "TOTK_XLATE_ID";
-    const char *id_env = cfg_get("TOTK_XLATE_ID");
+    const char *id_env = cfg_get("DKB_XLATE_ID") ? cfg_get("DKB_XLATE_ID") : cfg_get("TOTK_XLATE_ID");
     if (id_env && *id_env && strlen(id_env) < sizeof text) {
         strcpy(text, id_env);
         if (!hex32(text, xlate_id)) rt_sha256(text, strlen(text), xlate_id);
@@ -285,7 +285,7 @@ static void xlate_identity(void) {
         strcat(p, ".id");
         uint64_t size = 0;
         char *f = (char *)read_file(p, &size);
-        how = "totk_xlate.id";
+        how = "dkb_xlate.id";
         if (!f || !hex32(f, xlate_id)) {
             uint8_t *exe = read_file(xlate_exe, &size);
             how = exe ? "sha256 of the exe; tools/build_xlate.py writes totk_xlate.id" : "none: no translator";
@@ -311,19 +311,28 @@ static void init_paths(void *param) {
         for (char *cut = plat_last_sep(exe); cut; cut = plat_last_sep(exe)) {
             *cut = 0;
             char probe[PATH_CAP + 32];
+            snprintf(probe, sizeof probe, "%s/build/xlate/dkb_xlate" PLAT_EXE_SUFFIX, exe);
+            if (file_exists(probe)) { strcpy(root, exe); break; }
             snprintf(probe, sizeof probe, "%s/build/xlate/totk_xlate" PLAT_EXE_SUFFIX, exe);
-            if (file_exists(probe)) {
-                strcpy(root, exe);
-                break;
-            }
+            if (file_exists(probe)) { strcpy(root, exe); break; }
         }
     }
-    const char *xlate_cfg = cfg_get("TOTK_XLATE"), *cache_cfg = cfg_get("TOTK_SHADER_CACHE");
-    char beside[PATH_CAP + 32];   // a packaged folder (tools/package_build.py) keeps the translator next to totk.exe
-    if (exe_dir[0]) snprintf(beside, sizeof beside, "%s/totk_xlate" PLAT_EXE_SUFFIX, exe_dir);
+    const char *xlate_cfg = cfg_get("DKB_XLATE");
+    if (!xlate_cfg || !*xlate_cfg) xlate_cfg = cfg_get("TOTK_XLATE");
+    const char *cache_cfg = cfg_get("DKB_SHADER_CACHE");
+    if (!cache_cfg || !*cache_cfg) cache_cfg = cfg_get("TOTK_SHADER_CACHE");
+    char beside[PATH_CAP + 32], beside_old[PATH_CAP + 32];
+    if (exe_dir[0]) {
+        snprintf(beside, sizeof beside, "%s/dkb_xlate" PLAT_EXE_SUFFIX, exe_dir);
+        snprintf(beside_old, sizeof beside_old, "%s/totk_xlate" PLAT_EXE_SUFFIX, exe_dir);
+    }
     if (xlate_cfg && *xlate_cfg && strlen(xlate_cfg) < sizeof xlate_exe) strcpy(xlate_exe, xlate_cfg);
     else if (exe_dir[0] && file_exists(beside)) strcpy(xlate_exe, beside);
-    else if (root[0]) snprintf(xlate_exe, sizeof xlate_exe, "%s/build/xlate/totk_xlate" PLAT_EXE_SUFFIX, root);
+    else if (exe_dir[0] && file_exists(beside_old)) strcpy(xlate_exe, beside_old);
+    else if (root[0]) {
+        snprintf(xlate_exe, sizeof xlate_exe, "%s/build/xlate/dkb_xlate" PLAT_EXE_SUFFIX, root);
+        if (!file_exists(xlate_exe)) snprintf(xlate_exe, sizeof xlate_exe, "%s/build/xlate/totk_xlate" PLAT_EXE_SUFFIX, root);
+    }
     if (cache_cfg && *cache_cfg && strlen(cache_cfg) < sizeof cache_dir) strcpy(cache_dir, cache_cfg);
     else if (exe_dir[0]) snprintf(cache_dir, sizeof cache_dir, "%s/shader-cache", exe_dir);
     xlate_identity();
@@ -377,7 +386,7 @@ static void child_stop(Svc *v) {
 static int child_start(Svc *v) {
     paths();
     if (!xlate_exe[0] || !file_exists(xlate_exe)) {
-        rt_log("gfx_shader: translator not found (%s); set TOTK_XLATE", xlate_exe[0] ? xlate_exe : "<none>");
+        rt_log("gfx_shader: translator not found (%s); set DKB_XLATE", xlate_exe[0] ? xlate_exe : "<none>");
         return 0;
     }
     uint32_t err = 0;
@@ -2769,6 +2778,8 @@ int gfx_shader_prepare_seed(const char *dir, int threads, int procs) {
     char ans[PATH_CAP + 32], prg[PATH_CAP + 32], out[PATH_CAP + 32];
     snprintf(ans, sizeof ans, "%s/seed-answers.bin", dir);
     snprintf(prg, sizeof prg, "%s/seed-programs.bin", dir);
+    if (!plat_file_exists(ans)) snprintf(ans, sizeof ans, "%s/shader-answers.bin", dir);
+    if (!plat_file_exists(prg)) snprintf(prg, sizeof prg, "%s/shader-programs.bin", dir);
     snprintf(out, sizeof out, "%s/shader-prepared.bin", dir);
     double t0 = (double)plat_now_ms();
     uint64_t fail0 = (uint64_t)n_failures;
