@@ -12,6 +12,20 @@ Modeled directly after our flagship **SteelTempSaint ToTK Recomp** architecture 
 
 ### 🔥 What's New in Patch Alpha 1b (Community Tester Hotfix)
 
+* **🛡️ AMD RDNA 4 / RX 9070 XT GPU Page Fault at 0x1000 Fix (`runtime/vk_exec_draw.c`, `runtime/vk_rec.c`, `runtime/vk_device.c`):**
+  * Expanded zero buffer `ZERO_BYTES` from 64 KiB to 1 MiB (`1048576u`) and removed 1-byte dummy truncation (`bi.range = 1`) on unbacked/guarded storage buffers, safely absorbing rogue/unbacked GPU buffer stores and completely eliminating hardware GPU MMU page faults (`write invalid at 0x1000, precision 0x1000`) on AMD GPUs with LLPC compiler.
+  * Restored AMD safety check in `rec_begin()` to disable the asynchronous Vulkan recorder thread by default on AMD hardware (`VK_RECORDER = 0`), preventing asynchronous command queue crashes on RX 9070 XT.
+  * Explicitly enabled `robustBufferAccess` and `robustBufferAccess2` / `nullDescriptor` in device feature chains.
+* **🍌 Launcher Alpha 1b Branding & Update Checker (`launcher/DKBLauncher.py`):**
+  * Updated version string to `Alpha 1b` across launcher title bar, headers, and footer strings.
+  * `CHECK FOR UPDATES` now recognizes `Alpha 1b` as current and reports `"Your DKB is up to date (Alpha 1b)"` in green instead of showing a redundant update prompt.
+  * Fixed window resolution and fullscreen setting persistence so launcher settings are strictly respected on game boot.
+* **⚡ Shader Pre-Warm Execution & Logging (`runtime/gfx_shader.c`, `runtime/vk_pipeline.c`, `launcher/DKBLauncher.py`):**
+  * Enabled automatic fallback from seed files to `shader-answers.bin` and `shader-programs.bin`, allowing `dkb.exe --warm-shaders` to automatically prepare all 2,519 variants and write `shader-prepared.bin`.
+  * Prewarm tool failures now output full diagnostic logs directly to `logs/prewarm.log`.
+* **🌐 Locale Normalization & Crash Fix (`runtime/ov_system.c`):**
+  * Mapped non-exact BCP-47 locale codes (e.g. `ru-RU` -> `ru`, `fr-FR` -> `fr`, `es-ES` -> `es`) with automatic fallback to `en-US`, resolving the fatal startup crash on non-English systems.
+
 * **🔊 In-Game F1 Sound & Controls Menu Crash Fix (`runtime/cfg.c`, `runtime/ui/menu.cpp`):**
   * Added missing settings table entries (`AUDIO_CHANNELS`, `DUALSENSE`, `DUALSENSE_TRIGGERS`, `DUALSENSE_TRIGGER_STRENGTH`, `DUALSENSE_AUDIO`, `DUALSENSE_AUDIO_MODE`, `DUALSENSE_VOL`, `DUALSENSE_HAPTICS`, `SPIN`, `VRAM_HEADROOM`) to `known[]`, `sections[]`, and `metas[]` in `runtime/cfg.c`.
   * Added resilient fallback in `cfg_value()` to log a warning instead of calling `rt_fatal()`, completely eliminating crashes when switching to the Sound or Controls tabs in the in-game `F1` menu.
