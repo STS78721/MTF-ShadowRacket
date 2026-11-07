@@ -4,6 +4,19 @@ All notable changes to the **SteelTempSaint Donkey Kong Bananza PC Recomp (DKB)*
 
 ---
 
+## [Alpha 1b] - 2026-11-07
+
+### 🔥 Community Tester Hotfixes (Alpha 1b)
+- **Cross-Vendor Cutscene Fault Protection (`runtime/vk_exec_draw.c`):**
+  - Enabled `light_quad_fault_skip` across all GPU vendors (AMD RDNA 4 / RX 9070 XT / Radeon 890M, NVIDIA RTX, and Intel Arc) instead of restricting to NVIDIA (`vendorID == 0x10de`), fixing `VK_ERROR_DEVICE_LOST` during the opening cutscene on AMD Radeon GPUs.
+- **Native 30 / 60 FPS Timing Cap (`runtime/frame_rate.c`, `runtime/cfg.c`, `runtime/ui/menu.cpp`, `launcher/DKBLauncher.py`):**
+  - Locked selectable and parsed Frame Rate Limits to **30 FPS** and **60 FPS** (clamping any legacy `120` or `display` values in `dkb.ini` to `60`). Prevents game speed-up above 60 FPS and fixes the `"Golden Bananas?!"` intro transition freeze.
+- **Installer & Launcher RomFS Packing + Pre-Flight Validation (`installer/modern_gui.py`, `launcher/DKBLauncher.py`):**
+  - Fixed loose `romfs/` to `romfs/romfs.bin` packing in `modern_gui.py` and added 1-click loose `romfs/` auto-packing in `DKBLauncher.exe`.
+  - Added smart dump directory resolution and strict verification for `exefs/main`, `exefs/sdk`, and `romfs/romfs.bin`.
+
+---
+
 ## [Alpha 1] - 2026-11-07
 
 ### 🌟 Initial Alpha 1 Release Highlights

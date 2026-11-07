@@ -1,16 +1,29 @@
-## 🍌 Alpha 1: Modern Setup Wizard, Standalone Launcher, Multi-Vendor AI Upscalers & Pre-Tested Cutscene/Terrain Fixes ⚡
+## 🍌 Alpha 1b: Cross-Vendor Cutscene Stability (AMD RDNA 4 / NVIDIA / Intel), Native 30/60 FPS Timing Cap & Smart RomFS Packer ⚡
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/STS78721/dkb-BANANAS/bananza/launcher/launcher_showcase.png" alt="SteelTemple DKB Standalone Launcher" width="90%">
 </p>
 
-Welcome to **Alpha 1**, the inaugural public testing release of the **SteelTempSaint Donkey Kong Bananza PC Recomp (DKB)**!
+Welcome to **Alpha 1b**, our community-verified hotfix & inaugural public testing release of the **SteelTempSaint Donkey Kong Bananza PC Recomp (DKB)**!
 
 Modeled directly after our flagship **SteelTempSaint ToTK Recomp** architecture and modern PlayStation/Nixxes PC ports, this release transforms *Donkey Kong Bananza* (Nintendo Switch 2) into a native Windows x86-64 Vulkan 1.3 application—complete with a sleek Banana Gold & Jungle Setup Wizard, our standalone `DKBLauncher.exe`, multi-vendor AI upscaling (NVIDIA DLSS 4.5 / Intel XeSS 1.3 / AMD FSR / DLAA), NVIDIA Reflex & Anti-Lag 2, and all pre-tested fixes for cutscenes, skyboxes, and destructible terrain.
 
 ---
 
-### 🌟 What's New & Pre-Tested in Alpha 1
+### 🔥 What's New in Patch Alpha 1b (Community Tester Hotfix)
+
+* **🛡️ Cross-Vendor Cutscene Light-Quad Fault Guard (`runtime/vk_exec_draw.c`):**
+  * Extended the NVN 2 instanced light-quad fault guard (`light_quad_fault_skip`) across **all GPU vendors (AMD RDNA 4 / RX 9070 XT / Radeon 890M, NVIDIA RTX, and Intel Arc)** instead of only NVIDIA (`0x10de`), resolving the `vkQueueSubmit2` device-lost crash during the opening cutscene on AMD RDNA GPUs.
+* **⏱️ Strict 30 / 60 FPS Native Timing Cap (`runtime/frame_rate.c`, `runtime/cfg.c`, `runtime/ui/menu.cpp`, `launcher/DKBLauncher.py`):**
+  * Restricted the Frame Rate Limit in the runtime, in-game `F1` menu, and `DKBLauncher.exe` to **30 FPS** and **60 FPS** (and automatically clamps legacy `120` / `display` settings in `dkb.ini` to **60 FPS**).
+  * Fixes game speed-up and prevents the `"Golden Bananas?!"` intro transition screen from stalling on 120 Hz+ configurations.
+* **📦 Automatic Loose RomFS Packer & Smart Dump Folder Resolution (`installer/modern_gui.py`, `launcher/DKBLauncher.py`):**
+  * Fixed automatic packing of loose `romfs/` files into `romfs/romfs.bin` during setup and added a 1-click prompt in `DKBLauncher.exe` to auto-pack loose `romfs/` files on launch.
+  * Added smart dump folder detection (automatically resolves parent folders, `exefs/` or `romfs/` subfolders, and `.nup` containers) and strict post-install verification for `exefs/main`, `exefs/sdk`, and `romfs/romfs.bin`.
+
+---
+
+### 🌟 Core Pre-Tested Features in Alpha 1 / 1b
 
 #### 1. 🛠️ Pre-Tested NVIDIA Cutscene & Save-Load Stability (`runtime/vk_exec_draw.c`)
 * **Eliminated `VK_ERROR_DEVICE_LOST` (`instruction pointer (invalid)`) Crashes:** Fixed the GPU device loss that occurred on NVIDIA drivers (`617.14`–`621.01`) during save loading and the *Ingot Isle Cave-In* cutscenes.
@@ -49,14 +62,14 @@ Modeled directly after our flagship **SteelTempSaint ToTK Recomp** architecture 
 
 Choose one of the packages below:
 
-1. **`SteelTemple-DKB-Alpha1-Full-Setup-Wizard.exe`** (~442 MB) *(or **`DKB-Setup.zip`**)* — **[Recommended Interactive Installer]**
+1. **`SteelTemple-DKB-Alpha1b-Full-Setup-Wizard.exe`** (~442 MB) *(or **`DKB-Setup.zip`**)* — **[Recommended Interactive Installer]**
    * Interactive 4-step Windows Setup Wizard that unpacks/links your game dump, deploys `DKBLauncher.exe`, `dkb.exe`, pre-warmed shader caches, and multi-vendor AI upscaler SDKs (DLSS 4.5, XeSS 1.3, Reflex), configures controller prompts, and creates your Desktop shortcut.
 
-2. **`SteelTemple-DKB-Alpha1-Portable-StandAlone.zip`** (~445 MB) — **[Zero-Install Portable Package]**
+2. **`SteelTemple-DKB-Alpha1b-Portable-StandAlone.zip`** (~445 MB) — **[Zero-Install Portable Package]**
    * Pre-packaged, zero-install standalone environment. Includes `DKBLauncher.exe`, `dkb.exe`, pre-warmed shader/pipeline caches, and all vendor upscaler DLLs.
    * Simply extract to any folder (e.g. `C:\Games\DKB PC`), copy your dumped **`romfs/`** and **`exefs/`** (from Base v1.0.0) into the folder, and run `DKBLauncher.exe`.
 
-3. **`SteelTemple-DKB-Alpha1-Update.zip`** (~150 MB) — **[Drop-In Engine & Launcher Update]**
+3. **`SteelTemple-DKB-Alpha1b-Update.zip`** (~100 MB) — **[Drop-In Engine & Launcher Update]**
    * Lightweight update containing the latest `dkb.exe`, `DKBLauncher.exe`, core DLLs, and `CONTROLLER_GUIDE.txt` for existing installations. Extract over your game folder and overwrite when prompted. Preserves your save files and `dkb.ini`.
 
 > [!IMPORTANT]
