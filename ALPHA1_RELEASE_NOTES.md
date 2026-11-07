@@ -18,6 +18,8 @@ Modeled directly after our flagship **SteelTempSaint ToTK Recomp** architecture 
 * **📊 Full Performance Overlay (`F10`) Real-Time Metrics Alignment (`runtime/perfmon.h`, `runtime/perfmon.c`, `runtime/ui/menu.cpp`):**
   * Rebuilt all runtime objects from source, resolving an 8-byte struct offset shift (`low1_fps` / `low01_fps`) in `PerfStats`.
   * Fixes corrupted telemetry numbers on AMD Radeon and NVIDIA cards (`301 °C`, `2490 W`, `16304 MHz`, `game 11009%`, `0.0 GB VRAM`) and restores proper full-width layout for GPU, CPU, and Controller names.
+* **🛡️ Windows TDR GPU Reset Prevention on Long Pipeline Builds (`runtime/vk_exec_draw.c`):**
+  * Capped `ONESHOT_WAIT_MS` from 30 seconds to 1.5 seconds. When the GPU driver encounters an intensive shader compilation during level/cutscene transitions or area loading on AMD or integrated GPUs, the render thread no longer blocks past the 2-second Windows TDR watchdog limit (`VK_ERROR_DEVICE_LOST` / `-4`). The draw gracefully skips for a frame while background pipeline compilation completes without crashing the GPU driver.
 * **🛡️ Cross-Vendor Cutscene Light-Quad Fault Guard (`runtime/vk_exec_draw.c`):**
   * Extended the NVN 2 instanced light-quad fault guard (`light_quad_fault_skip`) across **all GPU vendors (AMD RDNA 4 / RX 9070 XT / Radeon 890M, NVIDIA RTX, and Intel Arc)** instead of only NVIDIA (`0x10de`), resolving the `vkQueueSubmit2` device-lost crash during the opening cutscene on AMD RDNA GPUs.
 * **⏱️ Strict 30 / 60 FPS Native Timing Cap (`runtime/frame_rate.c`, `runtime/cfg.c`, `runtime/ui/menu.cpp`, `launcher/DKBLauncher.py`):**
