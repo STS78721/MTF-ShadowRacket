@@ -37,6 +37,14 @@ typedef struct VkCtx {
         has_address_binding_report,         // VK_EXT_device_address_binding_report enabled (with the checkpoints, vk_crumbs.c)
         has_pipeline_exec_info,             // VK_KHR_pipeline_executable_properties enabled (with the checkpoints, vk_crumbs.c)
         debug_utils,                       // VK_EXT_debug_utils enabled on the instance (validation or the checkpoints)
+        has_nv_reflex,
+        has_amd_antilag,
+        gpu_is_nvidia,
+        gpu_is_rtx40_plus,
+        gpu_is_rtx50,
+        gpu_is_rx9000,
+        gpu_is_intel,
+        gpu_is_intel_arc,
         has_astc_ldr;                       // textureCompressionASTC_LDR (enabled when reported)
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
@@ -67,6 +75,14 @@ void vk_caps_features(VkPhysicalDeviceFeatures *f);   // before vkCreateDevice (
 int vk_caps_gpl(const VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT *f,
                 const VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT *p);
 void vk_caps_init(VkCtx *c);                          // after it: pretend limits, fallbacks, the boot report
+
+int vk_gpu_is_nvidia(void);
+int vk_gpu_is_rtx40_plus(void);
+int vk_gpu_is_rtx50(void);
+int vk_gpu_is_rx9000(void);
+int vk_gpu_is_intel(void);
+int vk_gpu_is_intel_arc(void);
+int vk_has_amd_antilag(void);
 
 VkCtx *vk_ctx(void);                        // NULL until vk_init() succeeded
 int vk_init(void);                          // idempotent; 1 on success, 0 on failure (reason logged with rt_log)
@@ -236,6 +252,7 @@ void vk_usnap_end(uint64_t fence);
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
 void vk_usnap_drop(uint64_t addr, uint64_t n);   // the replay makes the GPU write [addr, addr+n) of guest memory
 uint64_t vk_usnap_gen(void);                      // changes whenever a binding may resolve differently
+const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n);
 void vk_usnap_shutdown(void);                     // vk_exec_draw_shutdown: frees the arenas
 void vk_mem_mirror_begin(void);
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
