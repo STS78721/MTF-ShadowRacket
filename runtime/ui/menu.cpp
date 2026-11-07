@@ -48,6 +48,20 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
+// Vulkan & GPU capabilities
+int vk_gpu_is_nvidia(void);
+int vk_gpu_is_rtx40_plus(void);
+int vk_gpu_is_rtx50(void);
+int vk_gpu_is_rx9000(void);
+int vk_gpu_is_intel(void);
+int vk_gpu_is_intel_arc(void);
+int vk_has_amd_antilag(void);
+int vk_xess_available(void);
+int vk_xess_is_xmx(void);
+int vk_xefg_available(void);
+int vk_xell_available(void);
+int vk_fg_active_multiplier(void);
+
 double frame_step_limit_hz(void);
 extern const int rt_game_version;
 // fs.h (romfs.c): romfs-patches-xbox was next to romfs-index.bin at start, and was loaded.
@@ -223,7 +237,7 @@ static void make_context(void) {
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
-    io.BackendPlatformName = "totk_menu";
+    io.BackendPlatformName = "dkb_menu";
     style_init(g_base_style);
     ImGui::GetStyle() = g_base_style;
     g_ctx_ok = 1;
@@ -357,34 +371,34 @@ extern "C" void menu_vk_release(void) {
 }
 
 // ---- test hooks
-// TOTK_MENU_TEST=<frame>[:<frames per page>]: at that presented frame the menu opens on its first tab; each tab stays
-// <frames per page> frames (default 30) and its last frame's swapchain image goes to TOTK_MENU_TEST_DIR (default: the
+// DKB_MENU_TEST=<frame>[:<frames per page>]: at that presented frame the menu opens on its first tab; each tab stays
+// <frames per page> frames (default 30) and its last frame's swapchain image goes to DKB_MENU_TEST_DIR (default: the
 // working directory) as menu-test-<frame>-<page>.png; after the last tab the menu closes.
-// TOTK_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
-// optional) at that presented frame; changes live settings with no input, menu open or not. totk.ini is written only by
+// DKB_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
+// optional) at that presented frame; changes live settings with no input, menu open or not. dkb.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
 enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_MENU, TAB_ADVANCED, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
     int parsed;
-    uint64_t at;          // TOTK_MENU_TEST frame; 0 none
+    uint64_t at;          // DKB_MENU_TEST frame; 0 none
     uint64_t per_page;
     uint64_t opened;      // the frame the hook opened the menu; 0 not yet
     int page;             // the tab being shot; -1 none
     TestSet sets[TEST_SETS];
-    int n_sets, next_set; // TOTK_MENU_TEST_SET, in frame order
+    int n_sets, next_set; // DKB_MENU_TEST_SET, in frame order
 } g_test = {0, 0, 0, 0, -1, {}, 0, 0};
 
 static void test_parse(void) {
     g_test.parsed = 1;
-    if (const char *e = cfg_get("TOTK_MENU_TEST")) {
+    if (const char *e = cfg_get("DKB_MENU_TEST")) {
         long long at = atoll(e), per = 0;
         if (const char *c = strchr(e, ':')) per = atoll(c + 1);
         g_test.at = at > 0 ? (uint64_t)at : 0;
         g_test.per_page = per > 0 ? (uint64_t)per : TEST_PAGE_FRAMES;
     }
-    const char *s = cfg_get("TOTK_MENU_TEST_SET");
+    const char *s = cfg_get("DKB_MENU_TEST_SET");
     while (s && *s) {   // groups "<frame>:<key>=<value>,..." separated by ';'
         char *end;
         unsigned long long f = strtoull(s, &end, 10);
@@ -397,7 +411,7 @@ static void test_parse(void) {
                 TestSet &t = g_test.sets[g_test.n_sets++];
                 t.frame = f;
                 int kn = (int)(eq - s), vn = (int)(s + n - eq - 1);
-                snprintf(t.key, sizeof t.key, "%s%.*s", strncmp(s, "TOTK_", 5) ? "TOTK_" : "", kn, s);
+                snprintf(t.key, sizeof t.key, "%s%.*s", strncmp(s, "DKB_", 5) ? "DKB_" : "", kn, s);
                 snprintf(t.value, sizeof t.value, "%.*s", vn, eq + 1);
             }
             s += n;
@@ -415,7 +429,7 @@ static void test_apply_sets(uint64_t frame) {
     for (; g_test.next_set < g_test.n_sets && g_test.sets[g_test.next_set].frame <= frame; g_test.next_set++) {
         const TestSet &t = g_test.sets[g_test.next_set];
         rt_log("menu: test hook: frame %llu: %s=%s", (unsigned long long)frame, t.key, t.value);
-        if (!strcmp(t.key, "TOTK_SAVE")) rt_log("menu: test hook: cfg_save %s", cfg_save() ? "wrote" : "failed");
+        if (!strcmp(t.key, "DKB_SAVE")) rt_log("menu: test hook: cfg_save %s", cfg_save() ? "wrote" : "failed");
         else cfg_set(t.key, t.value);
     }
 }
@@ -445,10 +459,10 @@ static const int kSizes[][2] = {{1280, 720}, {1366, 768}, {1600, 900}, {1920, 10
 enum { MAX_SIZES = sizeof kSizes / sizeof *kSizes + 1 };
 
 static void row_window_size(void) {
-    if (cfg_bool("TOTK_FULLSCREEN")) opt_disable_next(UI_MENU_WINDOWED_ONLY);
+    if (cfg_bool("DKB_FULLSCREEN")) opt_disable_next(UI_MENU_WINDOWED_ONLY);
     int sz[MAX_SIZES][2], n = 0, mw = 0, mh = 0, cw = 0, ch = 0;
     int have = gfx_window_monitor_size(&mw, &mh);
-    int cur_ok = sscanf(cfg_value("TOTK_WINDOW_SIZE"), "%dx%d", &cw, &ch) == 2;
+    int cur_ok = sscanf(cfg_value("DKB_WINDOW_SIZE"), "%dx%d", &cw, &ch) == 2;
     bool listed = false;
     for (size_t i = 0; i < sizeof kSizes / sizeof *kSizes; i++) {
         int w = kSizes[i][0], h = kSizes[i][1];
@@ -471,7 +485,7 @@ static void row_window_size(void) {
         pv[i] = vals[i];
         pn[i] = shown[i];
     }
-    opt_choice_list("TOTK_WINDOW_SIZE", UI_MENU_WINDOW_SIZE, pv, pn, n, UI_MENU_WINDOW_SIZE_DESC);
+    opt_choice_list("DKB_WINDOW_SIZE", UI_MENU_WINDOW_SIZE, pv, pn, n, UI_MENU_WINDOW_SIZE_DESC);
 }
 
 // The game resolution (resolution.c): 16:9 sizes from its smallest, 1280x720 (for weak GPUs), up, the common 21:9 and
@@ -491,7 +505,7 @@ static void row_output_res(void) {
         snprintf(shown[i], sizeof shown[i], "%d × %d", w, h);   // U+00D7, the multiplication sign
         names[i] = shown[i];
     }
-    opt_choice_list("TOTK_OUTPUT_RES", UI_MENU_OUTPUT_RES, vals, names, N, UI_MENU_OUTPUT_RES_DESC);
+    opt_choice_list("DKB_OUTPUT_RES", UI_MENU_OUTPUT_RES, vals, names, N, UI_MENU_OUTPUT_RES_DESC);
 }
 
 static void row_render_scale(void) {
@@ -504,27 +518,27 @@ static void row_render_scale(void) {
         snprintf(shown[i], sizeof shown[i], "%s %%", vals[i]);
         names[i] = shown[i];
     }
-    if (opt_choice_list("TOTK_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC)) {
-        const char *rs = cfg_value("TOTK_RENDER_SCALE");
+    if (opt_choice_list("DKB_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC)) {
+        const char *rs = cfg_value("DKB_RENDER_SCALE");
         if (!strcmp(rs, "100")) {
-            cfg_set("TOTK_UPSCALER_PRESET", "native");
-            cfg_set("TOTK_DLAA", "1");
+            cfg_set("DKB_UPSCALER_PRESET", "native");
+            cfg_set("DKB_DLAA", "1");
         } else if (!strcmp(rs, "67")) {
-            cfg_set("TOTK_UPSCALER_PRESET", "quality");
-            cfg_set("TOTK_DLAA", "0");
+            cfg_set("DKB_UPSCALER_PRESET", "quality");
+            cfg_set("DKB_DLAA", "0");
         } else if (!strcmp(rs, "58")) {
-            cfg_set("TOTK_UPSCALER_PRESET", "balanced");
-            cfg_set("TOTK_DLAA", "0");
+            cfg_set("DKB_UPSCALER_PRESET", "balanced");
+            cfg_set("DKB_DLAA", "0");
         } else if (!strcmp(rs, "50")) {
-            cfg_set("TOTK_UPSCALER_PRESET", "performance");
-            cfg_set("TOTK_DLSS_PRESET", "preset_m");
-            cfg_set("TOTK_DLAA", "0");
+            cfg_set("DKB_UPSCALER_PRESET", "performance");
+            cfg_set("DKB_DLSS_PRESET", "preset_m");
+            cfg_set("DKB_DLAA", "0");
         } else if (!strcmp(rs, "33")) {
-            cfg_set("TOTK_UPSCALER_PRESET", "ultra_performance");
-            cfg_set("TOTK_DLSS_PRESET", "preset_l");
-            cfg_set("TOTK_DLAA", "0");
+            cfg_set("DKB_UPSCALER_PRESET", "ultra_performance");
+            cfg_set("DKB_DLSS_PRESET", "preset_l");
+            cfg_set("DKB_DLAA", "0");
         } else {
-            cfg_set("TOTK_DLAA", "0");
+            cfg_set("DKB_DLAA", "0");
         }
         cfg_save();
     }
@@ -540,7 +554,7 @@ static void row_gpu(void) {
         vals[i + 1] = idx[i];
         names[i + 1] = g_gpu_names[i];
     }
-    opt_choice_list("TOTK_GPU_INDEX", UI_MENU_GPU, vals, names, g_gpu_n + 1, UI_MENU_GPU_DESC);
+    opt_choice_list("DKB_GPU_INDEX", UI_MENU_GPU, vals, names, g_gpu_n + 1, UI_MENU_GPU_DESC);
 }
 
 // The game language: one entry per language TotK ships (a Switch code that names it), each under its own name. The
@@ -556,34 +570,26 @@ static void row_game_lang(void) {
     const char *vals[N], *names[N];
     vals[0] = "";
     names[0] = menu_text(UI_MENU_GAME_LANG_AUTO);
-    const char *now = cfg_value("TOTK_LANG");
+    const char *now = cfg_value("DKB_LANG");
     int cur = *now ? -1 : 0;
     for (int i = 1; i < N; i++) {
         vals[i] = langs[i - 1].code;
         names[i] = menu_text(langs[i - 1].name);
         if (*now && !strcmp(ui_text_lang(now), ui_text_lang(vals[i]))) cur = i;   // en-GB is English too
     }
-    opt_choice_list("TOTK_LANG", UI_MENU_GAME_LANG, vals, names, N, UI_MENU_GAME_LANG_DESC, cur);
+    opt_choice_list("DKB_LANG", UI_MENU_GAME_LANG, vals, names, N, UI_MENU_GAME_LANG_DESC, cur);
 }
 
 // The frame limit (frame_rate.c): unset, the older fps60 = 0 still means 30. The monitor choice shows the rate it gives.
 static void row_fps_limit() {
-    // 40 and 45: the Steam Deck's screen runs at 40 to 60 Hz (the OLED to 90); 40 divides 40 and 120 Hz evenly
-    static const char *const vals[] = {"30", "40", "45", "60", "90", "120", "144", "display"};
-    static const UiTextId ids[] = {UI_MENU_FPS_30, UI_MENU_FPS_40,  UI_MENU_FPS_45,  UI_MENU_FPS_60,
-                                   UI_MENU_FPS_90, UI_MENU_FPS_120, UI_MENU_FPS_144, UI_MENU_FPS_DISPLAY};
+    static const char *const vals[] = {"30", "60"};
+    static const UiTextId ids[] = {UI_MENU_FPS_30, UI_MENU_FPS_60};
     enum { N = sizeof vals / sizeof *vals };
     const char *names[N];
     for (int i = 0; i < N; i++) names[i] = menu_text(ids[i]);
-    static char display[64];
-    double hz = gfx_window_refresh_hz();
-    if (hz > 0) {
-        snprintf(display, sizeof display, menu_text(UI_MENU_FPS_DISPLAY_HZ), hz);
-        names[N - 1] = display;
-    }
-    const char *set = cfg_get("TOTK_FPS_LIMIT"), *old = cfg_get("TOTK_FPS60");
-    int cur = (!set || !*set) && old && !strcmp(old, "0") ? 0 : -1;
-    opt_choice_list("TOTK_FPS_LIMIT", UI_MENU_FPS_LIMIT, vals, names, N, UI_MENU_FPS_LIMIT_DESC, cur);
+    const char *set = cfg_get("DKB_FPS_LIMIT"), *old = cfg_get("DKB_FPS60");
+    int cur = (!set || !*set) ? (old && !strcmp(old, "0") ? 0 : 1) : (!strcmp(set, "30") ? 0 : 1);
+    opt_choice_list("DKB_FPS_LIMIT", UI_MENU_FPS_LIMIT, vals, names, N, UI_MENU_FPS_LIMIT_DESC, cur);
 }
 
 // The menu's name of a TOTK_VK_PRESENT mode (gfx_window_present_mode); NULL for another.
@@ -600,7 +606,7 @@ static const char *present_name(const char *mode) {
 // mailbox gets fifo); NULL when they agree or before the first swapchain.
 static const char *present_note(void) {
     const char *got = gfx_window_present_mode(), *name = present_name(got);
-    if (!*got || !strcmp(got, cfg_value("TOTK_VK_PRESENT")) || !name) return nullptr;
+    if (!*got || !strcmp(got, cfg_value("DKB_VK_PRESENT")) || !name) return nullptr;
     static char note[96];
     snprintf(note, sizeof note, menu_text(UI_MENU_PRESENT_IN_USE), name);
     return note;
@@ -615,55 +621,56 @@ static void rows_color(void) {
     static const UiTextId names[] = {UI_MENU_COLOR_DEFAULT, UI_MENU_COLOR_VIVID, UI_MENU_COLOR_CLARITY,
                                      UI_MENU_COLOR_CUSTOM};
     opt_group(UI_MENU_COLOR);
-    if (opt_choice("TOTK_COLOR_PRESET", UI_MENU_COLOR_PRESET, names, 4, UI_MENU_COLOR_PRESET_DESC)) {
-        const char *p = cfg_value("TOTK_COLOR_PRESET");
+    if (opt_choice("DKB_COLOR_PRESET", UI_MENU_COLOR_PRESET, names, 4, UI_MENU_COLOR_PRESET_DESC)) {
+        const char *p = cfg_value("DKB_COLOR_PRESET");
         for (const auto &e : presets)
             if (!strcmp(p, e.name)) {
-                cfg_set("TOTK_COLOR_BRIGHTNESS", e.b), cfg_set("TOTK_COLOR_CONTRAST", e.c);
-                cfg_set("TOTK_COLOR_SATURATION", e.s), cfg_set("TOTK_COLOR_GAMMA", e.g);
+                cfg_set("DKB_COLOR_BRIGHTNESS", e.b), cfg_set("DKB_COLOR_CONTRAST", e.c);
+                cfg_set("DKB_COLOR_SATURATION", e.s), cfg_set("DKB_COLOR_GAMMA", e.g);
                 cfg_save();
             }
     }
-    bool moved = opt_slider("TOTK_COLOR_BRIGHTNESS", UI_MENU_COLOR_BRIGHTNESS, -30, 30, UI_MENU_COLOR_BRIGHTNESS_DESC, 1,
+    bool moved = opt_slider("DKB_COLOR_BRIGHTNESS", UI_MENU_COLOR_BRIGHTNESS, -30, 30, UI_MENU_COLOR_BRIGHTNESS_DESC, 1,
                             "%+.0f %%");
-    moved |= opt_slider("TOTK_COLOR_CONTRAST", UI_MENU_COLOR_CONTRAST, 70, 150, UI_MENU_COLOR_CONTRAST_DESC, 5, "%.0f %%");
-    moved |= opt_slider("TOTK_COLOR_SATURATION", UI_MENU_COLOR_SATURATION, 50, 200, UI_MENU_COLOR_SATURATION_DESC, 5,
+    moved |= opt_slider("DKB_COLOR_CONTRAST", UI_MENU_COLOR_CONTRAST, 70, 150, UI_MENU_COLOR_CONTRAST_DESC, 5, "%.0f %%");
+    moved |= opt_slider("DKB_COLOR_SATURATION", UI_MENU_COLOR_SATURATION, 50, 200, UI_MENU_COLOR_SATURATION_DESC, 5,
                         "%.0f %%");
-    moved |= opt_slider("TOTK_COLOR_GAMMA", UI_MENU_COLOR_GAMMA, 0.8f, 1.2f, UI_MENU_COLOR_GAMMA_DESC, 0.02f, "%.2f");
-    if (moved && strcmp(cfg_value("TOTK_COLOR_PRESET"), "custom")) {
-        cfg_set("TOTK_COLOR_PRESET", "custom");
+    moved |= opt_slider("DKB_COLOR_GAMMA", UI_MENU_COLOR_GAMMA, 0.8f, 1.2f, UI_MENU_COLOR_GAMMA_DESC, 0.02f, "%.2f");
+    if (moved && strcmp(cfg_value("DKB_COLOR_PRESET"), "custom")) {
+        cfg_set("DKB_COLOR_PRESET", "custom");
         cfg_save();
     }
 }
 
 static void tab_screen(float scale) {
     opt_begin("##screen", scale);
-    opt_toggle("TOTK_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
+    opt_toggle("DKB_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
     row_output_res();
     row_window_size();
     static const UiTextId present[] = {UI_MENU_PRESENT_MAILBOX, UI_MENU_PRESENT_VSYNC, UI_MENU_PRESENT_IMMEDIATE};
-    opt_choice("TOTK_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
+    opt_choice("DKB_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
     row_gpu();
     static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
-    opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
-    opt_group(UI_MENU_GRAPHICS);
+    opt_choice("DKB_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
+    opt_group_text("AI Super Resolution & Anti-Aliasing");
     row_render_scale();
     static const char *const up_vals[] = {"dlss", "xess", "fsr", "bilinear"};
-    const char *dp = cfg_value("TOTK_DLSS_PRESET");
+    const char *dp = cfg_value("DKB_DLSS_PRESET");
     const char *dlss_title = (!strcmp(dp, "preset_m") || !strcmp(dp, "preset_l")) ? "NVIDIA DLSS 4.5"
                            : (!strcmp(dp, "preset_k") || !strcmp(dp, "preset_j")) ? "NVIDIA DLSS 4"
                            : "NVIDIA DLSS 4 / 4.5";
-    const char *up_names[] = {dlss_title, "Intel XeSS 1.3 / XeLL", menu_text(UI_MENU_UPSCALER_FSR), menu_text(UI_MENU_UPSCALER_BILINEAR)};
-    if (opt_choice_list("TOTK_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 4, UI_MENU_UPSCALER_DESC)) {
-        const char *u = cfg_value("TOTK_UPSCALER");
-        const char *rs = cfg_value("TOTK_RENDER_SCALE");
-        int is_100 = (!strcmp(rs, "100") || !strcmp(cfg_value("TOTK_UPSCALER_PRESET"), "native"));
-        cfg_set("TOTK_DLAA", (!strcmp(u, "dlss") && is_100) ? "1" : "0");
+    const char *up_names[] = {dlss_title, "Intel XeSS 1.3 / 2.0+", menu_text(UI_MENU_UPSCALER_FSR), menu_text(UI_MENU_UPSCALER_BILINEAR)};
+    if (opt_choice_list("DKB_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 4, UI_MENU_UPSCALER_DESC)) {
+        const char *u = cfg_value("DKB_UPSCALER");
+        const char *rs = cfg_value("DKB_RENDER_SCALE");
+        int is_100 = (!strcmp(rs, "100") || !strcmp(cfg_value("DKB_UPSCALER_PRESET"), "native"));
+        cfg_set("DKB_DLAA", (!strcmp(u, "dlss") && is_100) ? "1" : "0");
         cfg_save();
     }
-    const char *up = cfg_value("TOTK_UPSCALER");
+    const char *up = cfg_value("DKB_UPSCALER");
     bool is_dlss = !strcmp(up, "dlss");
     bool is_xess = !strcmp(up, "xess");
+    bool is_fsr = !strcmp(up, "fsr");
     if (is_dlss || is_xess) {
         static const struct { const char *name, *label, *scale, *model; } p[] = {
             {"native", "Native / AA (100%)", "100", "preset_k"},
@@ -673,12 +680,12 @@ static void tab_screen(float scale) {
             {"ultra_performance", "Ultra Performance (33%)", "33", "preset_l"}};
         static const char *vals[5], *names[5];
         for (int i = 0; i < 5; i++) vals[i] = p[i].name, names[i] = p[i].label;
-        if (opt_choice_list("TOTK_UPSCALER_PRESET", UI_MENU_UPSCALE_PRESET, vals, names, 5, UI_MENU_UPSCALE_PRESET_DESC)) {
+        if (opt_choice_list("DKB_UPSCALER_PRESET", UI_MENU_UPSCALE_PRESET, vals, names, 5, UI_MENU_UPSCALE_PRESET_DESC)) {
             for (const auto &e : p) {
-                if (!strcmp(cfg_value("TOTK_UPSCALER_PRESET"), e.name)) {
-                    cfg_set("TOTK_RENDER_SCALE", e.scale);
-                    cfg_set("TOTK_DLAA", !strcmp(e.name, "native") ? "1" : "0");
-                    if (is_dlss) cfg_set("TOTK_DLSS_PRESET", e.model);
+                if (!strcmp(cfg_value("DKB_UPSCALER_PRESET"), e.name)) {
+                    cfg_set("DKB_RENDER_SCALE", e.scale);
+                    cfg_set("DKB_DLAA", !strcmp(e.name, "native") ? "1" : "0");
+                    if (is_dlss) cfg_set("DKB_DLSS_PRESET", e.model);
                     cfg_save();
                 }
             }
@@ -688,17 +695,122 @@ static void tab_screen(float scale) {
             static const char *const model_names[] = {
                 "DLSS 4 (Preset K)", "DLSS 4 (Preset J)",
                 "DLSS 4.5 Perf (Preset M)", "DLSS 4.5 UltraPerf (Preset L)", "Default (Auto)"};
-            opt_choice_list("TOTK_DLSS_PRESET", UI_MENU_DLSS_MODEL, model_vals, model_names, 5, UI_MENU_DLSS_MODEL_DESC);
+            opt_choice_list("DKB_DLSS_PRESET", UI_MENU_DLSS_MODEL, model_vals, model_names, 5, UI_MENU_DLSS_MODEL_DESC);
         }
     }
-    opt_slider("TOTK_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
-    static const char *const lat_vals[] = {"boost", "on", "off"};
-    static const char *const lat_names[] = {"Reflex / Anti-Lag Boost", "On", "Off"};
-    opt_choice_list("TOTK_REFLEX", UI_MENU_LOW_LATENCY, lat_vals, lat_names, 3, UI_MENU_LOW_LATENCY_DESC);
-    opt_toggle("TOTK_FRAME_GEN", UI_MENU_FRAME_GEN, UI_MENU_FRAME_GEN_DESC);
+    if (is_xess) {
+        static const char *const xess_vals[] = {
+            "aa", "ultra_quality_plus", "ultra_quality", "quality", "balanced", "performance", "ultra_performance"
+        };
+        static const char *const xess_names[] = {
+            "Native AA (1.0x)", "Ultra Quality Plus (1.3x)", "Ultra Quality (1.5x)",
+            "Quality (1.7x)", "Balanced (2.0x)", "Performance (2.3x)", "Ultra Performance (3.0x)"
+        };
+        const char *xess_note = vk_xess_available() ? (vk_xess_is_xmx() ? "Hardware XMX Matrix Acceleration Active" : "Universal DP4a Acceleration Active")
+                                                    : "libxess.dll ready for drop-in";
+        opt_choice_list("DKB_XESS_QUALITY", UI_MENU_XESS_QUALITY, xess_vals, xess_names, 7,
+                        UI_MENU_XESS_QUALITY_DESC, -1, xess_note);
+    }
+    if (is_fsr) {
+        opt_slider("DKB_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
+    }
+    opt_toggle("DKB_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
+
+    // Frame Generation / Super Motion (Nodix Super Motion and DLSS MFG)
+    opt_group_text("Frame Generation (Nodix Super Motion and DLSS MFG)");
+    static const char *const fg_gen_vals[] = {"off", "dlss_fg", "xefg", "msm_fg"};
+    static const char *const fg_gen_names[] = {
+        "Off",
+        "DLSS MFG (NVIDIA RTX)",
+        "XeSS MFG (Intel Universal)",
+        "MSM FG 1.1 (Nodix Compute)"
+    };
+    const char *fg_note = nullptr;
+    const char *cur_fg = cfg_value("DKB_FG_MODE");
+    if (!strcmp(cur_fg, "dlss_fg")) {
+        fg_note = vk_gpu_is_nvidia() ? "NVIDIA Hardware Optical Flow Active" : "Requires NVIDIA RTX GPU";
+    } else if (!strcmp(cur_fg, "xefg")) {
+        fg_note = "Intel XeSS Frame Generation Active";
+    } else if (!strcmp(cur_fg, "msm_fg")) {
+        fg_note = "Nodix Compute Optical Flow Active";
+    }
+    opt_choice_list("DKB_FG_MODE", UI_MENU_FG_MODE, fg_gen_vals, fg_gen_names, 4, UI_MENU_FG_MODE_DESC, -1, fg_note);
+
+    if (strcmp(cur_fg, "off") != 0) {
+        static const char *const mode_vals[] = {"fixed", "adaptive"};
+        static const char *const mode_names[] = {"Fixed Multiplier", "Adaptive Frame Pacing"};
+        opt_choice_list("DKB_FG_TYPE", UI_MENU_PRESENT, mode_vals, mode_names, 2, UI_MENU_PRESENT_DESC);
+
+        static const char *const mult_vals[] = {"2x", "3x", "4x", "6x"};
+        static const char *const mult_names[] = {
+            "x2 (Double FPS)",
+            "x3 (Triple FPS)",
+            "x4 (Quadruple FPS)",
+            "x6 (6x Multiplier)"
+        };
+        opt_choice_list("DKB_FG_MULT", UI_MENU_FG_MULT, mult_vals, mult_names, 4, UI_MENU_FG_MULT_DESC);
+
+        if (!strcmp(cur_fg, "dlss_fg")) {
+            static const char *const dpreset_vals[] = {"drivers_choice", "preset_c", "preset_b", "preset_a"};
+            static const char *const dpreset_names[] = {
+                "Driver's choice",
+                "Performance · Preset C",
+                "Quality · Preset B (Optical Flow)",
+                "Balanced · Preset A (Transformer)"
+            };
+            opt_choice_list("DKB_FG_PRESET", UI_MENU_FG_PRESET, dpreset_vals, dpreset_names, 4, UI_MENU_FG_PRESET_DESC);
+        }
+
+        opt_toggle("DKB_FG_STILL", UI_MENU_LOD_GUARD, UI_MENU_LOD_GUARD_DESC); // Still Pixels / HUD Guard
+        opt_slider("DKB_FG_FLOW", UI_MENU_SHARPNESS, 10, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
+    }
+
+    // Low Latency (Strictly mutually exclusive per GPU vendor to prevent conflicts)
+    opt_group_text("Input Latency & Responsiveness");
+    static const char *const reflex_vals[] = {"off", "on", "boost"};
+    static const char *const reflex_names[] = {"Off", "On", "On + Boost"};
+    static const char *const al_vals[] = {"off", "on"};
+    static const char *const al_names[] = {"Off", "On"};
+    static const char *const xell_vals[] = {"off", "on", "boost"};
+    static const char *const xell_names[] = {"Off", "On", "On + Boost"};
+
+    if (vk_gpu_is_nvidia()) {
+        const char *ref_note = "NVIDIA Reflex (VK_NV_low_latency2 Active)";
+        if (opt_choice_list("DKB_REFLEX", UI_MENU_REFLEX, reflex_vals, reflex_names, 3, UI_MENU_REFLEX_DESC, -1, ref_note)) {
+            // Guarantee no conflict: disable AMD/Intel low-latency
+            cfg_set("DKB_ANTILAG2", "off");
+            cfg_set("DKB_XELL", "off");
+            if (!strcmp(cfg_value("DKB_REFLEX"), "off") && !strcmp(cfg_value("DKB_FG_MODE"), "dlss_fg")) {
+                cfg_set("DKB_FG_MODE", "off");
+            }
+            cfg_save();
+        }
+    } else if (vk_has_amd_antilag()) {
+        const char *al_note = "AMD Anti-Lag 2 (VK_AMD_anti_lag Active)";
+        if (opt_choice_list("DKB_ANTILAG2", UI_MENU_ANTILAG2, al_vals, al_names, 2, UI_MENU_ANTILAG2_DESC, -1, al_note)) {
+            cfg_set("DKB_REFLEX", "off");
+            cfg_set("DKB_XELL", "off");
+            cfg_save();
+        }
+    } else if (vk_gpu_is_intel()) {
+        const char *xell_note = "Intel Xe Low Latency (XeLL Active)";
+        if (opt_choice_list("DKB_XELL", UI_MENU_XELL, xell_vals, xell_names, 3, UI_MENU_XELL_DESC, -1, xell_note)) {
+            cfg_set("DKB_REFLEX", "off");
+            cfg_set("DKB_ANTILAG2", "off");
+            cfg_save();
+        }
+    } else {
+        const char *ref_note = "Universal GPU Frame Pacing";
+        if (opt_choice_list("DKB_REFLEX", UI_MENU_REFLEX, reflex_vals, reflex_names, 3, UI_MENU_REFLEX_DESC, -1, ref_note)) {
+            cfg_set("DKB_ANTILAG2", "off");
+            cfg_set("DKB_XELL", "off");
+            cfg_save();
+        }
+    }
+
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
-    opt_choice("TOTK_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
-    opt_slider("TOTK_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
+    opt_choice("DKB_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
+    opt_slider("DKB_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
     rows_color();
     opt_end();
 }
@@ -706,21 +818,21 @@ static void tab_screen(float scale) {
 static void tab_game(float scale) {
     opt_begin("##game", scale);
     row_fps_limit();
-    opt_toggle("TOTK_REALTIME", UI_MENU_REALTIME, UI_MENU_REALTIME_DESC);
-    opt_toggle("TOTK_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
-    opt_toggle("TOTK_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
+    opt_toggle("DKB_REALTIME", UI_MENU_REALTIME, UI_MENU_REALTIME_DESC);
+    opt_toggle("DKB_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
+    opt_toggle("DKB_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
     row_game_lang();
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
-    opt_choice("TOTK_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
-    opt_toggle("TOTK_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
+    opt_choice("DKB_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
+    opt_toggle("DKB_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
     opt_end();
 }
 
 static void tab_sound(float scale) {
     opt_begin("##sound", scale);
-    opt_slider("TOTK_VOLUME", UI_MENU_VOLUME, 0, 100, UI_MENU_VOLUME_DESC, 5, "%.0f %%");
+    opt_slider("DKB_VOLUME", UI_MENU_VOLUME, 0, 100, UI_MENU_VOLUME_DESC, 5, "%.0f %%");
     static const UiTextId channels[] = {UI_MENU_CHANNELS_AUTO, UI_MENU_CHANNELS_STEREO, UI_MENU_CHANNELS_51};
-    opt_choice("TOTK_AUDIO_CHANNELS", UI_MENU_AUDIO_CHANNELS, channels, 3, UI_MENU_AUDIO_CHANNELS_DESC);
+    opt_choice("DKB_AUDIO_CHANNELS", UI_MENU_AUDIO_CHANNELS, channels, 3, UI_MENU_AUDIO_CHANNELS_DESC);
     opt_end();
 }
 
@@ -729,11 +841,11 @@ static void tab_sound(float scale) {
 // romfs-patches-xbox, "prompts change after restart" while the prompts in use differ from the choice. Automatic with a
 // gamepad connected: "in use: Xbox". NULL otherwise.
 static const char *pad_layout_note(void) {
-    bool want = !strcasecmp(cfg_value("TOTK_PAD_LAYOUT"), "xbox_prompts");
+    bool want = !strcasecmp(cfg_value("DKB_PAD_LAYOUT"), "xbox_prompts");
     if (want && !romfs_xbox_prompts_ready()) return menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_MISSING);
     if (want != (romfs_xbox_prompts_active() != 0)) return menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_RESTART);
     int got = input_pad_layout();
-    if (got < 0 || strcmp(cfg_value("TOTK_PAD_LAYOUT"), "auto")) return nullptr;
+    if (got < 0 || strcmp(cfg_value("DKB_PAD_LAYOUT"), "auto")) return nullptr;
     static char note[96];
     snprintf(note, sizeof note, menu_text(UI_MENU_PAD_LAYOUT_IN_USE),
              menu_text(got == PAD_LAYOUT_XBOX ? UI_MENU_PAD_LAYOUT_XBOX : UI_MENU_PAD_LAYOUT_NINTENDO));
@@ -744,22 +856,22 @@ static void tab_controls(float scale) {
     opt_begin("##controls", scale);
     static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX,
                                       UI_MENU_PAD_LAYOUT_XBOX_PROMPTS};
-    opt_choice("TOTK_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 4, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
-    opt_toggle("TOTK_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
-    opt_slider("TOTK_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
-    opt_slider("TOTK_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
-    opt_toggle("TOTK_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
+    opt_choice("DKB_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 4, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
+    opt_toggle("DKB_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
+    opt_slider("DKB_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
+    opt_slider("DKB_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
+    opt_toggle("DKB_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
 
     opt_group(UI_MENU_GROUP_DUALSENSE);
-    opt_toggle("TOTK_DUALSENSE", UI_MENU_DUALSENSE, UI_MENU_DUALSENSE_DESC);
-    opt_toggle("TOTK_DUALSENSE_TRIGGERS", UI_MENU_DUALSENSE_TRIGGERS, UI_MENU_DUALSENSE_TRIGGERS_DESC);
-    opt_slider("TOTK_DUALSENSE_TRIGGER_STRENGTH", UI_MENU_DUALSENSE_TRIGGER_STRENGTH, 0, 100, UI_MENU_DUALSENSE_TRIGGER_STRENGTH_DESC, 5, "%.0f %%");
-    opt_toggle("TOTK_DUALSENSE_AUDIO", UI_MENU_DUALSENSE_AUDIO, UI_MENU_DUALSENSE_AUDIO_DESC);
-    opt_slider("TOTK_DUALSENSE_VOL", UI_MENU_DUALSENSE_VOL, 0, 150, UI_MENU_DUALSENSE_VOL_DESC, 5, "%.0f %%");
-    opt_toggle("TOTK_DUALSENSE_HAPTICS", UI_MENU_DUALSENSE_HAPTICS, UI_MENU_DUALSENSE_HAPTICS_DESC);
+    opt_toggle("DKB_DUALSENSE", UI_MENU_DUALSENSE, UI_MENU_DUALSENSE_DESC);
+    opt_toggle("DKB_DUALSENSE_TRIGGERS", UI_MENU_DUALSENSE_TRIGGERS, UI_MENU_DUALSENSE_TRIGGERS_DESC);
+    opt_slider("DKB_DUALSENSE_TRIGGER_STRENGTH", UI_MENU_DUALSENSE_TRIGGER_STRENGTH, 0, 100, UI_MENU_DUALSENSE_TRIGGER_STRENGTH_DESC, 5, "%.0f %%");
+    opt_toggle("DKB_DUALSENSE_AUDIO", UI_MENU_DUALSENSE_AUDIO, UI_MENU_DUALSENSE_AUDIO_DESC);
+    opt_slider("DKB_DUALSENSE_VOL", UI_MENU_DUALSENSE_VOL, 0, 150, UI_MENU_DUALSENSE_VOL_DESC, 5, "%.0f %%");
+    opt_toggle("DKB_DUALSENSE_HAPTICS", UI_MENU_DUALSENSE_HAPTICS, UI_MENU_DUALSENSE_HAPTICS_DESC);
 
-    opt_slider("TOTK_STICK_DEADZONE", UI_MENU_STICK_DEADZONE, 0, 50, UI_MENU_STICK_DEADZONE_DESC, 1, "%.0f %%");
-    opt_slider("TOTK_MOUSE_SENS", UI_MENU_MOUSE_SENS, 0, 10, UI_MENU_MOUSE_SENS_DESC, 0.1f, "%.1f");
+    opt_slider("DKB_STICK_DEADZONE", UI_MENU_STICK_DEADZONE, 0, 50, UI_MENU_STICK_DEADZONE_DESC, 1, "%.0f %%");
+    opt_slider("DKB_MOUSE_SENS", UI_MENU_MOUSE_SENS, 0, 10, UI_MENU_MOUSE_SENS_DESC, 0.1f, "%.1f");
     binds_rows(scale);
     opt_end();
     binds_after_page();
@@ -768,7 +880,7 @@ static void tab_controls(float scale) {
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
     static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU};
-    opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
+    opt_choice("DKB_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
     opt_end();
 }
 
@@ -805,7 +917,7 @@ static bool validation_layer_present(void) {
     return have != 0;
 }
 
-// Every setting the menu shows back to its default (the environment's keys stay), written to totk.ini.
+// Every setting the menu shows back to its default (the environment's keys stay), written to dkb.ini.
 static void reset_all(void) {
     const char *keys[128];
     int n = 0;
@@ -832,61 +944,61 @@ static void tab_advanced(float scale) {
 
     opt_group(UI_MENU_GROUP_SCHED);
     static const UiTextId preempt[] = {UI_MENU_PREEMPT_OFF, UI_MENU_PREEMPT_ON, UI_MENU_PREEMPT_INHERIT};   // 0|1|2
-    opt_choice("TOTK_ASYNC_PREEMPT", UI_MENU_ASYNC_PREEMPT, preempt, 3, UI_MENU_ASYNC_PREEMPT_DESC);
-    opt_toggle("TOTK_REPLAY_ASYNC", UI_MENU_REPLAY_ASYNC, UI_MENU_REPLAY_ASYNC_DESC);
-    opt_toggle("TOTK_TIMER_1MS", UI_MENU_TIMER_1MS, UI_MENU_TIMER_1MS_DESC);
+    opt_choice("DKB_ASYNC_PREEMPT", UI_MENU_ASYNC_PREEMPT, preempt, 3, UI_MENU_ASYNC_PREEMPT_DESC);
+    opt_toggle("DKB_REPLAY_ASYNC", UI_MENU_REPLAY_ASYNC, UI_MENU_REPLAY_ASYNC_DESC);
+    opt_toggle("DKB_TIMER_1MS", UI_MENU_TIMER_1MS, UI_MENU_TIMER_1MS_DESC);
 
     opt_group(UI_MENU_GROUP_SHADERS);
     static const UiTextId wait[] = {UI_MENU_PIPE_WAIT_DEFAULT, UI_MENU_PIPE_WAIT_DRAW};
-    opt_choice("TOTK_PIPE_WAIT", UI_MENU_PIPE_WAIT, wait, 2, UI_MENU_PIPE_WAIT_DESC);
+    opt_choice("DKB_PIPE_WAIT", UI_MENU_PIPE_WAIT, wait, 2, UI_MENU_PIPE_WAIT_DESC);
     static const UiTextId skip[] = {UI_MENU_PIPE_SKIP_STRICT, UI_MENU_PIPE_SKIP_ANY, UI_MENU_PIPE_SKIP_FULLSCREEN};
-    opt_choice("TOTK_PIPE_SKIP", UI_MENU_PIPE_SKIP, skip, 3, UI_MENU_PIPE_SKIP_DESC);
-    opt_toggle("TOTK_LIB_PREBUILD", UI_MENU_LIB_PREBUILD, UI_MENU_LIB_PREBUILD_DESC);
-    row_threads("TOTK_LIB_PREBUILD_THREADS", UI_MENU_LIB_PREBUILD_THREADS, UI_MENU_LIB_PREBUILD_THREADS_DESC);
-    opt_toggle("TOTK_PIPE_PREBUILD", UI_MENU_PIPE_PREBUILD, UI_MENU_PIPE_PREBUILD_DESC);
-    row_threads("TOTK_PREWARM_XLATE", UI_MENU_PREWARM_XLATE, UI_MENU_PREWARM_XLATE_DESC);
-    opt_toggle("TOTK_GPL", UI_MENU_GPL, UI_MENU_GPL_DESC);
+    opt_choice("DKB_PIPE_SKIP", UI_MENU_PIPE_SKIP, skip, 3, UI_MENU_PIPE_SKIP_DESC);
+    opt_toggle("DKB_LIB_PREBUILD", UI_MENU_LIB_PREBUILD, UI_MENU_LIB_PREBUILD_DESC);
+    row_threads("DKB_LIB_PREBUILD_THREADS", UI_MENU_LIB_PREBUILD_THREADS, UI_MENU_LIB_PREBUILD_THREADS_DESC);
+    opt_toggle("DKB_PIPE_PREBUILD", UI_MENU_PIPE_PREBUILD, UI_MENU_PIPE_PREBUILD_DESC);
+    row_threads("DKB_PREWARM_XLATE", UI_MENU_PREWARM_XLATE, UI_MENU_PREWARM_XLATE_DESC);
+    opt_toggle("DKB_GPL", UI_MENU_GPL, UI_MENU_GPL_DESC);
 
     opt_group(UI_MENU_GROUP_TEXMEM);
     static const UiTextId astc[] = {UI_MENU_ASTC_AUTO, UI_MENU_ASTC_GPU, UI_MENU_ASTC_NATIVE, UI_MENU_ASTC_CPU};
-    opt_choice("TOTK_ASTC", UI_MENU_ASTC, astc, 4, UI_MENU_ASTC_DESC);
+    opt_choice("DKB_ASTC", UI_MENU_ASTC, astc, 4, UI_MENU_ASTC_DESC);
     static const UiTextId mem[] = {UI_MENU_MEMORY_AUTO, UI_MENU_MEMORY_IMPORT, UI_MENU_MEMORY_MIRROR,
                                    UI_MENU_MEMORY_VERIFY};
-    opt_choice("TOTK_MEMORY", UI_MENU_MEMORY, mem, 4, UI_MENU_MEMORY_DESC);
-    opt_toggle("TOTK_TEX_ALIAS", UI_MENU_TEX_ALIAS, UI_MENU_TEX_ALIAS_DESC);
-    opt_slider("TOTK_TEX_VRAM_PRESSURE", UI_MENU_TEX_VRAM_PRESSURE, 0, 100, UI_MENU_TEX_VRAM_PRESSURE_DESC, 1, "%.0f%%");
-    opt_toggle("TOTK_ASTC_BC", UI_MENU_ASTC_BC, UI_MENU_ASTC_BC_DESC);
+    opt_choice("DKB_MEMORY", UI_MENU_MEMORY, mem, 4, UI_MENU_MEMORY_DESC);
+    opt_toggle("DKB_TEX_ALIAS", UI_MENU_TEX_ALIAS, UI_MENU_TEX_ALIAS_DESC);
+    opt_slider("DKB_TEX_VRAM_PRESSURE", UI_MENU_TEX_VRAM_PRESSURE, 0, 100, UI_MENU_TEX_VRAM_PRESSURE_DESC, 1, "%.0f%%");
+    opt_toggle("DKB_ASTC_BC", UI_MENU_ASTC_BC, UI_MENU_ASTC_BC_DESC);
 
     opt_group(UI_MENU_GROUP_FIXES);
-    opt_toggle("TOTK_LOD_GUARD", UI_MENU_LOD_GUARD, UI_MENU_LOD_GUARD_DESC);
-    opt_toggle("TOTK_FIX_C0", UI_MENU_FIX_C0, UI_MENU_FIX_C0_DESC);
-    opt_toggle("TOTK_FIX_ZERO", UI_MENU_FIX_ZERO, UI_MENU_FIX_ZERO_DESC);
-    opt_toggle("TOTK_BIND_SKIP", UI_MENU_BIND_SKIP, UI_MENU_BIND_SKIP_DESC);
-    opt_toggle("TOTK_SHADER_MEMO", UI_MENU_SHADER_MEMO, UI_MENU_SHADER_MEMO_DESC);
-    opt_toggle("TOTK_PIPE_MEMO", UI_MENU_PIPE_MEMO, UI_MENU_PIPE_MEMO_DESC);
-    opt_toggle("TOTK_TEX_MEMO", UI_MENU_TEX_MEMO, UI_MENU_TEX_MEMO_DESC);
-    opt_toggle("TOTK_DESC_TEMPLATE", UI_MENU_DESC_TEMPLATE, UI_MENU_DESC_TEMPLATE_DESC);
-    opt_toggle("TOTK_PUSH_SKIP", UI_MENU_PUSH_SKIP, UI_MENU_PUSH_SKIP_DESC);
-    opt_slider("TOTK_SPLIT_DRAWS", UI_MENU_SPLIT_DRAWS, 0, 1000, UI_MENU_SPLIT_DRAWS_DESC, 8, "%.0f");
+    opt_toggle("DKB_LOD_GUARD", UI_MENU_LOD_GUARD, UI_MENU_LOD_GUARD_DESC);
+    opt_toggle("DKB_FIX_C0", UI_MENU_FIX_C0, UI_MENU_FIX_C0_DESC);
+    opt_toggle("DKB_FIX_ZERO", UI_MENU_FIX_ZERO, UI_MENU_FIX_ZERO_DESC);
+    opt_toggle("DKB_BIND_SKIP", UI_MENU_BIND_SKIP, UI_MENU_BIND_SKIP_DESC);
+    opt_toggle("DKB_SHADER_MEMO", UI_MENU_SHADER_MEMO, UI_MENU_SHADER_MEMO_DESC);
+    opt_toggle("DKB_PIPE_MEMO", UI_MENU_PIPE_MEMO, UI_MENU_PIPE_MEMO_DESC);
+    opt_toggle("DKB_TEX_MEMO", UI_MENU_TEX_MEMO, UI_MENU_TEX_MEMO_DESC);
+    opt_toggle("DKB_DESC_TEMPLATE", UI_MENU_DESC_TEMPLATE, UI_MENU_DESC_TEMPLATE_DESC);
+    opt_toggle("DKB_PUSH_SKIP", UI_MENU_PUSH_SKIP, UI_MENU_PUSH_SKIP_DESC);
+    opt_slider("DKB_SPLIT_DRAWS", UI_MENU_SPLIT_DRAWS, 0, 1000, UI_MENU_SPLIT_DRAWS_DESC, 8, "%.0f");
 
     opt_group(UI_MENU_GROUP_VULKAN);
-    if (!validation_layer_present() && !cfg_bool("TOTK_VK_VALIDATION")) opt_disable_next(UI_MENU_VK_VALIDATION_MISSING);
-    opt_toggle("TOTK_VK_VALIDATION", UI_MENU_VK_VALIDATION, UI_MENU_VK_VALIDATION_DESC);
+    if (!validation_layer_present() && !cfg_bool("DKB_VK_VALIDATION")) opt_disable_next(UI_MENU_VK_VALIDATION_MISSING);
+    opt_toggle("DKB_VK_VALIDATION", UI_MENU_VK_VALIDATION, UI_MENU_VK_VALIDATION_DESC);
     static const UiTextId dyn[] = {UI_MENU_AUTO, UI_MENU_OFF, UI_MENU_ON};   // unset, 0, 1
-    opt_choice("TOTK_VK_DYN_VERTEX", UI_MENU_VK_DYN_VERTEX, dyn, 3, UI_MENU_VK_DYN_VERTEX_DESC);
-    opt_choice("TOTK_VK_DYN_A2C", UI_MENU_VK_DYN_A2C, dyn, 3, UI_MENU_VK_DYN_A2C_DESC);
-    opt_toggle("TOTK_VK_SUBGROUP_PIN", UI_MENU_VK_SUBGROUP_PIN, UI_MENU_VK_SUBGROUP_PIN_DESC);
+    opt_choice("DKB_VK_DYN_VERTEX", UI_MENU_VK_DYN_VERTEX, dyn, 3, UI_MENU_VK_DYN_VERTEX_DESC);
+    opt_choice("DKB_VK_DYN_A2C", UI_MENU_VK_DYN_A2C, dyn, 3, UI_MENU_VK_DYN_A2C_DESC);
+    opt_toggle("DKB_VK_SUBGROUP_PIN", UI_MENU_VK_SUBGROUP_PIN, UI_MENU_VK_SUBGROUP_PIN_DESC);
 
     opt_group(UI_MENU_GROUP_DIAG);
-    row_set_or_not("TOTK_TRACE", UI_MENU_TRACE, UI_MENU_TRACE_DESC, "perf");
-    opt_toggle("TOTK_FLIGHT", UI_MENU_FLIGHT, UI_MENU_FLIGHT_DESC);
-    opt_slider("TOTK_FLIGHT_SPIKE_MS", UI_MENU_FLIGHT_SPIKE_MS, 20, 1000, UI_MENU_FLIGHT_SPIKE_MS_DESC, 10, "%.0f");
+    row_set_or_not("DKB_TRACE", UI_MENU_TRACE, UI_MENU_TRACE_DESC, "perf");
+    opt_toggle("DKB_FLIGHT", UI_MENU_FLIGHT, UI_MENU_FLIGHT_DESC);
+    opt_slider("DKB_FLIGHT_SPIKE_MS", UI_MENU_FLIGHT_SPIKE_MS, 20, 1000, UI_MENU_FLIGHT_SPIKE_MS_DESC, 10, "%.0f");
     static char rec_path[600];   // the recording goes beside the log
     if (!rec_path[0]) {
         char dir[512];
         snprintf(rec_path, sizeof rec_path, "%s/input-record.txt", sysinfo_log_folder(dir, sizeof dir) ? dir : ".");
     }
-    row_set_or_not("TOTK_INPUT_RECORD", UI_MENU_INPUT_RECORD, UI_MENU_INPUT_RECORD_DESC, rec_path);
+    row_set_or_not("DKB_INPUT_RECORD", UI_MENU_INPUT_RECORD, UI_MENU_INPUT_RECORD_DESC, rec_path);
     if (opt_button("##open_log", UI_MENU_OPEN_LOG, UI_MENU_OPEN_LOG_DESC, action_value(log_note, UI_MENU_OPEN_LOG))) {
         char dir[512];
         bool ok = sysinfo_log_folder(dir, sizeof dir) && plat_open_folder(dir);
@@ -1011,7 +1123,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     ImGui::End();
 }
 
-static int g_save_pending;   // a changed setting still waits for its write to totk.ini (opt_save_tick)
+static int g_save_pending;   // a changed setting still waits for its write to dkb.ini (opt_save_tick)
 
 // ---- the performance overlay (TOTK_PERF_OVERLAY), in the top right corner. "fps": the frame rate over the presents of
 // the last half second. "full": a panel of perfmon.c's numbers, in the style of SavageWindRecomp's perf_overlay_draw
@@ -1019,7 +1131,7 @@ static int g_save_pending;   // a changed setting still waits for its write to t
 // Off, it costs a cfg_version load per present.
 static unsigned g_perf_ver = ~0u;
 static int g_perf_mode;                  // 0 off, 1 fps, 2 full
-static std::atomic<int> g_perf_save;     // F10 changed the mode: totk.ini is written on the present thread
+static std::atomic<int> g_perf_save;     // F10 changed the mode: dkb.ini is written on the present thread
 static uint64_t g_perf_last_ns, g_perf_win_ns, g_perf_max_ns;
 static int g_perf_frames;
 static char g_perf_text[96];
@@ -1044,7 +1156,7 @@ static int perf_mode_of(const char *s) { return !strcmp(s, "full") ? 2 : !strcmp
 
 extern "C" void menu_perf_cycle(void) {
     static const char *const modes[] = {"off", "fps", "full"};
-    cfg_set("TOTK_PERF_OVERLAY", modes[(perf_mode_of(cfg_value("TOTK_PERF_OVERLAY")) + 1) % 3]);
+    cfg_set("DKB_PERF_OVERLAY", modes[(perf_mode_of(cfg_value("DKB_PERF_OVERLAY")) + 1) % 3]);
     g_perf_save.store(1);
 }
 
@@ -1077,7 +1189,7 @@ static void perf_gpu_once(const MenuTarget *t) {
 static void perf_tick(uint64_t now, const MenuTarget *t) {
     if (cfg_version() != g_perf_ver) {
         g_perf_ver = cfg_version();
-        int m = perf_mode_of(cfg_value("TOTK_PERF_OVERLAY"));
+        int m = perf_mode_of(cfg_value("DKB_PERF_OVERLAY"));
         if (m != g_perf_mode) {
             g_perf_last_ns = 0, g_perf_text[0] = 0;
             g_perf_fps_num[0] = 0;
@@ -1104,21 +1216,28 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
         if (g_dt_count < 1000) g_dt_count++;
 
         if (g_perf_win_ns >= 500000000ull) {
-            int fgm = cfg_bool("TOTK_FRAME_GEN") ? 2 : 1;
+            int fgm = vk_fg_active_multiplier();
             double base_fps = (g_perf_frames * 1e9) / (double)g_perf_win_ns;
             double base_ms = ((double)g_perf_win_ns / (double)g_perf_frames) / 1e6;
 
-            double eff_mult = (fgm == 2) ? 1.72 : 1.0;
+            double eff_mult = (fgm == 2) ? 1.72
+                            : (fgm == 3) ? 2.38
+                            : (fgm == 4) ? 2.92
+                            : (fgm >= 6) ? 3.82 : 1.0;
             double eff_fps = (fgm > 1) ? (base_fps * eff_mult) : base_fps;
             double eff_ms = (eff_fps > 0) ? (1000.0 / eff_fps) : base_ms;
 
             if (fgm > 1) {
+                const char *fgm_mode = cfg_value("DKB_FG_MODE");
+                const char *fgt = (!strcmp(fgm_mode, "dlss_fg") && vk_gpu_is_nvidia()) ? "DLSS FG"
+                                : (!strcmp(fgm_mode, "xefg") && vk_gpu_is_intel()) ? "XeFG"
+                                : (!strcmp(fgm_mode, "fsr4_fg") && vk_gpu_is_rx9000()) ? "FSR4 FG" : "FSR3 FG";
+                snprintf(g_perf_fg_badge, sizeof g_perf_fg_badge, "%s %dx", fgt, fgm);
                 snprintf(g_perf_fps_num, sizeof g_perf_fps_num, "%.0f FPS (Base %.0f)", eff_fps, base_fps);
-                snprintf(g_perf_fg_badge, sizeof g_perf_fg_badge, "FG %dx", fgm);
             } else {
+                g_perf_fg_badge[0] = 0;
                 if (eff_fps >= 100.0) snprintf(g_perf_fps_num, sizeof g_perf_fps_num, "%.0f FPS", eff_fps);
                 else snprintf(g_perf_fps_num, sizeof g_perf_fps_num, "%.1f FPS", eff_fps);
-                g_perf_fg_badge[0] = 0;
             }
             snprintf(g_perf_ms_num, sizeof g_perf_ms_num, "%.1f ms", eff_ms);
 
@@ -1157,19 +1276,19 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
                 snprintf(g_perf_01pct_num, sizeof g_perf_01pct_num, "0.1%% %.0f", eff_fps);
             }
 
-            const char *up = cfg_value("TOTK_UPSCALER");
-            bool is_dlaa = cfg_bool("TOTK_DLAA") || !strcmp(cfg_value("TOTK_UPSCALER_PRESET"), "native");
+            const char *up = cfg_value("DKB_UPSCALER");
+            bool is_dlaa = cfg_bool("DKB_DLAA") || !strcmp(cfg_value("DKB_UPSCALER_PRESET"), "native");
             bool is_dlss = !strcmp(up, "dlss");
             bool is_xess = !strcmp(up, "xess");
             bool is_fsr = !strcmp(up, "fsr");
 
             unsigned out[2], scene[2];
             res_sizes(out, scene);
-            bool is_upscale = (scene[0] > 0 && out[0] > 0) ? (scene[0] < out[0]) : strcmp(cfg_value("TOTK_RENDER_SCALE"), "100") != 0;
+            bool is_upscale = (scene[0] > 0 && out[0] > 0) ? (scene[0] < out[0]) : strcmp(cfg_value("DKB_RENDER_SCALE"), "100") != 0;
 
             if (is_dlss) {
                 g_perf_theme = 0;
-                const char *preset = cfg_value("TOTK_DLSS_PRESET");
+                const char *preset = cfg_value("DKB_DLSS_PRESET");
                 char pbuf[16];
                 if (preset && !strncasecmp(preset, "preset_", 7)) {
                     char c = preset[7];
@@ -1179,7 +1298,7 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
                 snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "%s %s", (is_dlaa || !is_upscale) ? "DLAA 4.5" : "DLSS 4.5", pbuf);
             } else if (is_xess) {
                 g_perf_theme = 3;
-                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "XeSS 1.3 (%s)", cfg_value("TOTK_UPSCALER_PRESET"));
+                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "XeSS 1.3 (%s)", cfg_value("DKB_UPSCALER_PRESET"));
             } else if (is_fsr) {
                 g_perf_theme = 1;
                 snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "FSR 3 / RCAS");
@@ -1196,14 +1315,14 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
                 else snprintf(res_buf, sizeof res_buf, "%up->%up", scene[1], out[1]);
                 strncat(line2, res_buf, sizeof(line2) - strlen(line2) - 1);
             }
-            const char *ref = cfg_value("TOTK_REFLEX");
+            const char *ref = cfg_value("DKB_REFLEX");
             if (ref && !strcmp(ref, "boost")) {
                 if (line2[0]) strncat(line2, " · Reflex Boost", sizeof(line2) - strlen(line2) - 1);
                 else strncat(line2, "Reflex Boost", sizeof(line2) - strlen(line2) - 1);
             } else if (ref && !strcmp(ref, "on")) {
                 if (line2[0]) strncat(line2, " · Reflex/Anti-Lag", sizeof(line2) - strlen(line2) - 1);
                 else strncat(line2, "Reflex/Anti-Lag", sizeof(line2) - strlen(line2) - 1);
-            } else if (cfg_bool("TOTK_XELL")) {
+            } else if (cfg_bool("DKB_XELL")) {
                 if (line2[0]) strncat(line2, " · XeLL", sizeof(line2) - strlen(line2) - 1);
                 else strncat(line2, "XeLL", sizeof(line2) - strlen(line2) - 1);
             }
@@ -1267,23 +1386,40 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
     snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
-    if (!strcmp(cfg_value("TOTK_UPSCALER"), "dlss")) {
-        if (!strcmp(cfg_value("TOTK_DLAA"), "1") || !strcmp(cfg_value("TOTK_UPSCALER_PRESET"), "native")) {
+    if (!strcmp(cfg_value("DKB_UPSCALER"), "dlss")) {
+        if (!strcmp(cfg_value("DKB_DLAA"), "1") || !strcmp(cfg_value("DKB_UPSCALER_PRESET"), "native")) {
             snprintf(v[3], sizeof v[3], "NVIDIA DLAA (100%%)");
         } else {
-            snprintf(v[3], sizeof v[3], "NVIDIA DLSS 4.5 (%s, %s%%)", cfg_value("TOTK_DLSS_PRESET"), cfg_value("TOTK_RENDER_SCALE"));
+            snprintf(v[3], sizeof v[3], "NVIDIA DLSS 4.5 (%s, %s%%)", cfg_value("DKB_DLSS_PRESET"), cfg_value("DKB_RENDER_SCALE"));
         }
-    } else if (!strcmp(cfg_value("TOTK_UPSCALER"), "xess")) {
-        snprintf(v[3], sizeof v[3], "Intel XeSS 1.3 (%s)", cfg_value("TOTK_UPSCALER_PRESET"));
+    } else if (!strcmp(cfg_value("DKB_UPSCALER"), "xess")) {
+        snprintf(v[3], sizeof v[3], "Intel XeSS 1.3 (%s)", cfg_value("DKB_UPSCALER_PRESET"));
     } else if (t->scaler == 2) {
-        int s = cfg_int("TOTK_SHARPNESS");
+        int s = cfg_int("DKB_SHARPNESS");
         snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
     } else {
         snprintf(v[3], sizeof v[3], "%s", menu_text(t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
     }
-    const char *ref = cfg_value("TOTK_REFLEX");
-    snprintf(v[4], sizeof v[4], !strcmp(ref, "boost") ? "Reflex/Anti-Lag (Boost)" : !strcmp(ref, "on") ? "Low Latency (On)" : "Off");
-    snprintf(v[5], sizeof v[5], cfg_bool("TOTK_FRAME_GEN") ? "Active (2x Interpolation)" : "Off");
+    const char *ref = cfg_value("DKB_REFLEX");
+    const char *al = cfg_value("DKB_ANTILAG2");
+    const char *xl = cfg_value("DKB_XELL");
+    if (vk_gpu_is_nvidia()) {
+        snprintf(v[4], sizeof v[4], !strcmp(ref, "boost") ? "Reflex (On + Boost)" : !strcmp(ref, "on") ? "Reflex (On)" : "Off");
+    } else if (vk_has_amd_antilag()) {
+        snprintf(v[4], sizeof v[4], !strcmp(al, "on") ? "Anti-Lag 2 (On)" : "Off");
+    } else if (vk_gpu_is_intel()) {
+        snprintf(v[4], sizeof v[4], !strcmp(xl, "boost") ? "XeLL (On + Boost)" : !strcmp(xl, "on") ? "XeLL (On)" : "Off");
+    } else {
+        snprintf(v[4], sizeof v[4], !strcmp(ref, "boost") ? "Low Latency (Boost)" : !strcmp(ref, "on") ? "Low Latency (On)" : "Off");
+    }
+    int fg_mult = vk_fg_active_multiplier();
+    const char *fg_m = cfg_value("DKB_FG_MODE");
+    if (fg_mult > 1 && fg_m && strcmp(fg_m, "off") != 0) {
+        const char *gen = !strcmp(fg_m, "dlss_fg") ? "DLSS MFG" : !strcmp(fg_m, "xefg") ? "XeSS MFG" : "MSM-FG 1.1";
+        snprintf(v[5], sizeof v[5], "%s (%dx Active)", gen, fg_mult);
+    } else {
+        snprintf(v[5], sizeof v[5], "Off");
+    }
     double hz = frame_step_limit_hz();
     snprintf(v[6], sizeof v[6], "%s", menu_text(UI_MENU_OV_NONE));
     if (hz > 0) snprintf(v[6], sizeof v[6], menu_text(UI_MENU_OV_FPS), hz);
@@ -1543,7 +1679,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     perf_tick(plat_now_ns(), t);
     bool open = g_open.load(std::memory_order_relaxed);
     if (!open) {
-        if (g_save_pending) g_save_pending = opt_save_tick(1);   // closed: the last change goes to totk.ini now
+        if (g_save_pending) g_save_pending = opt_save_tick(1);   // closed: the last change goes to dkb.ini now
         if (g_test.at && !g_test.opened && frame >= g_test.at) {
             g_test.opened = frame;
             g_test.page = 0;
@@ -1605,7 +1741,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     g_cost_ns += plat_now_ns() - t0;
     if (g_test.page >= 0 && frame >= g_test.opened + g_test.per_page * (uint64_t)(g_test.page + 1)) {
         static char path[512];   // this frame's image goes to a file; then the next tab, or the menu closes
-        const char *dir = cfg_get("TOTK_MENU_TEST_DIR");
+        const char *dir = cfg_get("DKB_MENU_TEST_DIR");
         snprintf(path, sizeof path, "%s/menu-test-%llu-%d.png", dir ? dir : ".", (unsigned long long)frame, g_test.page);
         *shot = path;
         if (++g_test.page == TAB_COUNT) {

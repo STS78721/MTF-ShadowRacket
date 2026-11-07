@@ -1,4 +1,4 @@
-// totk.ini: file-backed defaults for the TOTK_* environment variables (docs/controls.md, totk.ini.example).
+// dkb.ini: file-backed defaults for the TOTK_* environment variables (docs/controls.md, dkb.ini.example).
 // Format: "key = value" lines, '#' or ';' at the start of a line begins a comment, [sections] only group. A key is a
 // variable name without "TOTK_" (an optional TOTK_ prefix is accepted), case-insensitive. A value is the rest of the
 // line, trimmed, optionally in double quotes; an empty value counts as unset. The environment wins over the file.
@@ -15,8 +15,8 @@
 #include "host.h"
 #include "platform/platform.h"
 
-#define PREFIX "TOTK_"
-#define PREFIX_LEN 5
+#define PREFIX "DKB_"
+#define PREFIX_LEN 4
 #define CFG_MAX_KEYS 512
 
 typedef struct { char *key, *value; int dirty, removed; } CfgEntry;   // key upper-case, without the prefix; value NULL after cfg_reset
@@ -30,12 +30,12 @@ static int save_ok = 1;                         // the last cfg_save_to wrote (o
 // Every name the runtime reads (and the patch sets in generated/), without the prefix. A file key outside this list is
 // logged as unknown. A new variable goes here too, or its ini key logs a harmless "unknown key" line.
 static const char *const known[] = {
-    "AB", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_CHANNELS", "AUDIO_MODE", "AUDIO_OFF", "AUDIO_PREFILL_MS",
+    "AB", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_OFF", "AUDIO_PREFILL_MS",
     "BACKGROUND_WINDOW", "BIND_A", "BIND_B", "BIND_DOWN", "BIND_L", "BIND_LCLICK", "BIND_LEFT", "BIND_LSTICK_DOWN", "BIND_LSTICK_LEFT",
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
-    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA", "COLOR_PRESET", "COLOR_SATURATION", "CORE_DIAG", "CRIT", "CRIT_OUT", "DESC_TEMPLATE", "DEVICE_PROFILE", "DLAA", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DUALSENSE", "DUALSENSE_AUDIO", "DUALSENSE_AUDIO_MODE", "DUALSENSE_HAPTICS", "DUALSENSE_TRIGGER_STRENGTH", "DUALSENSE_TRIGGERS", "DUALSENSE_VOL", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG",
+    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA", "COLOR_PRESET", "COLOR_SATURATION", "CORE_DIAG", "CRIT", "CRIT_OUT", "DESC_TEMPLATE", "DEVICE_PROFILE", "DLAA", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG",
     "EXEFS", "EXPERIMENTAL_GEOMETRY", "FEEDBACK", "FIX_C0", "FIX_INDIRECT_RESET", "FIX_VS_FAULT", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES", "FLIGHT_SPIKE_MS",
     "FLIGHT_THUMBS", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAME_GEN", "FREEZE_IDLE", "FREE_CORES", "FULLSCREEN", "GPL", "GPL_DRAW_BUILD", "GPU",
     "GPU_INDEX", "GPU_NAME", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
@@ -50,10 +50,26 @@ static const char *const known[] = {
     "SHADER_MEMO", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR", "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "SWKBD_ANSWER",
     "SWKBD_TEST", "TEST_PAD", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TIMER_1MS", "TRACE", "UBO_SNAPSHOT", "UPSCALER", "UPSCALER_PRESET", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
-    "WB_EXACT", "WB_FENCE_LIMIT", "WINDOW_SIZE", "XELL", "XESS_PRESET", "XLATE", "XLATE_ID", "XLATE_PROCS", "ZSTD_CHECK", "ZSTD_NATIVE",
-};
+    "WB_EXACT", "WB_FENCE_LIMIT", "WINDOW_SIZE", "XESS_PRESET", "XLATE", "XLATE_ID", "XLATE_PROCS", "ZSTD_CHECK", "ZSTD_NATIVE",
+    "ANTILAG2",
+    "FG_MODE",
+    "FG_MULT",
+    "FG_PRESET",
+    "FG_FLOW",
+    "FG_STILL",
+    "FG_TYPE",
+    "FXAA",
+    "XELL",
+    "XESS_QUALITY",
+    "DLSS_NR",
+    "DLSS_NR_COLOR",
+    "DLSS_NR_MODEL",
+    "DLSS_NR_PRESET",
+    "DLSS_NR_SCALE",
+    "DLSS_NR_SHARPNESS",
+    "DLSS_NR_TRANSFER",};
 
-// The totk.ini section a key cfg_set may write goes to when the file lacks it (totk.ini.example's sections).
+// The dkb.ini section a key cfg_set may write goes to when the file lacks it (dkb.ini.example's sections).
 static const struct { const char *key, *section; } sections[] = {
     {"FPS_LIMIT", "frame rate"}, {"FPS60", "frame rate"},
     {"REALTIME", "frame rate"}, {"CLOTH_REALTIME", "frame rate"}, {"HIGHFPS_FIX", "frame rate"},
@@ -66,9 +82,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"COLOR_GAMMA", "display"},
     {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
     {"MENU_LANG", "language"}, {"LANG", "language"}, {"OPERATION_MODE", "language"},
-    {"VOLUME", "audio"}, {"AUDIO_CHANNELS", "audio"},
-    {"DUALSENSE", "input"}, {"DUALSENSE_TRIGGERS", "input"}, {"DUALSENSE_TRIGGER_STRENGTH", "input"},
-    {"DUALSENSE_AUDIO", "input"}, {"DUALSENSE_VOL", "input"}, {"DUALSENSE_HAPTICS", "input"},
+    {"VOLUME", "audio"},
     {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
     {"PAD_LAYOUT", "input"}, {"STICK_DEADZONE", "input"}, {"MOUSE_SENS", "input"}, {"INPUT_RECORD", "input"},
     {"BIND_A", "input"}, {"BIND_B", "input"}, {"BIND_X", "input"}, {"BIND_Y", "input"}, {"BIND_LCLICK", "input"},
@@ -90,7 +104,18 @@ static const struct { const char *key, *section; } sections[] = {
     {"WB_FENCE_LIMIT", "diagnostics"}, {"WB_EXACT", "diagnostics"}, {"NX2_READ_NOWAIT", "diagnostics"},
     {"NVN2_MODE_TRACE", "diagnostics"},
     {"NVN2_MODE_TRACE_START_MS", "diagnostics"}, {"NVN2_MODE_TRACE_DURATION_MS", "diagnostics"},
-};
+    {"FG_MODE", "display"},
+    {"FG_PRESET", "display"},
+    {"FG_FLOW", "display"},
+    {"FG_STILL", "display"},
+    {"FG_TYPE", "display"},
+    {"FG_MULT", "display"},
+    {"ANTILAG2", "display"},
+    {"FXAA", "display"},
+    {"XELL", "display"},
+    {"XESS_QUALITY", "display"},
+    {"DLSS_NR", "display"},
+    {"DLSS_NR_PRESET", "display"},};
 
 // The settings the menu shows: the value in effect when the key is unset, and what the key accepts. The only place a
 // default lives: consumers read cfg_value / cfg_int / cfg_double / cfg_bool. A row with an empty default has no fixed
@@ -119,18 +144,14 @@ static const CfgMeta metas[] = {
     {"COLOR_GAMMA", "1", "0.8..1.2", LIVE},
     {"DEVICE_PROFILE", "auto", "auto|desktop|deck", RESTART},
     // Game
-    {"FPS_LIMIT", "60", "30|40|45|60|90|120|144|display", LIVE}, {"FPS60", "1", "0|1", LIVE},
+    {"FPS_LIMIT", "60", "30|60", LIVE}, {"FPS60", "1", "0|1", LIVE},
     {"REALTIME", "1", "0|1", RESTART}, {"CLOTH_REALTIME", "1", "0|1", RESTART},
     {"HIGHFPS_FIX", "1", "0|1", RESTART},
     {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|nl|pt|ru|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant|pt-BR", RESTART},
     {"OPERATION_MODE", "docked", "docked|handheld", RESTART},
     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
     // Sound, Controls, Menu
-    {"VOLUME", "100", "0..100", LIVE}, {"AUDIO_CHANNELS", "", "stereo|5.1", LIVE},
-    {"DUALSENSE", "0", "0|1", LIVE}, {"DUALSENSE_TRIGGERS", "0", "0|1", LIVE},
-    {"DUALSENSE_TRIGGER_STRENGTH", "100", "0..100", LIVE}, {"DUALSENSE_AUDIO", "1", "0|1", LIVE},
-    {"DUALSENSE_VOL", "100", "0..150", LIVE}, {"DUALSENSE_HAPTICS", "1", "0|1", LIVE},
-    {"DUALSENSE_AUDIO_MODE", "interactive", "interactive|all", LIVE},
+    {"VOLUME", "100", "0..100", LIVE},
     {"MOTION", "1", "0|1", LIVE}, {"RUMBLE_STRENGTH", "130", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE}, {"PAD_LAYOUT", "auto", "auto|nintendo|xbox|xbox_prompts", LIVE},
     {"STICK_DEADZONE", "8", "0..50", LIVE}, {"MOUSE_SENS", "1", "0..10", LIVE},
@@ -162,10 +183,19 @@ static const CfgMeta metas[] = {
     {"NVN2_MODE_TRACE", "0", "0|1", RESTART},
     {"NVN2_MODE_TRACE_START_MS", "0", "0..600000", RESTART},
     {"NVN2_MODE_TRACE_DURATION_MS", "0", "0..600000", RESTART},
-    {"SPIN", "1", "0|1", RESTART}, {"VRAM_HEADROOM", "1", "0|1", RESTART},
-    {"XELL", "0", "0|1", LIVE},
     {"INPUT_RECORD", "", NULL, RESTART},
-};
+    {"FG_MODE", "off", "off|dlss_fg|xefg|msm_fg|fsr3_fg", LIVE},
+    {"FG_PRESET", "preset_c", "drivers_choice|preset_c|preset_b|preset_a", LIVE},
+    {"FG_MULT", "3x", "2x|3x|4x|6x", LIVE},
+    {"FG_FLOW", "35", "10..100", LIVE},
+    {"FG_STILL", "1", "0|1", LIVE},
+    {"FG_TYPE", "fixed", "fixed|adaptive", LIVE},
+    {"ANTILAG2", "on", "off|on", LIVE},
+    {"XELL", "off", "off|on|boost", LIVE},
+    {"XESS_QUALITY", "quality", "ultra_quality_plus|ultra_quality|quality|balanced|performance|ultra_performance|aa", LIVE},
+    {"FXAA", "1", "0|1", LIVE},
+    {"DLSS_NR", "0", "0|1", LIVE},
+    {"DLSS_NR_PRESET", "preset_b", "preset_a|preset_b|preset_c|preset_d|preset_e|preset_f|preset_g", LIVE},};
 
 static int is_known(const char *key) {
     for (size_t i = 0; i < sizeof known / sizeof *known; i++)
@@ -185,10 +215,18 @@ static char *trim(char *s) {
     return s;
 }
 
+static const char *unprefix(const char *name) {
+    if (!name) return NULL;
+    if (!strncmp(name, "DKB_", 4)) return name + 4;
+    if (!strncmp(name, "TOTK_", 5)) return name + 5;
+    return NULL;
+}
+
 // The upper-case key without the prefix, in place.
 static char *norm_key(char *key) {
     for (char *p = key; *p; p++) *p = (char)toupper((unsigned char)*p);
-    return strncmp(key, PREFIX, PREFIX_LEN) ? key : key + PREFIX_LEN;
+    const char *u = unprefix(key);
+    return u ? (char *)u : key;
 }
 
 static void add(char *key, char *value, int line) {
@@ -196,7 +234,7 @@ static void add(char *key, char *value, int line) {
     size_t vl = strlen(value);
     if (vl >= 2 && value[0] == '"' && value[vl - 1] == '"') value[vl - 1] = 0, value++;
     if (!*key) return;
-    if (!is_known(key)) rt_log("cfg: totk.ini line %d: unknown key '%s'", line, key);
+    if (!is_known(key)) rt_log("cfg: dkb.ini line %d: unknown key '%s'", line, key);
     if (!*value) return;   // "key =" leaves the setting at its default
     for (int i = 0; i < n_entries; i++)
         if (!strcmp(entries[i].key, key)) {   // a repeated key: the later line wins
@@ -221,7 +259,7 @@ int cfg_load(const char *path) {
         char *s = trim(p);
         char *eq = strchr(s, '=');
         if (*s && *s != '#' && *s != ';' && *s != '[') {
-            if (!eq) rt_log("cfg: totk.ini line %d: no '=' in '%s'", line, s);
+            if (!eq) rt_log("cfg: dkb.ini line %d: no '=' in '%s'", line, s);
             else {
                 *eq = 0;
                 add(trim(s), trim(eq + 1), line);
@@ -234,8 +272,8 @@ int cfg_load(const char *path) {
     return 1;
 }
 
-// ---- device profiles: defaults for a known machine, below the environment and totk.ini and above the table, so any
-// key the player sets wins and resetting a key in the menu returns to the profile's value. TOTK_DEVICE_PROFILE = auto
+// ---- device profiles: defaults for a known machine, below the environment and dkb.ini and above the table, so any
+// key the player sets wins and resetting a key in the menu returns to the profile's value. DKB_DEVICE_PROFILE = auto
 // (default: the Steam Deck when the firmware says so), desktop (none) or deck.
 //
 // The Steam Deck (LCD Jupiter, OLED Galileo; 1280x800, 16:10, 4 Zen 2 cores, RDNA 2 with 8 CUs sharing 16 GB): the game
@@ -287,34 +325,41 @@ const char *cfg_device_profile(void) { return profile_of() ? "deck" : "desktop";
 // fixes keep applying without a rename.
 static const char *dkb_alias(const char *name) {
     char alias[96];
-    if (strncmp(name, PREFIX, PREFIX_LEN) || strlen(name) >= sizeof alias - 1) return NULL;
-    snprintf(alias, sizeof alias, "DKB_%s", name + PREFIX_LEN);
+    const char *u = unprefix(name);
+    if (!u || strlen(u) >= sizeof alias - 6) return NULL;
+    snprintf(alias, sizeof alias, "DKB_%s", u);
+    const char *e = getenv(alias);
+    if (e) return e;
+    snprintf(alias, sizeof alias, "TOTK_%s", u);
     return getenv(alias);
 }
 
 static const char *env_of(const char *name) {
-    const char *e = dkb_alias(name);
-    return e ? e : getenv(name);
+    const char *u = unprefix(name);
+    if (u) return dkb_alias(name);
+    return getenv(name);
 }
 
 static const char *raw_get(const char *name) {
     const char *e = env_of(name);
-    if (e || strncmp(name, PREFIX, PREFIX_LEN)) return e;
+    const char *u = unprefix(name);
+    if (e || !u) return e;
     int n = __atomic_load_n(&n_entries, __ATOMIC_ACQUIRE);
     for (int i = 0; i < n; i++)
-        if (!strcasecmp(entries[i].key, name + PREFIX_LEN)) return __atomic_load_n(&entries[i].value, __ATOMIC_ACQUIRE);
+        if (!strcasecmp(entries[i].key, u)) return __atomic_load_n(&entries[i].value, __ATOMIC_ACQUIRE);
     return NULL;
 }
 
 const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
-    if (v || strncmp(name, PREFIX, PREFIX_LEN) || !profile_of()) return v;
+    const char *u = unprefix(name);
+    if (v || !u || !profile_of()) return v;
     for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
-        if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
+        if (!strcasecmp(DECK[i].key, u)) return DECK[i].value;
     return NULL;
 }
 
-// Whether name's value comes from the player (the environment or totk.ini), not a profile or the table.
+// Whether name's value comes from the player (the environment or dkb.ini), not a profile or the table.
 int cfg_is_set(const char *name) { return raw_get(name) != NULL; }
 
 unsigned cfg_version(void) { return __atomic_load_n(&version, __ATOMIC_ACQUIRE); }
@@ -322,9 +367,10 @@ unsigned cfg_version(void) { return __atomic_load_n(&version, __ATOMIC_ACQUIRE);
 int cfg_from_env(const char *name) { return env_of(name) != NULL; }
 
 void cfg_set(const char *name, const char *value) {
-    if (strncmp(name, PREFIX, PREFIX_LEN) || !value) return;
+    const char *u = unprefix(name);
+    if (!u || !value) return;
     char key[64];
-    snprintf(key, sizeof key, "%s", name + PREFIX_LEN);
+    snprintf(key, sizeof key, "%s", u);
     for (char *p = key; *p; p++) *p = (char)toupper((unsigned char)*p);
     plat_mutex_lock(&set_lock);
     int i = 0, n = n_entries;
@@ -493,7 +539,7 @@ static void put(Out *o, const char *s, size_t n) {
     if (o->n + n + 1 > o->cap) {
         o->cap = (o->n + n + 1) * 2;
         o->buf = realloc(o->buf, o->cap);
-        if (!o->buf) rt_fatal("cfg: out of memory writing totk.ini");
+        if (!o->buf) rt_fatal("cfg: out of memory writing dkb.ini");
     }
     memcpy(o->buf + o->n, s, n);
     o->n += n;
@@ -541,7 +587,7 @@ int cfg_save_to(const char *path) {
     // after[i]: entries to write after line i (-1 = none); replace[i]: the entry whose value line i now carries
     int *replace = malloc(sizeof(int) * ((size_t)nl + 1)), *after_key = malloc(sizeof(int) * (size_t)(n + 1));
     char *drop = calloc((size_t)nl + 1, 1);   // lines of a reset key
-    if (!lines || !replace || !after_key || !drop) rt_fatal("cfg: out of memory writing totk.ini");
+    if (!lines || !replace || !after_key || !drop) rt_fatal("cfg: out of memory writing dkb.ini");
     for (int i = 0, at = 0; i < nl; i++) {
         size_t start = (size_t)at;
         while ((uint64_t)at < size && text[at] != '\n') at++;
@@ -654,8 +700,18 @@ static int find_ini(void) {
     if (!plat_exe_path(path, sizeof path)) return 0;
     char *cut = plat_last_sep(path);
     if (!cut) cut = strrchr(path, '/');
-    if (!cut || cut + 10 >= path + sizeof path) return 0;
-    strcpy(cut + 1, "totk.ini");
+    if (!cut || cut + 12 >= path + sizeof path) return 0;
+    strcpy(cut + 1, "dkb.ini");
+    if (plat_file_exists(path)) {
+        snprintf(ini_path, sizeof ini_path, "%s", path);
+        return 1;
+    }
+    strcpy(cut + 1, "dkb.ini");
+    if (plat_file_exists(path)) {
+        snprintf(ini_path, sizeof ini_path, "%s", path);
+        return 1;
+    }
+    strcpy(cut + 1, "dkb.ini");
     snprintf(ini_path, sizeof ini_path, "%s", path);
     return 1;
 }
@@ -676,13 +732,13 @@ static void load_ini(void) {
     for (int i = 0; i < n_entries; i++) {
         char var[128];
         snprintf(var, sizeof var, PREFIX "%s", entries[i].key);
-        if (env_of(var)) rt_log("cfg: %s (or its DKB_ name) is set in the environment and overrides totk.ini", var);
+        if (env_of(var)) rt_log("cfg: %s (or its DKB_ name) is set in the environment and overrides dkb.ini", var);
     }
 }
 
 void cfg_init(void) {
     load_ini();
     if (profile_of())
-        rt_log("cfg: device profile Steam Deck: defaults for the keys totk.ini does not set (TOTK_DEVICE_PROFILE=desktop "
+        rt_log("cfg: device profile Steam Deck: defaults for the keys dkb.ini does not set (DKB_DEVICE_PROFILE=desktop "
                "turns it off)");
 }

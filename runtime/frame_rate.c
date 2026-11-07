@@ -12,7 +12,7 @@
 // instead: +0 ratio = seconds * 30, +4 seconds (1.4.3: +8 interval = seconds * 60, the producer's nominal interval
 // before its half-step coefficient), the moving average of the last 5 display intervals, at most 1/15 s
 // (slower frames slow the game down, as on the console), no lower bound, so a higher frame-rate cap only changes the
-// pacer (frame_step_cap_ns, TOTK_FPS_LIMIT). The set cloth gives hair and cloth the same clock and needs realtime.
+// pacer (frame_step_cap_ns, DKB_FPS_LIMIT). The set cloth gives hair and cloth the same clock and needs realtime.
 //
 // The sample is the display time the pacer gives each present (nvnQueuePresentTexture), so the step follows the
 // frames as shown, pacing waits included. With the step on, the pacer ignores the game's interval and holds a frame
@@ -27,8 +27,8 @@
 // (input.c) runs on it, so a replay presses at the same game time at any frame rate and after a first load of any
 // length; a later load (fast travel) still shifts what follows by its length.
 //
-// TOTK_TRACE=perf adds a line per 120 presents: fps, the game seconds stepped against wall seconds, and with
-// TOTK_SPEED_PROBE=1 the player's position and ground speed (an independent check: Link runs at the same speed at
+// DKB_TRACE=perf adds a line per 120 presents: fps, the game seconds stepped against wall seconds, and with
+// DKB_SPEED_PROBE=1 the player's position and ground speed (an independent check: Link runs at the same speed at
 // any frame rate when game time follows wall time).
 #include <math.h>
 #include <stdatomic.h>
@@ -66,51 +66,53 @@ static void step_store(float seconds) {
     atomic_store_explicit(step_interval, iv, memory_order_release);
 }
 
+static int limit_hz = -1;
 static void frame_limit_live(void);
 
 void frame_step_init(void) {
     int fps60 = rt_patch_set("fps60"), realtime = rt_patch_set("realtime"), cloth = rt_patch_set("cloth");
-    if (realtime < 0) {
-        rt_log("frame rate: no patch table, shipping 30 fps whole-vsync steps");
-        return;
-    }
-    if (!rt_patch_enabled(realtime) && rt_patch_enabled(cloth)) {
-        rt_patch_disable(cloth);
-        rt_log("frame rate: cloth clock off, it needs the real-time step (TOTK_REALTIME=0)");
-    }
-    if (rt_patch_enabled(realtime)) {
-        step_word = (_Atomic uint64_t *)rt_patch_page();
-        step_interval = (_Atomic uint32_t *)((uint8_t *)rt_patch_page() + 8);
+    const char *rt_cfg = cfg_value("DKB_REALTIME");
+    int rt_enabled = !rt_cfg || (strcmp(rt_cfg, "0") != 0 && strcmp(rt_cfg, "off") != 0);
+    void *page = rt_patch_page();
+    if (page && (realtime >= 0 || rt_enabled)) {
+        step_word = (_Atomic uint64_t *)page;
+        step_interval = (_Atomic uint32_t *)((uint8_t *)page + 8);
         step_store((float)STEP_FIRST_S);
     }
-    frame_limit_live();   // TOTK_FPS_LIMIT decides the set fps60 from the start
-    rt_log("frame rate: present interval %s, %s", rt_patch_enabled(fps60) ? "1..3 (above 30 fps)" : "2..3 (shipping 30 fps)",
-           step_word ? "real-time step (5-frame average of display intervals, at most 1/15 s)" : "whole-vsync steps");
+    frame_limit_live();
+    rt_log("frame rate: dynamic pacing active, limit=%d fps, realtime=%s (%s)",
+           limit_hz, step_word ? "real-time step (Dynamic FPS)" : "adaptive",
+           fps60 >= 0 && rt_patch_enabled(fps60) ? "1..3" : "vsync decoupled");
 }
 
-int frame_step_realtime(void) { return step_word != NULL; }
+int frame_step_realtime(void) {
+    const char *rt_cfg = cfg_value("DKB_REALTIME");
+    int rt_enabled = !rt_cfg || (strcmp(rt_cfg, "0") != 0 && strcmp(rt_cfg, "off") != 0);
+    return step_word != NULL || rt_enabled;
+}
 
-// The frame limit (menu, TOTK_FPS_LIMIT, live): 30, 60, 90, 120, 144, any whole rate from 30 to 360, or display (the
-// refresh rate of the window's monitor). Unset, the older TOTK_FPS60=0 still means 30. A limit of 30 switches the set
+// The frame limit (menu, DKB_FPS_LIMIT, live): 30, 60, 90, 120, 144, any whole rate from 30 to 360, or display (the
+// refresh rate of the window's monitor). Unset, the older DKB_FPS60=0 still means 30. A limit of 30 switches the set
 // fps60 off (the shipping minimum interval 2), every other limit switches it on; the controller reads its minimum
 // interval from the patched sites each frame. With the real-time step the pacer holds frames to the limit; above 60
 // only the pacer changes, as the step has no lower bound. Without it the game steps whole 60 Hz vsyncs and the pacer
 // follows the game's interval, so the limit stops at 60.
 #define LIMIT_MIN_HZ 30
-#define LIMIT_MAX_HZ 360
+#define LIMIT_MAX_HZ 60
 static int fps60_set = -2;
 static unsigned limit_seen;
 static int limit_read;
-static int limit_hz = -1;   // 0: display; -1 before the first read
+// limit_hz defined above
 
 static int limit_parse(void) {
-    const char *e = cfg_get("TOTK_FPS_LIMIT"), *old = cfg_get("TOTK_FPS60");
+    const char *e = cfg_get("DKB_FPS_LIMIT"), *old = cfg_get("DKB_FPS60");
     if (!e || !*e) return old && !strcmp(old, "0") ? 30 : 60;
-    if (!strcmp(e, "display")) return 0;
+    if (!strcmp(e, "30")) return 30;
+    if (!strcmp(e, "60") || !strcmp(e, "display")) return 60;
     char *end;
     long n = strtol(e, &end, 10);
-    if (!*end && n >= LIMIT_MIN_HZ && n <= LIMIT_MAX_HZ) return (int)n;
-    rt_log("frame rate: TOTK_FPS_LIMIT=%s is not 30..360 or display; 60", e);
+    if (!*end && n > 0) return n <= 30 ? 30 : 60;
+    rt_log("frame rate: DKB_FPS_LIMIT=%s clamped to 60 fps (30 or 60 supported)", e);
     return 60;
 }
 
@@ -125,7 +127,7 @@ static void frame_limit_live(void) {
     if (fps60_set == -2) fps60_set = rt_patch_set("fps60");
     if (fps60_set >= 0) rt_patch_switch(fps60_set, hz != 30);
     if ((hz > 60 || hz == 0) && !step_word)
-        rt_log("frame rate: limits above 60 need the real-time step (TOTK_REALTIME=1); 60 fps");
+        rt_log("frame rate: limits above 60 need the real-time step (DKB_REALTIME=1); 60 fps");
     else if (hz) rt_log("frame rate: limit %d fps", hz);
     else if (gfx_window_refresh_hz() > 0) rt_log("frame rate: limit at the monitor's refresh rate (%.3f Hz now)", gfx_window_refresh_hz());
     else rt_log("frame rate: limit at the monitor's refresh rate (60 until the window measures it)");
@@ -146,10 +148,10 @@ double frame_step_limit_hz(void) {
     if (hz < 0) return 0;
     double r = hz ? hz : gfx_window_refresh_hz();
     if (r < LIMIT_MIN_HZ) r = 60;
-    return !step_word && r > 60 ? 60 : r > LIMIT_MAX_HZ ? LIMIT_MAX_HZ : r;
+    return r > LIMIT_MAX_HZ ? LIMIT_MAX_HZ : r;
 }
 
-// ---- TOTK_TRACE=perf speed lines
+// ---- DKB_TRACE=perf speed lines
 static uint64_t win_t0, win_frames, win_hist[4];   // win_hist: frames by present interval 1, 2, 3+ ([0] unused)
 static double win_game;
 static int probe = -1;
@@ -194,7 +196,7 @@ static void speed_report(uint64_t now, double step, int interval) {
     win_hist[interval < 1 ? 1 : interval > 3 ? 3 : interval]++;
     if (win_frames < 120) return;
     if (probe < 0) {
-        const char *e = cfg_get("TOTK_SPEED_PROBE");
+        const char *e = cfg_get("DKB_SPEED_PROBE");
         probe = e && !strcmp(e, "1");
     }
     double wall = (double)(now - win_t0) * 1e-9;

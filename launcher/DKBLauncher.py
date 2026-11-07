@@ -506,8 +506,9 @@ class DKBSettingsDialog(tk.Toplevel):
         resolutions=["3840x2160","2560x1440","1920x1080","1600x900","1280x800","1280x720","3440x1440","5120x1440"]
         if self.display_resolution not in resolutions:resolutions.insert(0,self.display_resolution)
         self.create_row_dropdown(f,"Window Resolution","window_size",resolutions,self.get_val("window_size",self.display_resolution),"Window size in pixels. Game render resolution is configured separately by the runtime.")
-        rates=sorted(set(["30","40","45","60","90","120","144",str(self.display_refresh),"display"]),key=lambda x:(x=="display",int(x) if x.isdigit() else 1000))
-        self.create_row_dropdown(f,"Frame Rate Limit","fps_limit",rates,self.get_val("fps_limit",str(self.display_refresh)),"Use Display to follow the selected monitor's refresh rate.")
+        rates=["30","60"]
+        cur_fps=self.get_val("fps_limit","60")
+        self.create_row_dropdown(f,"Frame Rate Limit","fps_limit",rates,"30" if cur_fps=="30" else "60","Target frame rate: 60 FPS (Native Bananza speed) or 30 FPS (Battery Saver / Handheld).")
         self.create_row_dropdown(f,"V-Sync / Presentation Mode","vk_present",["mailbox","fifo","immediate"],"mailbox","Mailbox is low-latency; FIFO is strict V-Sync; Immediate may tear.")
         self.create_row_dropdown(f,"Performance Metrics Overlay","perf_overlay",["off","fps","full"],self.get_val("perf_overlay","off"),"Display in-game real-time FPS and frametime metrics overlay.")
         output_sizes=["1280x720","1600x900","1920x1080","2560x1440","3200x1800","3840x2160","2560x1080","3440x1440","3840x1600","5120x2160","3840x1080","5120x1440","1280x800","1680x1050","1920x1200","2560x1600"]
@@ -526,9 +527,9 @@ class DKBSettingsDialog(tk.Toplevel):
         if "output_res" in self.vars:self.vars["output_res"].set(self.display_resolution)
         self.parent_app.move_to_monitor(self.target_monitor)
     def apply_handheld_preset(self):
-        for k,v in {"device_profile":"deck","window_size":"1280x800","output_res":"1280x800","fps_limit":"40","vk_present":"fifo","upscaler":"fsr","render_scale":"game","sharpness":"80"}.items():
+        for k,v in {"device_profile":"deck","window_size":"1280x800","output_res":"1280x800","fps_limit":"60","vk_present":"fifo","upscaler":"fsr","render_scale":"game","sharpness":"80"}.items():
             if k in self.vars:self.vars[k].set(v)
-        self.preset_status.config(text="Handheld profile selected: 1280×800, 40 FPS, FSR scaling, and FIFO presentation.",fg=COLOR_ACCENT_GREEN)
+        self.preset_status.config(text="Handheld profile selected: 1280×800, 60 FPS, FSR scaling, and FIFO presentation.",fg=COLOR_ACCENT_GREEN)
     def apply_ultrawide_profile(self):
         if "aspect" in self.vars:self.vars["aspect"].set("fit")
         if "fov" in self.vars:self.vars["fov"].set(110)
