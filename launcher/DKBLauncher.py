@@ -4,7 +4,7 @@ The layout and interaction model are adapted from the SteelTemple DKB launcher.
 See LICENSE-MIT.txt for the upstream notice. DKB Recomp retains inherited dkb.ini/DKB_ runtime names.
 """
 from __future__ import annotations
-import ctypes, json, os, shutil, subprocess, sys, tempfile, threading, time, urllib.request
+import ctypes, hashlib, json, os, shutil, subprocess, sys, tempfile, threading, time, urllib.request
 from datetime import datetime
 from pathlib import Path
 from ctypes import wintypes
@@ -814,8 +814,93 @@ class DKBLauncherApp(tk.Tk):
         if GAME_DIR and valid_game_dir(GAME_DIR):return True
         messagebox.showinfo("Select DKB Game Folder","Choose the folder containing your locally built dkb.exe.",parent=self); self.choose_game_directory()
         return bool(GAME_DIR and valid_game_dir(GAME_DIR))
+    def _pack_loose_romfs_if_needed(self, romfs_dir: Path, dst_bin: Path) -> bool:
+        if not romfs_dir.is_dir():
+            return False
+        loose_files = [f for f in os.listdir(romfs_dir) if f not in ("romfs.bin", "index.json", ".romfs-verified-v1") and not f.startswith(".")]
+        if not loose_files:
+            return False
+        if not messagebox.askyesno(
+            "Pack Loose RomFS Data?",
+            f"Loose game files were found in:\n{romfs_dir}\n\n"
+            f"Donkey Kong Bananza PC Recomp requires these files to be packed into 'romfs/romfs.bin'.\n\n"
+            f"Would you like DKB Launcher to pack 'romfs/romfs.bin' automatically now? (Takes ~1–2 minutes)",
+            parent=self,
+        ):
+            return False
+        self.update_status.config(text="Packing romfs/romfs.bin from loose game files…", fg=COLOR_GOLD)
+        self.update_idletasks()
+        try:
+            align = 16
+            chunk_sz = 8 << 20
+            files_list = []
+            for root_dir, _, fnames in os.walk(romfs_dir):
+                fnames.sort()
+                for fname in fnames:
+                    if not fname.startswith(".") and fname not in ("romfs.bin", "index.json", ".romfs-verified-v1"):
+                        fp = Path(root_dir) / fname
+                        files_list.append((fp.relative_to(romfs_dir).as_posix(), fp))
+            files_list.sort(key=lambda e: e[0].encode())
+            entries, off = [], 0
+            temp_bin = str(dst_bin) + ".tmp"
+            sha = hashlib.sha256()
+            total_cnt = len(files_list)
+            with open(temp_bin, "wb") as dst_f:
+                for idx_f, (rel_p, full_p) in enumerate(files_list):
+                    pad = -off % align
+                    if pad:
+                        dst_f.write(b"\0" * pad)
+                        sha.update(b"\0" * pad)
+                        off += pad
+                    sz = 0
+                    with open(full_p, "rb") as src_f:
+                        while chunk := src_f.read(chunk_sz):
+                            dst_f.write(chunk)
+                            sha.update(chunk)
+                            sz += len(chunk)
+                    entries.append({"path": rel_p, "offset": off, "size": sz})
+                    off += sz
+                    if idx_f % 5000 == 0:
+                        self.update_status.config(text=f"Packing romfs.bin: {idx_f}/{total_cnt} files ({off / (1024**3):.1f} GB)…", fg=COLOR_GOLD)
+                        self.update_idletasks()
+            if dst_bin.exists():
+                dst_bin.unlink()
+            os.rename(temp_bin, dst_bin)
+            manifest = {"status": "pass", "source": "packed from dump", "romfs_size": off, "romfs_sha256": sha.hexdigest(), "files": entries}
+            with open(romfs_dir / "index.json", "w", encoding="utf-8") as mf:
+                json.dump(manifest, mf)
+            self.update_status.config(text="romfs.bin packed and ready!", fg=COLOR_ACCENT_GREEN)
+            return True
+        except Exception as exc:
+            messagebox.showerror("RomFS Pack Failed", f"Could not pack romfs/romfs.bin:\n{exc}", parent=self)
+            return False
+
     def launch_game(self):
         if not self._ensure_game():return
+        exefs_main = GAME_DIR / "exefs" / "main"
+        exefs_sdk = GAME_DIR / "exefs" / "sdk"
+        romfs_bin = GAME_DIR / "romfs" / "romfs.bin"
+        if not romfs_bin.is_file() and (GAME_DIR / "romfs.bin").is_file():
+            (GAME_DIR / "romfs").mkdir(parents=True, exist_ok=True)
+            try:
+                os.symlink(GAME_DIR / "romfs.bin", romfs_bin)
+            except Exception:
+                shutil.move(str(GAME_DIR / "romfs.bin"), str(romfs_bin))
+        if not romfs_bin.is_file():
+            self._pack_loose_romfs_if_needed(GAME_DIR / "romfs", romfs_bin)
+        missing = []
+        if not exefs_main.is_file(): missing.append("exefs/main")
+        if not exefs_sdk.is_file(): missing.append("exefs/sdk")
+        if not romfs_bin.is_file(): missing.append("romfs/romfs.bin")
+        if missing:
+            messagebox.showerror(
+                "Game Data Missing",
+                f"Cannot start Donkey Kong Bananza because the following required dump files are missing from {GAME_DIR}:\n\n"
+                f"  • " + "\n  • ".join(missing) + "\n\n"
+                f"Please run DKB-Setup.exe and select your .nup container or unpacked game dump folder (containing exefs/main, exefs/sdk, and romfs/romfs.bin).",
+                parent=self,
+            )
+            return
         env=os.environ.copy(); _gpu,vendor=detect_gpu()
         if vendor!="Other" and not env.get("DKB_GPU_NAME"):env["DKB_GPU_NAME"]="NVIDIA" if vendor=="NVIDIA" else vendor
         command = [str(GAME_DIR / "dkb.exe")]

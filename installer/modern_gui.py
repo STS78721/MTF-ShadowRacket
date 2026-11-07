@@ -12,6 +12,8 @@ Features:
 - Real-time animated progress & live logging
 """
 
+import hashlib
+import json
 import os
 import shutil
 import sys
@@ -680,35 +682,77 @@ class ModernDkbInstaller(ctk.CTk):
 
         # 2. Base Game Dump Link / Extract
         dst_romfs = os.path.join(target, "romfs")
-        src_base = os.path.join(src, "base") if os.path.isdir(src) and os.path.isdir(os.path.join(src, "base", "romfs")) else src
-        if os.path.isdir(os.path.join(src_base, "exefs")) and os.path.isdir(os.path.join(src_base, "romfs")):
-            self.log("[✓] Validated user exefs/ and romfs/ directory dump.")
-            dst_exefs = os.path.join(target, "exefs")
-            if not os.path.exists(dst_exefs):
-                try:
-                    os.symlink(os.path.join(src_base, "exefs"), dst_exefs)
-                    self.log("[✓] Created zero-copy filesystem link to exefs.")
-                except Exception:
-                    shutil.copytree(os.path.join(src_base, "exefs"), dst_exefs, dirs_exist_ok=True)
-                    self.log("[✓] Copied exefs into destination.")
-            if not os.path.exists(dst_romfs):
-                try:
-                    os.symlink(os.path.join(src_base, "romfs"), dst_romfs)
-                    self.log("[✓] Created zero-copy filesystem link to romfs.")
-                except Exception:
-                    shutil.copytree(os.path.join(src_base, "romfs"), dst_romfs, dirs_exist_ok=True)
-                    self.log("[✓] Copied romfs into destination.")
-        elif os.path.isdir(src_base) and os.path.isfile(os.path.join(src_base, "romfs.bin")):
-            self.log("[✓] Validated user packed romfs.bin dump.")
-            os.makedirs(dst_romfs, exist_ok=True)
-            dst_bin = os.path.join(dst_romfs, "romfs.bin")
-            if not os.path.exists(dst_bin):
-                try:
-                    os.symlink(os.path.join(src_base, "romfs.bin"), dst_bin)
-                    self.log("[✓] Linked romfs.bin image.")
-                except Exception:
-                    shutil.copy2(os.path.join(src_base, "romfs.bin"), dst_bin)
-        elif src.lower().endswith(".nup"):
+        dst_exefs = os.path.join(target, "exefs")
+
+        # Smart Dump Source Resolution (handles parent folders, exefs/romfs subfolders, or folders containing .nup)
+        resolved_src = src
+        if os.path.isdir(src):
+            base_name = os.path.basename(os.path.normpath(src)).lower()
+            if base_name in ("exefs", "romfs"):
+                parent_dir = os.path.dirname(os.path.normpath(src))
+                if os.path.isdir(os.path.join(parent_dir, "exefs")) or os.path.isdir(os.path.join(parent_dir, "romfs")):
+                    resolved_src = parent_dir
+                    self.log(f"[*] Stepped up from '{base_name}/' subfolder to dump root: {resolved_src}")
+
+            # Search up to 2 levels deep for a folder containing exefs/main or a .nup container
+            if not (os.path.isfile(os.path.join(resolved_src, "exefs", "main")) or os.path.isfile(os.path.join(resolved_src, "romfs.bin"))):
+                found_root = None
+                found_nup = None
+                for root_d, dirs_d, files_d in os.walk(resolved_src):
+                    rel_depth = os.path.relpath(root_d, resolved_src).count(os.sep)
+                    if rel_depth > 2:
+                        dirs_d[:] = []
+                        continue
+                    if "exefs" in [d.lower() for d in dirs_d] and os.path.isfile(os.path.join(root_d, "exefs", "main")):
+                        found_root = root_d
+                        break
+                    for f_name in files_d:
+                        if f_name.lower().endswith(".nup") and not found_nup:
+                            found_nup = os.path.join(root_d, f_name)
+                if found_root:
+                    resolved_src = found_root
+                    self.log(f"[*] Located game dump directory at: {resolved_src}")
+                elif found_nup:
+                    resolved_src = found_nup
+                    self.log(f"[*] Located .nup container inside folder: {resolved_src}")
+
+        src_base = os.path.join(resolved_src, "base") if os.path.isdir(resolved_src) and os.path.isdir(os.path.join(resolved_src, "base", "exefs")) else resolved_src
+        loose_romfs_source = None
+
+        if os.path.isdir(src_base) and (os.path.isdir(os.path.join(src_base, "exefs")) or os.path.isfile(os.path.join(src_base, "romfs.bin")) or os.path.isdir(os.path.join(src_base, "romfs"))):
+            self.log(f"[✓] Validated user directory dump: {src_base}")
+            src_exefs = os.path.join(src_base, "exefs")
+            if os.path.isdir(src_exefs) and os.path.abspath(src_exefs) != os.path.abspath(dst_exefs):
+                os.makedirs(dst_exefs, exist_ok=True)
+                for item in os.listdir(src_exefs):
+                    s_item = os.path.join(src_exefs, item)
+                    d_item = os.path.join(dst_exefs, item)
+                    if os.path.isfile(s_item):
+                        shutil.copy2(s_item, d_item)
+                self.log("[✓] Copied exefs binaries (main, sdk, main.npdm) into destination.")
+
+            src_romfs_dir = os.path.join(src_base, "romfs")
+            src_romfs_bin = os.path.join(src_romfs_dir, "romfs.bin") if os.path.isfile(os.path.join(src_romfs_dir, "romfs.bin")) else (
+                os.path.join(src_base, "romfs.bin") if os.path.isfile(os.path.join(src_base, "romfs.bin")) else None
+            )
+            if src_romfs_bin:
+                os.makedirs(dst_romfs, exist_ok=True)
+                dst_bin = os.path.join(dst_romfs, "romfs.bin")
+                if os.path.abspath(src_romfs_bin) != os.path.abspath(dst_bin) and not os.path.isfile(dst_bin):
+                    try:
+                        os.symlink(src_romfs_bin, dst_bin)
+                        self.log("[✓] Created zero-copy filesystem link to romfs.bin.")
+                    except Exception:
+                        self.log("[*] Copying romfs.bin image into destination (this may take a moment)...")
+                        shutil.copy2(src_romfs_bin, dst_bin)
+                        self.log("[✓] Copied romfs.bin image into destination.")
+                src_idx_json = os.path.join(os.path.dirname(src_romfs_bin), "index.json")
+                dst_idx_json = os.path.join(dst_romfs, "index.json")
+                if os.path.isfile(src_idx_json) and not os.path.isfile(dst_idx_json):
+                    shutil.copy2(src_idx_json, dst_idx_json)
+            elif os.path.isdir(src_romfs_dir):
+                loose_romfs_source = src_romfs_dir
+        elif resolved_src.lower().endswith(".nup"):
             self.log("[*] NUP container detected (.nup). Extracting package to target...")
             try:
                 try:
@@ -721,7 +765,7 @@ class ModernDkbInstaller(ctk.CTk):
                         if os.path.isdir(tools_dir) and tools_dir not in sys.path:
                             sys.path.insert(0, tools_dir)
                         from extract_nup import Nup, Zstd, pick, extract_tree
-                nup = Nup(Path(src))
+                nup = Nup(Path(resolved_src))
                 zstd = Zstd()
                 pkg = pick(nup, "base")
                 self.log(f"[*] Extracting package [{pkg.index}] {pkg.kind_name} (title {pkg.title_id:016x})...")
@@ -730,9 +774,10 @@ class ModernDkbInstaller(ctk.CTk):
                     dst_folder.mkdir(parents=True, exist_ok=True)
                     count, total, _ = extract_tree(nup, zstd, pkg, which, dst_folder, False, True)
                     self.log(f"[✓] Extracted {which}: {count} files ({total / 1e9:.2f} GB).")
+                loose_romfs_source = dst_romfs
             except Exception as e:
-                self.log(f"[!] Extraction notice: {e}")
-        elif src.lower().endswith((".nsp", ".xci")):
+                self.log(f"[!] NUP Extraction error: {e}")
+        elif resolved_src.lower().endswith((".nsp", ".xci")):
             self.log("[*] Packed container selected (.nsp/.xci). Extracting with user keys...")
             hactool_candidates = [
                 os.path.join(payload_dir, "bin", "hactool.exe") if payload_dir else None,
@@ -744,42 +789,44 @@ class ModernDkbInstaller(ctk.CTk):
             ]
             hactool = next((h for h in hactool_candidates if h and os.path.isfile(h)), None)
             os.makedirs(dst_romfs, exist_ok=True)
-            dst_exefs = os.path.join(target, "exefs")
             os.makedirs(dst_exefs, exist_ok=True)
             if hactool and keys:
-                cmd = [hactool, "-k", keys, f"--romfsdir={dst_romfs}", f"--exefsdir={dst_exefs}", src]
+                cmd = [hactool, "-k", keys, f"--romfsdir={dst_romfs}", f"--exefsdir={dst_exefs}", resolved_src]
                 try:
                     res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
                     if res.returncode == 0:
                         self.log("[✓] Successfully extracted ExeFS and RomFS from container.")
+                        loose_romfs_source = dst_romfs
                     else:
-                        self.log(f"[*] Hactool result logged (code {res.returncode}).")
+                        self.log(f"[!] Hactool returned code {res.returncode}: {res.stderr.strip()[:200]}")
                 except Exception as e:
                     self.log(f"[!] Extraction notice: {e}")
 
-        # Auto-pack RomFS image if loose files are present
+        # Auto-pack RomFS image directly from loose files (whether in source dump or target/romfs) into target/romfs/romfs.bin
+        os.makedirs(dst_romfs, exist_ok=True)
         dst_bin = os.path.join(dst_romfs, "romfs.bin")
-        if not os.path.isfile(dst_bin) and os.path.isdir(dst_romfs):
-            loose_files = [f for f in os.listdir(dst_romfs) if f not in ("romfs.bin", "index.json", ".romfs-verified-v1")]
+        pack_src_dir = loose_romfs_source if (loose_romfs_source and os.path.isdir(loose_romfs_source)) else (dst_romfs if os.path.isdir(dst_romfs) else None)
+        if not os.path.isfile(dst_bin) and pack_src_dir:
+            loose_files = [f for f in os.listdir(pack_src_dir) if f not in ("romfs.bin", "index.json", ".romfs-verified-v1")]
             if loose_files:
-                self.log("[*] Packing loose RomFS files into high-performance indexed romfs.bin image...")
+                self.log(f"[*] Packing loose RomFS files from '{pack_src_dir}' into high-performance indexed romfs.bin image...")
                 try:
                     align = 16
                     chunk_sz = 8 << 20
                     files_list = []
-                    for root_dir, _, fnames in os.walk(dst_romfs):
+                    for root_dir, _, fnames in os.walk(pack_src_dir):
                         fnames.sort()
                         for fname in fnames:
                             if not fname.startswith('.') and fname not in ('romfs.bin', 'index.json', '.romfs-verified-v1'):
                                 fp = Path(root_dir) / fname
-                                files_list.append((fp.relative_to(dst_romfs).as_posix(), fp))
+                                files_list.append((fp.relative_to(pack_src_dir).as_posix(), fp))
                     files_list.sort(key=lambda e: e[0].encode())
                     
                     entries, off = [], 0
                     temp_bin = dst_bin + ".tmp"
                     sha = hashlib.sha256()
                     total_cnt = len(files_list)
-                    self.log(f"[*] Processing {total_cnt} game assets into romfs.bin...")
+                    self.log(f"[*] Processing {total_cnt} game assets into romfs/romfs.bin...")
                     with open(temp_bin, 'wb') as dst_f:
                         for idx_f, (rel_p, full_p) in enumerate(files_list):
                             pad = -off % align
@@ -795,36 +842,51 @@ class ModernDkbInstaller(ctk.CTk):
                                     sz += len(chunk)
                             entries.append({'path': rel_p, 'offset': off, 'size': sz})
                             off += sz
-                            if idx_f % 15000 == 0 and idx_f > 0:
-                                self.log(f"    -> Progress: {idx_f}/{total_cnt} files ({off / (1024**3):.1f} GB)...")
+                            if idx_f % 10000 == 0 and idx_f > 0:
+                                self.log(f"    -> Progress: {idx_f}/{total_cnt} files ({off / (1024**3):.2f} GB)...")
                     if os.path.exists(dst_bin):
                         os.remove(dst_bin)
                     os.rename(temp_bin, dst_bin)
                     manifest = {'status': 'pass', 'source': 'packed from dump', 'romfs_size': off, 'romfs_sha256': sha.hexdigest(), 'files': entries}
                     with open(os.path.join(dst_romfs, 'index.json'), 'w', encoding='utf-8') as mf:
                         json.dump(manifest, mf)
-                    self.log(f"[?] Created romfs.bin ({off / (1024**3):.2f} GB) and index.json.")
+                    self.log(f"[✓] Created romfs/romfs.bin ({off / (1024**3):.2f} GB) and index.json.")
                 except Exception as pe:
-                    self.log(f"[!] RomFS packing notice: {pe}")
+                    self.log(f"[!] RomFS packing error: {pe}")
 
-        # Check and deploy main.npdm descriptor
+        # Check and deploy main.npdm descriptor if missing
         dst_npdm = os.path.join(target, "exefs", "main.npdm")
         if not os.path.isfile(dst_npdm):
             payload_npdm = os.path.join(payload_dir, "exefs", "main.npdm") if payload_dir else None
             if payload_npdm and os.path.isfile(payload_npdm):
                 os.makedirs(os.path.dirname(dst_npdm), exist_ok=True)
                 shutil.copy2(payload_npdm, dst_npdm)
-                self.log("[?] Deployed exefs descriptor (main.npdm).")
+                self.log("[✓] Deployed exefs descriptor (main.npdm).")
 
-        # Validation: ensure user's dump yielded exefs/main.npdm (Clean-Room compliance)
-        dst_npdm = os.path.join(target, "exefs", "main.npdm")
-        if not os.path.isfile(dst_npdm):
-            self.log("[!] ERROR: ExeFS (main.npdm) was not found in destination.")
-            messagebox.showerror("Legitimate ExeFS Required",
-                "Could not locate or extract the game ExeFS (main.npdm) from your dump.\n\n"
-                "In strict compliance with clean-room recompilation rules, proprietary Nintendo\n"
-                "binaries cannot be distributed with this installer.\n\n"
-                "Please verify that your dump contains exefs/main.npdm or supply a valid .nup dump.")
+        # Strict Post-Install Verification: require exefs/main, exefs/sdk, AND romfs/romfs.bin
+        dst_main = os.path.join(target, "exefs", "main")
+        dst_sdk = os.path.join(target, "exefs", "sdk")
+        missing_items = []
+        if not os.path.isfile(dst_main):
+            missing_items.append("exefs/main")
+        if not os.path.isfile(dst_sdk):
+            missing_items.append("exefs/sdk")
+        if not os.path.isfile(dst_bin):
+            missing_items.append("romfs/romfs.bin")
+
+        if missing_items:
+            missing_str = ", ".join(missing_items)
+            self.log(f"[!] ERROR: Required game data missing after extraction/packing: {missing_str}")
+            messagebox.showerror(
+                "Game Data Incomplete",
+                f"The following required game files were not found or could not be packed into your install folder:\n\n"
+                f"  • {missing_str}\n\n"
+                f"Selected Source: {src}\n\n"
+                f"Please ensure you select EITHER:\n"
+                f"1. Your .nup container file, OR\n"
+                f"2. Your unpacked game dump folder containing both 'exefs/' (main, sdk) and 'romfs/' (or 'romfs.bin').\n\n"
+                f"Note: Encrypted Switch 2 containers cannot be unpacked by legacy hactool — use a .nup container or pre-extracted exefs + romfs dump."
+            )
             self.btn_next.configure(state="normal", text="Retry Installation", command=self.start_install)
             return
 
