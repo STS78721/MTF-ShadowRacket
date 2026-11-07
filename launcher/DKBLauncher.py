@@ -774,7 +774,8 @@ class DKBSettingsDialog(tk.Toplevel):
         self.create_row_slider(f,"Mouse Sensitivity","mouse_sens",0,10,1,"x","Adjust mouse input sensitivity.")
         self.create_row_slider(f,"Game Volume","volume",0,100,100,"%","Set the game's master volume.")
         self.create_row_dropdown(f,"Audio Output Channels","audio_channels",["stereo","5.1"],self.get_val("audio_channels","stereo"),"Choose between stereo or 5.1 surround sound audio mixing.")
-        self.create_row_dropdown(f,"Game Language","locale",["en-US","en-GB","ja","fr","de","it","es","nl","ru","zh-Hans","zh-Hant","ko"],"en-US","English is selected by default.")
+        loc = self.get_val("locale") or self.get_val("lang") or "en-US"
+        self.create_row_dropdown(f,"Game Language","locale",["en-US","en-GB","ja","fr","de","it","es","nl","ru","pt","pt-BR","zh-Hans","zh-Hant","ko"],loc,"English is selected by default.")
         self.create_row_dropdown(f,"Launcher Menu Language","menu_lang",["en"],"en","The game menu and overlay are kept in English.")
         self.create_row_toggle(f,"Keep Game Active When Unfocused","assume_focus","1","Keep the game running when its window is not in front.")
         row=tk.Frame(f,bg=COLOR_BG_DARK,pady=8); row.pack(fill=tk.X,padx=20)
@@ -796,6 +797,9 @@ class DKBSettingsDialog(tk.Toplevel):
             elif p == "ultra_performance": updates["dlss_preset"] = "preset_l"
         else:
             updates["dlaa"] = "0"
+            updates["dlss"] = "off"
+        if "locale" in updates:
+            updates["lang"] = updates["locale"]
         updates["reflex"] = updates.get("reflex", "boost")
         updates["low_latency"] = updates.get("reflex", "boost")
         fg = updates.get("frame_gen", "0")
