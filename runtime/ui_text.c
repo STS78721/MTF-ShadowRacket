@@ -33,7 +33,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_ON] = "On", [UI_MENU_OFF] = "Off", [UI_MENU_AUTO] = "Automatic", [UI_MENU_DEFAULT_MARK] = "default",
     [UI_MENU_AFTER_RESTART] = "after restart", [UI_MENU_SET_BY_ENV] = "set by environment variable",
     [UI_MENU_SAVE_FAILED] = "could not save settings",
-    [UI_MENU_VERSION] = "OOT Recomp %s, game %s",
+    [UI_MENU_VERSION] = "DKB Recomp %s, game %s",
 
     [UI_MENU_FULLSCREEN] = "Fullscreen", [UI_MENU_FULLSCREEN_DESC] = "Fills the screen with the game; F11 toggles it.",
     [UI_MENU_WINDOW_SIZE] = "Window size", [UI_MENU_WINDOW_SIZE_DESC] = "Size of the game window when not fullscreen.",
@@ -75,6 +75,43 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_UPSCALE_PRESET] = "Upscaler quality preset",
     [UI_MENU_UPSCALE_PRESET_DESC] = "Picks the 3D render scale for the upscaler (DLSS or AMD FSR): Quality 67 %, Balanced 58 %, "
                                     "Performance 50 %, Ultra Performance 33 %, Native 100 %.",
+    [UI_MENU_FG_MODE] = "Frame Generation",
+    [UI_MENU_FG_MODE_DESC] = "Generates interpolated frames between rendered frames to multiply smoothness. "
+                             "NVIDIA DLSS MFG supports Presets A / B / C with hardware optical flow. "
+                             "Intel XeSS MFG and Nodix MSM-FG 1.1 provide GPU compute motion interpolation across all hardware.",
+    [UI_MENU_FG_PRESET] = "DLSS Frame Gen preset",
+    [UI_MENU_FG_PRESET_DESC] = "Selects the NVIDIA DLSS Frame Generation neural profile: Preset A (Transformer optical "
+                               "flow, sharpest HUD & motion stability), Preset B (Balanced optical flow for fast camera "
+                               "pans), or Preset C (Low motion blur / ultra-clean disocclusion).",
+    [UI_MENU_FG_MULT] = "Frame Gen multiplier",
+    [UI_MENU_FG_MULT_DESC] = "Number of presented frames per rendered frame. 2x and 3x are universally supported across "
+                             "all Super Motion modes. 4x and 6x Multi-Frame Generation (MFG) are accelerated on NVIDIA "
+                             "GeForce RTX 50 Series (Blackwell) and supported via compute on modern GPUs.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
+    [UI_MENU_REFLEX_DESC] = "Synchronises CPU simulation and GPU submission via VK_NV_low_latency2 to eliminate the "
+                            "render queue and minimize input lag. Automatically guided to On + Boost when DLSS Frame "
+                            "Generation is enabled.",
+    [UI_MENU_ANTILAG2] = "AMD Anti-Lag 2",
+    [UI_MENU_ANTILAG2_DESC] = "Synchronises CPU frame pacing with GPU execution via VK_AMD_anti_lag to minimize click-to-photon "
+                              "latency on AMD Radeon GPUs.",
+    [UI_MENU_XELL] = "Intel Xe Low Latency (XeLL)",
+    [UI_MENU_XELL_DESC] = "Intel Xe Low Latency frame pacing for Intel Arc and Iris Xe graphics. Dynamically synchronizes "
+                          "render dispatch and presentation to reduce click-to-photon latency.",
+    [UI_MENU_XESS_QUALITY] = "Intel XeSS Quality Preset",
+    [UI_MENU_XESS_QUALITY_DESC] = "Picks the Intel XeSS super sampling mode: Ultra Quality Plus (1.3x), Ultra Quality (1.5x), "
+                                  "Quality (1.7x), Balanced (2.0x), Performance (2.3x), Ultra Performance (3.0x), or Native AA (1.0x). "
+                                  "Accelerated by XMX AI matrix engines on Intel Arc, or universal DP4a vector neural instructions on other GPUs.",
+    [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
+    [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
+    [UI_MENU_SMAA] = "SMAA 1x Anti-Aliasing",
+    [UI_MENU_SMAA_DESC] = "Subpixel Morphological Anti-Aliasing. High-quality morphological edge smoothing with zero temporal blur or ghosting.",
+    [UI_MENU_AO] = "Ambient Occlusion",
+    [UI_MENU_AO_DESC] = "Calculates contact shadows and depth-based ambient shading in real-time. SSAO provides fast hemisphere occlusion; HBAO delivers physically accurate horizon-based contact shadows.",
+    [UI_MENU_AO_OFF] = "Off",
+    [UI_MENU_AO_SSAO] = "SSAO (Fast)",
+    [UI_MENU_AO_HBAO] = "HBAO (Accurate)",
+    [UI_MENU_AO_INTENSITY] = "Ambient Occlusion Intensity",
+    [UI_MENU_AO_INTENSITY_DESC] = "Controls the darkness and strength of the ambient occlusion contact shadows.",
     [UI_MENU_DLSS_MODEL] = "DLSS model",
     [UI_MENU_DLSS_MODEL_DESC] = "Selects the neural model generation and preset. DLSS 4 (Preset K / J) is tuned for "
                                 "Native / Quality / Balanced; DLSS 4.5 (Preset M / L) is tuned for Performance (50 %) "
@@ -322,7 +359,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_OV_FMT_MHZ] = "%.0f MHz", [UI_MENU_OV_FMT_GB] = "%.1f GB", [UI_MENU_OV_FMT_GB_OF] = "/ %.1f GB",
     [UI_MENU_OV_GAME_GB] = "game %.1f GB", [UI_MENU_OV_FMT_MS] = "%.2f ms", [UI_MENU_OV_PER_FRAME] = "%.1f per frame",
     [UI_MENU_OV_WINDOW] = "Window", [UI_MENU_OV_OUTPUT] = "Game image", [UI_MENU_OV_SCENE] = "3D scene",
-    [UI_MENU_OV_SCALING] = "Scaling", [UI_MENU_OV_LIMIT] = "Frame limit", [UI_MENU_OV_PRESENT] = "Presentation",
+    [UI_MENU_OV_SCALING] = "Scaling", [UI_MENU_OV_FPS_LABEL] = "FPS", [UI_MENU_OV_FRAME_LABEL] = "Frame", [UI_MENU_OV_FMT_FPS] = "%.0f",
+    [UI_MENU_OV_LOW1] = "1%% low %.0f", [UI_MENU_OV_LOW01] = "0.1%% low %.0f",
+    [UI_MENU_OV_SCALE_DOWN] = "bilinear (FSR only enlarges)",
+    [UI_MENU_OV_LIMIT] = "Frame limit", [UI_MENU_OV_PRESENT] = "Presentation",
     [UI_MENU_OV_FMT_SIZE] = "%ux%u", [UI_MENU_OV_FMT_SCENE] = "%ux%u, %.0f%%",
     [UI_MENU_OV_FMT_FSR] = "AMD FSR 1, sharpness %d%%", [UI_MENU_OV_SCALE_NONE] = "none (1:1)",
     [UI_MENU_OV_SCALE_BILINEAR] = "bilinear",
@@ -339,7 +379,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DEFAULT_MARK] = "по умолчанию",
     [UI_MENU_AFTER_RESTART] = "после перезапуска", [UI_MENU_SET_BY_ENV] = "задано переменной окружения",
     [UI_MENU_SAVE_FAILED] = "не удалось сохранить настройки",
-    [UI_MENU_VERSION] = "OOT Recomp %s, игра %s",
+    [UI_MENU_VERSION] = "DKB Recomp %s, игра %s",
 
     [UI_MENU_FULLSCREEN] = "Полный экран", [UI_MENU_FULLSCREEN_DESC] = "Игра на весь экран; F11 переключает режим.",
     [UI_MENU_WINDOW_SIZE] = "Размер окна", [UI_MENU_WINDOW_SIZE_DESC] = "Размер окна игры вне полноэкранного режима.",

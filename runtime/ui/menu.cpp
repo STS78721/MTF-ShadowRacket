@@ -715,6 +715,16 @@ static void tab_screen(float scale) {
         opt_slider("DKB_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     }
     opt_toggle("DKB_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
+    opt_toggle("DKB_SMAA", UI_MENU_SMAA, UI_MENU_SMAA_DESC);
+
+    static const char *const ao_vals[] = {"off", "ssao", "hbao"};
+    static const char *const ao_names[] = {"Off", "SSAO (Fast Hemisphere)", "HBAO (Horizon-Based Physical)"};
+    opt_choice_list("DKB_AO", UI_MENU_AO, ao_vals, ao_names, 3, UI_MENU_AO_DESC);
+
+    const char *cur_ao = cfg_value("DKB_AO");
+    if (cur_ao && strcmp(cur_ao, "off") != 0 && strcmp(cur_ao, "0") != 0) {
+        opt_slider("DKB_AO_INTENSITY", UI_MENU_AO_INTENSITY, 0.1f, 3.0f, UI_MENU_AO_INTENSITY_DESC, 0.1f, "%.1fx");
+    }
 
     // Frame Generation / Super Motion (Nodix Super Motion and DLSS MFG)
     opt_group_text("Frame Generation (Nodix Super Motion and DLSS MFG)");

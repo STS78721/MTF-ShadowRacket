@@ -223,7 +223,7 @@ def save_ini_settings(path, updates):
         active_section=""
         target_section=next((section for section, keys in {
             "frame rate":{"fps_limit","fps60","realtime","cloth_realtime","highfps_fix"},
-            "display":{"fullscreen","window_size","vk_present","output_res","render_scale","upscaler","upscaler_preset","dlss","dlss_preset","reflex","sharpness","aspect","fov","color_preset","color_brightness","color_contrast","color_saturation","color_gamma","device_profile","assume_focus","dlaa","low_latency","frame_gen","fg_mode","fg_mult","fg_flow","fg_type","xess_preset","perf_overlay","gpu_index","antilag2"},
+            "display":{"fullscreen","window_size","vk_present","output_res","render_scale","upscaler","upscaler_preset","dlss","dlss_preset","reflex","sharpness","aspect","fov","color_preset","color_brightness","color_contrast","color_saturation","color_gamma","device_profile","assume_focus","dlaa","low_latency","frame_gen","fg_mode","fg_mult","fg_flow","fg_type","xess_preset","perf_overlay","gpu_index","antilag2","smaa","fxaa","ao","ao_intensity"},
             "language":{"locale","lang","menu_lang","operation_mode"},
             "audio":{"volume","audio_channels"},
             "input":{"motion","rumble_strength","rumble_curve","rumble_triggers","pad_layout","stick_deadzone","mouse_sens"},
@@ -632,7 +632,7 @@ class DKBSettingsDialog(tk.Toplevel):
         pill=tk.Frame(row,bg=COLOR_CARD,bd=1,relief="solid",padx=7,pady=3); pill.pack(side=tk.RIGHT,padx=(8,0))
         text=tk.Label(pill,text="",font=("Segoe UI",9,"bold"),fg=COLOR_GOLD,bg=COLOR_CARD,width=8); text.pack()
         def changed(v):
-            var.set(v); display=f"{v/10:.1f}" if key=="rumble_curve" else str(v)
+            var.set(v); display=f"{v/10:.1f}" if key in {"rumble_curve","ao_intensity"} else str(v)
             text.config(text=f"{display} {unit}".strip())
         slider=DKBSlider(row,low,high,value,changed,width=180,height=28); slider.pack(side=tk.RIGHT,padx=5); changed(value)
         return row
@@ -728,6 +728,10 @@ class DKBSettingsDialog(tk.Toplevel):
         self.create_row_slider(f,"Color Contrast","color_contrast",70,150,100,"%","Display contrast adjustment.")
         self.create_row_slider(f,"Color Saturation","color_saturation",50,200,100,"%","Display saturation adjustment.")
         self.create_row_dropdown(f,"Color Gamma","color_gamma",["0.8","0.9","1.0","1.1","1.2"],"1.0","Gamma adjustment.")
+        self.create_row_toggle(f,"SMAA 1x Anti-Aliasing","smaa","0","Subpixel Morphological Anti-Aliasing: High-quality morphological edge smoothing with zero blur or ghosting.")
+        self.create_row_toggle(f,"FXAA Anti-Aliasing","fxaa","1","Game's built-in FXAA edge smoothing. Can be disabled when using SMAA 1x or DLAA.")
+        self.create_row_dropdown(f,"Ambient Occlusion","ao",["off","ssao","hbao"],"off","Contact Shadows: SSAO (Fast Poisson hemisphere) or HBAO (Physically accurate horizon ray-marching).")
+        self.create_row_slider(f,"Ambient Occlusion Intensity","ao_intensity",1,30,10,"x","Darkness and depth of ambient occlusion contact shadows (0.1x to 3.0x).")
         self.create_row_toggle(f,"High-FPS Realtime Physics","realtime","1","Unlocks game physics calculation tickrate for smooth 60+ FPS without slow motion.")
         self.create_row_toggle(f,"Realtime Cloth & Fur Physics","cloth_realtime","1","Evaluates Donkey Kong fur and cloth physics in real time at high refresh rates.")
         self.create_row_toggle(f,"High-FPS Camera Smoothing Fix","highfps_fix","1","Fixes camera tracking jitter and maintains smooth animation pacing.")
@@ -783,7 +787,7 @@ class DKBSettingsDialog(tk.Toplevel):
         tk.Checkbutton(row,text="Launcher Sound Effects",variable=self.sound_effects_var,font=("Segoe UI",10,"bold"),fg=COLOR_WHITE,bg=COLOR_BG_DARK,activebackground=COLOR_BG_DARK,activeforeground=COLOR_GOLD,selectcolor=COLOR_CARD,bd=0,highlightthickness=0).pack(side=tk.LEFT)
     def save_and_close(self):
         if not GAME_DIR:messagebox.showerror("Settings","Choose the DKB game folder first.",parent=self); return
-        updates={k:(f"{v.get()/10:.1f}" if k=="rumble_curve" else str(v.get())) for k,v in self.vars.items()}
+        updates={k:(f"{v.get()/10:.1f}" if k in {"rumble_curve","ao_intensity"} else str(v.get())) for k,v in self.vars.items()}
         preset_scale_map = {"native": "100", "quality": "67", "balanced": "58", "performance": "50", "ultra_performance": "33"}
         u = updates.get("upscaler", "dlss")
         p = updates.get("upscaler_preset", "quality")
@@ -817,6 +821,7 @@ class DKBSettingsDialog(tk.Toplevel):
         defaults={"fullscreen":"0","window_size":self.display_resolution,"output_res":self.display_resolution,"fps_limit":"60","vk_present":"mailbox","aspect":"fit","fov":"100",
             "upscaler":"fsr","render_scale":"game","sharpness":"80","device_profile":"auto","pipe_wait":"default","pipe_prebuild":"1",
             "color_preset":"default","color_brightness":"0","color_contrast":"100","color_saturation":"100","color_gamma":"1.0",
+            "smaa":"0","fxaa":"1","ao":"off","ao_intensity":"10",
             "experimental_geometry":"0","fix_vs_fault":"1","fix_zero":"1","lod_guard":"1","fix_indirect_reset":"1","lib_prebuild":"1",
             "pad_layout":"auto","motion":"1","rumble_strength":"130","rumble_curve":"0.6","rumble_triggers":"0","stick_deadzone":"8",
             "mouse_sens":"1","volume":"100","locale":"en-US","menu_lang":"en","assume_focus":"1"}

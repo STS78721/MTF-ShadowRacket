@@ -30,7 +30,7 @@ static int save_ok = 1;                         // the last cfg_save_to wrote (o
 // Every name the runtime reads (and the patch sets in generated/), without the prefix. A file key outside this list is
 // logged as unknown. A new variable goes here too, or its ini key logs a harmless "unknown key" line.
 static const char *const known[] = {
-    "AB", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_CHANNELS", "AUDIO_OFF", "AUDIO_PREFILL_MS",
+    "AB", "AO", "AO_INTENSITY", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_CHANNELS", "AUDIO_OFF", "AUDIO_PREFILL_MS",
     "BACKGROUND_WINDOW", "BIND_A", "BIND_B", "BIND_DOWN", "BIND_L", "BIND_LCLICK", "BIND_LEFT", "BIND_LSTICK_DOWN", "BIND_LSTICK_LEFT",
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
@@ -61,6 +61,9 @@ static const char *const known[] = {
     "FG_STILL",
     "FG_TYPE",
     "FXAA",
+    "SMAA",
+    "SSAO",
+    "HBAO",
     "XELL",
     "XESS_QUALITY",
     "DLSS_NR",
@@ -118,6 +121,9 @@ static const struct { const char *key, *section; } sections[] = {
     {"FG_MULT", "display"},
     {"ANTILAG2", "display"},
     {"FXAA", "display"},
+    {"SMAA", "display"},
+    {"AO", "display"},
+    {"AO_INTENSITY", "display"},
     {"XELL", "display"},
     {"XESS_QUALITY", "display"},
     {"DLSS_NR", "display"},
@@ -209,6 +215,9 @@ static const CfgMeta metas[] = {
     {"XELL", "off", "off|on|boost", LIVE},
     {"XESS_QUALITY", "quality", "ultra_quality_plus|ultra_quality|quality|balanced|performance|ultra_performance|aa", LIVE},
     {"FXAA", "1", "0|1", LIVE},
+    {"SMAA", "0", "0|1", LIVE},
+    {"AO", "off", "off|ssao|hbao", LIVE},
+    {"AO_INTENSITY", "1.0", "0.0..3.0", LIVE},
     {"DLSS_NR", "0", "0|1", LIVE},
     {"DLSS_NR_PRESET", "preset_b", "preset_a|preset_b|preset_c|preset_d|preset_e|preset_f|preset_g", LIVE},};
 

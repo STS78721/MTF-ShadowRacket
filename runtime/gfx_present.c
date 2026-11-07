@@ -11,7 +11,7 @@
 // dirty (gfx_window_mark_dirty), the next present (or gfx_window_resize) rebuilds it.
 //
 // The in-game menu (ui/menu.h) draws over the game image in the present's command buffer, after the blit. The window's
-// size and fullscreen state are the settings TOTK_WINDOW_SIZE and TOTK_FULLSCREEN, which the back end applies at start
+// size and fullscreen state are the settings DKB_WINDOW_SIZE and DKB_FULLSCREEN, which the back end applies at start
 // and whenever a cfg_set changes them (window_settings_live -> gfx_window_apply_settings).
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +25,8 @@
 #include "nvn_api.h"
 #include "nvn_api_dlss.h"
 #include "vk_xess.h"
+#include "vk_smaa.h"
+#include "vk_ao.h"
 #include "ui/menu.h"
 #include "vk.h"
 #include "platform/platform.h"
@@ -52,7 +54,7 @@ void gfx_window_mark_dirty(void) { plat_xchg32(&g_dirty, 1); }
 // The window gained or lost the focus: the game hears it as nn::oe's focus state and a notification message.
 void gfx_window_focus_changed(int in) {
     plat_xchg32(&g_focused, in);
-    oe_set_focus(in);                          // pinned to 1 by TOTK_ASSUME_FOCUS inside
+    oe_set_focus(in);                          // pinned to 1 by DKB_ASSUME_FOCUS inside
     oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
     plat_inc32(&g_focus_msgs);
     rt_log("gfx: window %s the focus", in ? "gained" : "lost");
@@ -68,19 +70,19 @@ void gfx_window_closed(void) {
     plat_exit(0);
 }
 
-// TOTK_FULLSCREEN=1: borderless window over the monitor. TOTK_WINDOW_SIZE=<w>x<h>: client area of the window (the
+// DKB_FULLSCREEN=1: borderless window over the monitor. DKB_WINDOW_SIZE=<w>x<h>: client area of the window (the
 // swapchain follows the window; the game image is scaled to it).
-int gfx_cfg_fullscreen(void) { return cfg_bool("TOTK_FULLSCREEN"); }
+int gfx_cfg_fullscreen(void) { return cfg_bool("DKB_FULLSCREEN"); }
 
 void gfx_cfg_window_size(int *w, int *h) {
     int x = 0, y = 0;
-    if (sscanf(cfg_value("TOTK_WINDOW_SIZE"), "%dx%d", &x, &y) != 2 || x < 640 || y < 360 || x > 7680 || y > 4320)
+    if (sscanf(cfg_value("DKB_WINDOW_SIZE"), "%dx%d", &x, &y) != 2 || x < 640 || y < 360 || x > 7680 || y > 4320)
         sscanf(cfg_meta("WINDOW_SIZE")->def, "%dx%d", &x, &y);   // unparsable or out of range: the default
     *w = x;
     *h = y;
 }
 
-// The refresh rate of the window's monitor (TOTK_FPS_LIMIT=display), measured by the back end's window thread when the
+// The refresh rate of the window's monitor (DKB_FPS_LIMIT=display), measured by the back end's window thread when the
 // window opens, lands on another monitor or the display mode changes; readers take the stored value.
 static volatile int32_t g_rate_mhz;   // millihertz, 0 unknown
 
@@ -121,7 +123,7 @@ static int g_cap_w, g_cap_h, g_cap_valid;
 static int g_flip_on;            // vk_present_blit submitted the blit of swapchain image g_flip_idx; vk_present_flip presents it
 static uint32_t g_flip_idx;
 
-// ---- TOTK_FLIGHT thumbnails (flight.c; g_pl): each present also blits the swapchain image down into slot frame % g_th_n
+// ---- DKB_FLIGHT thumbnails (flight.c; g_pl): each present also blits the swapchain image down into slot frame % g_th_n
 // of a host-visible ring. A slot's tag names the frame it holds complete; recording a new frame clears the tag first,
 // and the tag is set once the fence of that present has signalled.
 #define TH_BYTES ((VkDeviceSize)FLIGHT_THUMB_W * FLIGHT_THUMB_H * 4)
@@ -213,30 +215,292 @@ uint64_t gfx_vsync_time_ns(uint64_t tick) { return (uint64_t)g_vs_start_ns + tic
 int gfx_window_focused(void) { return g_focused; }
 unsigned gfx_window_focus_messages(void) { return (unsigned)g_focus_msgs; }
 
+void vk_upscaler_log(const char *fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    rt_log("[UPSCALER] %s", buf);
+}
+
+static void reflex_apply_locked(void);
+static void antilag_apply_locked(void);
+static void fg_apply_locked(void);
+
 // Present path (g_pl held): a settings change (cfg_version) reaches the window thread, which applies a changed size or
-// fullscreen; a changed TOTK_VK_PRESENT rebuilds the swapchain at this present.
+// fullscreen; a changed DKB_VK_PRESENT rebuilds the swapchain at this present.
 static void window_settings_live(void) {
     static unsigned seen;
     static int started;
-    static char present[16];   // the TOTK_VK_PRESENT the swapchain was made with
+    static char present[16];   // the DKB_VK_PRESENT the swapchain was made with
     unsigned v = cfg_version();
     if (started && v == seen) return;
     seen = v;
     res_fov_live();
-    const char *e = cfg_value("TOTK_VK_PRESENT");
+    const char *e = cfg_value("DKB_VK_PRESENT");
     if (!started || strncmp(e, present, sizeof present - 1)) {
         snprintf(present, sizeof present, "%s", e);
         if (started) plat_xchg32(&g_dirty, 1);
     }
     if (started) gfx_window_apply_settings();
+    reflex_apply_locked();
+    antilag_apply_locked();
+    fg_apply_locked();
     started = 1;
 }
 
 // ---- swapchain
-static const char *g_present_got = "";   // the TOTK_VK_PRESENT value of the mode the swapchain got; "" before one
+static const char *g_present_got = "";   // the DKB_VK_PRESENT value of the mode the swapchain got; "" before one
+
+// ---- NVIDIA Reflex Low Latency (VK_NV_low_latency2)
+static PFN_vkSetLatencySleepModeNV g_reflex_set_mode;
+static PFN_vkLatencySleepNV g_reflex_sleep;
+static PFN_vkSetLatencyMarkerNV g_reflex_marker;
+static VkSemaphore g_reflex_sem;
+static uint64_t g_reflex_val;
+static uint64_t g_reflex_present_id = 1;
+static int g_reflex_mode = -1;   // 0=off, 1=on, 2=boost
+static uint32_t g_reflex_min_us = 1;
+
+static void reflex_apply_locked(void) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->has_nv_reflex || !g_sc) return;
+    if (!g_reflex_set_mode) {
+        g_reflex_set_mode = (PFN_vkSetLatencySleepModeNV)vkGetDeviceProcAddr(c->device, "vkSetLatencySleepModeNV");
+        g_reflex_sleep = (PFN_vkLatencySleepNV)vkGetDeviceProcAddr(c->device, "vkLatencySleepNV");
+        g_reflex_marker = (PFN_vkSetLatencyMarkerNV)vkGetDeviceProcAddr(c->device, "vkSetLatencyMarkerNV");
+    }
+    if (!g_reflex_set_mode) return;
+    if (!g_reflex_sem) {
+        VkSemaphoreTypeCreateInfo st = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                        .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
+        VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &st};
+        vkCreateSemaphore(c->device, &si, NULL, &g_reflex_sem);
+        g_reflex_val = 0;
+    }
+    const char *m = cfg_value("DKB_REFLEX");
+    int mode = !strcmp(m, "boost") ? 2 : !strcmp(m, "on") ? 1 : 0;
+    // Decoupled safety: if DLSS FG is active, reflex must stay at least 'on' to prevent driver crash
+    const char *fg_mode = cfg_value("DKB_FG_MODE");
+    if (!strcmp(fg_mode, "dlss_fg") && mode == 0) {
+        mode = 1;
+    }
+    double hz = frame_step_limit_hz();
+    uint32_t min_us = hz > 0 ? (uint32_t)(1000000.0 / hz + 0.5) : 0;
+    if (mode == g_reflex_mode && min_us == g_reflex_min_us) return;
+    g_reflex_mode = mode;
+    g_reflex_min_us = min_us;
+    VkLatencySleepModeInfoNV mi = {
+        .sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_MODE_INFO_NV,
+        .lowLatencyMode = mode > 0 ? VK_TRUE : VK_FALSE,
+        .lowLatencyBoost = mode == 2 ? VK_TRUE : VK_FALSE,
+        .minimumIntervalUs = min_us
+    };
+    VkResult r = g_reflex_set_mode(c->device, g_sc, &mi);
+    rt_log("REFLEX: NVIDIA Reflex Low Latency -> %s (minInterval=%u us, VK_NV_low_latency2=%s)",
+           mode == 2 ? "ON + BOOST" : mode == 1 ? "ON" : "OFF", min_us, r == VK_SUCCESS ? "OK" : "ERR");
+}
+
+void vk_reflex_marker(int marker) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->has_nv_reflex || !g_reflex_marker || g_reflex_mode <= 0) return;
+    plat_rmutex_lock(&g_pl);
+    if (!g_sc) {
+        plat_rmutex_unlock(&g_pl);
+        return;
+    }
+    uint64_t pid = __atomic_load_n(&g_reflex_present_id, __ATOMIC_RELAXED);
+    VkSetLatencyMarkerInfoNV mi = {
+        .sType = VK_STRUCTURE_TYPE_SET_LATENCY_MARKER_INFO_NV,
+        .presentID = pid,
+        .marker = (VkLatencyMarkerNV)marker
+    };
+    g_reflex_marker(c->device, g_sc, &mi);
+    plat_rmutex_unlock(&g_pl);
+}
+
+int vk_has_reflex(void) {
+    VkCtx *c = vk_ctx();
+    return c ? c->has_nv_reflex : 0;
+}
+
+uint64_t vk_reflex_current_present_id(void) {
+    return __atomic_load_n(&g_reflex_present_id, __ATOMIC_RELAXED);
+}
+
+void vk_reflex_sleep(void) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->has_nv_reflex || !g_reflex_sleep || !g_reflex_sem || g_reflex_mode <= 0) return;
+    plat_rmutex_lock(&g_pl);
+    if (!g_sc) {
+        plat_rmutex_unlock(&g_pl);
+        return;
+    }
+    uint64_t val = __atomic_add_fetch(&g_reflex_val, 1, __ATOMIC_RELAXED);
+    VkLatencySleepInfoNV si = {
+        .sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV,
+        .signalSemaphore = g_reflex_sem,
+        .value = val
+    };
+    VkResult r = g_reflex_sleep(c->device, g_sc, &si);
+    plat_rmutex_unlock(&g_pl);
+    if (r == VK_SUCCESS) {
+        VkSemaphoreWaitInfo wi = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+            .semaphoreCount = 1,
+            .pSemaphores = &g_reflex_sem,
+            .pValues = &val
+        };
+        vkWaitSemaphores(c->device, &wi, 50000000ull);
+    }
+}
+
+// ---- AMD Anti-Lag 2 (VK_AMD_anti_lag)
+typedef struct {
+    VkStructureType sType;
+    void *pNext;
+    int stage;
+    uint64_t frameIndex;
+} AntiLagPresInfoAMD;
+
+typedef struct {
+    VkStructureType sType;
+    const void *pNext;
+    int mode;
+    uint32_t maxFPS;
+    const AntiLagPresInfoAMD *pPresentationInfo;
+} AntiLagDataAMD;
+
+typedef void(VKAPI_PTR *AntiLagUpdateFn)(VkDevice, const AntiLagDataAMD *);
+static AntiLagUpdateFn g_antilag_update;
+static int g_antilag_mode = -1;
+static uint64_t g_antilag_frame = 1;
+
+static void antilag_apply_locked(void) {
+    VkCtx *c = vk_ctx();
+    if (!c) return;
+    if (c->has_amd_antilag && !g_antilag_update)
+        g_antilag_update = (AntiLagUpdateFn)vkGetDeviceProcAddr(c->device, "vkAntiLagUpdateAMD");
+    int mode = !strcmp(cfg_value("DKB_ANTILAG2"), "on") ? 1 : 0;
+    if (mode == g_antilag_mode) return;
+    g_antilag_mode = mode;
+    vk_upscaler_log("ANTILAG2: AMD Anti-Lag 2 -> %s (VK_AMD_anti_lag=%s, GPU='%s')", mode ? "ON" : "OFF",
+                    c->has_amd_antilag && g_antilag_update ? "ENGAGED"
+                    : c->gpu_is_nvidia                     ? "PAIRED_WITH_NVIDIA_REFLEX"
+                                                           : "DRIVER_PACING",
+                    c->props.deviceName);
+}
+
+void vk_antilag_sleep(void) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->has_amd_antilag || !g_antilag_update || g_antilag_mode <= 0) return;
+    uint64_t fidx = __atomic_add_fetch(&g_antilag_frame, 1, __ATOMIC_RELAXED);
+    AntiLagPresInfoAMD pi = {.sType = (VkStructureType)1000476002, .stage = 0 /* VK_ANTI_LAG_STAGE_INPUT_AMD */,
+                             .frameIndex = fidx};
+    double hz = frame_step_limit_hz();
+    AntiLagDataAMD ad = {.sType = (VkStructureType)1000476001, .mode = 1 /* VK_ANTI_LAG_MODE_ON_AMD */,
+                         .maxFPS = hz > 0 ? (uint32_t)(hz + 0.5) : 0, .pPresentationInfo = &pi};
+    g_antilag_update(c->device, &ad);
+}
+
+// ---- Hardware-Aware Frame Generation (DLSS FG Presets A/B/C + MFG 2x/4x/6x, FSR 3.1 FG, FSR 4 AI FG)
+static int g_fg_mult = 1;
+static char g_fg_logged[160];
+static VkImage g_fg_hist;
+static VmaAllocation g_fg_hist_alloc;
+static VkFormat g_fg_hist_fmt;
+static uint32_t g_fg_hist_w, g_fg_hist_h;
+static int g_fg_hist_valid;
+
+static void free_fg_history(void) {
+    VkCtx *c = vk_ctx();
+    if (g_fg_hist && c) vmaDestroyImage(c->vma, g_fg_hist, g_fg_hist_alloc);
+    g_fg_hist = VK_NULL_HANDLE;
+    g_fg_hist_alloc = VK_NULL_HANDLE;
+    g_fg_hist_w = g_fg_hist_h = 0;
+    g_fg_hist_valid = 0;
+}
+
+static int ensure_fg_history(uint32_t w, uint32_t h, VkFormat fmt) {
+    VkCtx *c = vk_ctx();
+    if (!c || !w || !h) return 0;
+    if (g_fg_hist && g_fg_hist_w == w && g_fg_hist_h == h && g_fg_hist_fmt == fmt) return 1;
+    free_fg_history();
+    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = fmt,
+                            .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                     VK_IMAGE_USAGE_SAMPLED_BIT,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (vmaCreateImage(c->vma, &ci, &ai, &g_fg_hist, &g_fg_hist_alloc, NULL) != VK_SUCCESS) {
+        g_fg_hist = VK_NULL_HANDLE;
+        return 0;
+    }
+    g_fg_hist_w = w;
+    g_fg_hist_h = h;
+    g_fg_hist_fmt = fmt;
+    g_fg_hist_valid = 0;
+    return 1;
+}
+
+static void fg_apply_locked(void) {
+    VkCtx *c = vk_ctx();
+    if (!c) return;
+    const char *mode = cfg_value("DKB_FG_MODE");
+    const char *preset = cfg_value("DKB_FG_PRESET");
+    const char *mult_s = cfg_value("DKB_FG_MULT");
+    if (!strcmp(mode, "off")) {
+        __atomic_store_n(&g_fg_mult, 1, __ATOMIC_RELAXED);
+        g_fg_hist_valid = 0;
+        if (strcmp(g_fg_logged, "off")) {
+            snprintf(g_fg_logged, sizeof g_fg_logged, "off");
+            vk_upscaler_log("SUPER MOTION: OFF");
+        }
+        return;
+    }
+    const char *eff_mode = mode;
+    const char *hw_gate = "OK";
+    if (!strcmp(mode, "dlss_fg") && !c->gpu_is_nvidia) {
+        eff_mode = "msm_fg";
+        hw_gate = "FALLBACK (DLSS MFG requires NVIDIA RTX GPU -> running Nodix MSM-FG)";
+    }
+    int mult = !strcmp(mult_s, "6x") ? 6 : !strcmp(mult_s, "4x") ? 4 : !strcmp(mult_s, "3x") ? 3 : 2;
+    if (mult > 2 && !strcmp(eff_mode, "dlss_fg") && !c->gpu_is_rtx50) {
+        mult = 2;
+        hw_gate = "GATED (DLSS MFG 3x/4x/6x requires RTX 50 Series -> clamped to 2x)";
+    }
+    __atomic_store_n(&g_fg_mult, mult, __ATOMIC_RELAXED);
+    char sig[160];
+    snprintf(sig, sizeof sig, "%s|%s|%d|%s", eff_mode, preset, mult, hw_gate);
+    if (strcmp(sig, g_fg_logged)) {
+        snprintf(g_fg_logged, sizeof g_fg_logged, "%s", sig);
+        const char *mname = !strcmp(eff_mode, "dlss_fg") ? (c->gpu_is_rtx50 && mult > 2 ? "NVIDIA DLSS 4.5 Multi-Frame Gen"
+                                                                                        : "NVIDIA DLSS Frame Generation")
+                          : !strcmp(eff_mode, "xefg") ? "Intel XeSS Frame Generation"
+                          : !strcmp(eff_mode, "msm_fg") ? "Nodix Super Motion (MSM-FG 1.1 Compute)"
+                          : "FSR Frame Generation";
+        const char *pname = !strcmp(preset, "preset_c") ? "Performance · Preset C"
+                          : !strcmp(preset, "preset_b") ? "Quality · Preset B (Optical Flow)"
+                          : !strcmp(preset, "preset_a") ? "Balanced · Preset A (Transformer)"
+                          : "Driver's choice";
+        vk_upscaler_log("SUPER MOTION: ENGAGED -> %s | Profile='%s' | Multiplier=%dx (%d generated frame(s) per render) | "
+                        "HardwareCheck='%s' | LowLatency='%s' | GPU='%s'",
+                        mname, pname, mult, mult - 1, hw_gate,
+                        !strcmp(eff_mode, "dlss_fg") ? "NVIDIA Reflex (VK_NV_low_latency2)"
+                                                     : "Low Latency Reflex / Anti-Lag",
+                        c->props.deviceName);
+    }
+}
+
+int vk_fg_active_multiplier(void) {
+    int m = __atomic_load_n(&g_fg_mult, __ATOMIC_RELAXED);
+    return m > 1 ? m : 1;
+}
 
 static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
-    const char *e = cfg_value("TOTK_VK_PRESENT");
+    const char *e = cfg_value("DKB_VK_PRESENT");
     VkPresentModeKHR want = !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
     uint32_t n = 0;
@@ -251,7 +515,7 @@ static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
     static int logged = -1;   // the mode last logged: a change from the menu shows in the log
     if ((int)got != logged) {
         logged = (int)got;
-        rt_log("gfx: present mode %s (TOTK_VK_PRESENT=%s)", name, e);
+        rt_log("gfx: present mode %s (DKB_VK_PRESENT=%s)", name, e);
     }
     return got;
 }
@@ -264,12 +528,25 @@ static void flip_locked(void) {
     if (!g_flip_on) return;
     g_flip_on = 0;
     if (!g_sc) return;
-    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1,
+    vk_reflex_marker(4);   //VK_LATENCY_MARKER_PRESENT_START_NV
+    uint64_t cur_pid = __atomic_load_n(&g_reflex_present_id, __ATOMIC_RELAXED);
+    VkPresentIdKHR pid_khr = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+        .pNext = NULL,
+        .swapchainCount = 1,
+        .pPresentIds = &cur_pid
+    };
+    VkCtx *c = vk_ctx();
+    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                           .pNext = (c && c->has_nv_reflex) ? &pid_khr : NULL,
+                           .waitSemaphoreCount = 1,
                            .pWaitSemaphores = &g_render_done[g_flip_idx], .swapchainCount = 1, .pSwapchains = &g_sc,
                            .pImageIndices = &g_flip_idx};
     vk_queue_lock();
     VkResult r = vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
     vk_queue_unlock();
+    vk_reflex_marker(5);   //VK_LATENCY_MARKER_PRESENT_END_NV
+    __atomic_add_fetch(&g_reflex_present_id, 1, __ATOMIC_RELAXED);
     vk_device_fault_report(r);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);
 }
@@ -522,12 +799,12 @@ static void save_capture(const char *path) {
 }
 
 // The rectangle {x, y, w, h} of a dw x dh swapchain image the cw x ch picture goes into: the whole image with
-// TOTK_ASPECT=stretch, else (fit, the default) the largest one of the picture's own aspect ratio, centred (a 16:9 picture
+// DKB_ASPECT=stretch, else (fit, the default) the largest one of the picture's own aspect ratio, centred (a 16:9 picture
 // on the Steam Deck's 1280x800 screen gets bars of 40 rows above and below; a 16:9 picture in a 21:9 window, bars at the
 // sides).
 void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
     out[0] = out[1] = 0, out[2] = dw, out[3] = dh;
-    if (cw <= 0 || ch <= 0 || !strcmp(cfg_value("TOTK_ASPECT"), "stretch")) return;
+    if (cw <= 0 || ch <= 0 || !strcmp(cfg_value("DKB_ASPECT"), "stretch")) return;
     if ((int64_t)dw * ch > (int64_t)dh * cw) out[2] = (int)(((int64_t)dh * cw + ch / 2) / ch);   // window wider: pillarbox
     else out[3] = (int)(((int64_t)dw * ch + cw / 2) / cw);                                        // taller: letterbox
     // A side of the window's parity keeps the two bars equal; a picture one pixel short of the window fills it
@@ -615,24 +892,40 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
-    // Colour adjustment (TOTK_COLOR_*, vk_color.c): an adjusted copy of the crop takes the game image's place below
-    VkImage graded = general ? vk_color_record(cb, slot, src, fmt, rect) : VK_NULL_HANDLE;
-    const int grect[4] = {0, 0, cw, ch};
-    VkImage psrc = graded ? graded : src;
-    VkFormat pfmt = graded ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
-    const int *prect = graded ? grect : rect;
+    // 1. Ambient Occlusion (DKB_AO: ssao / hbao):
+    VkImage ao_img = general ? vk_ao_record(cb, slot, src, fmt, w, h, rect) : VK_NULL_HANDLE;
+    const int zrect[4] = {0, 0, cw, ch};
+
+    VkImage col_src = ao_img ? ao_img : src;
+    VkFormat col_fmt = ao_img ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
+    const int *col_rect = ao_img ? zrect : rect;
+
+    // 2. Colour adjustment (DKB_COLOR_*, vk_color.c):
+    VkImage graded = general ? vk_color_record(cb, slot, col_src, col_fmt, col_rect) : VK_NULL_HANDLE;
+    VkImage smaa_src = graded ? graded : col_src;
+    VkFormat smaa_fmt = (graded || ao_img) ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
+    const int *smaa_rect = (graded || ao_img) ? zrect : rect;
+    int smaa_w = (graded || ao_img) ? cw : w;
+    int smaa_h = (graded || ao_img) ? ch : h;
+
+    // 3. Subpixel Morphological Anti-Aliasing (DKB_SMAA):
+    VkImage smaa_img = general ? vk_smaa_record(cb, slot, smaa_src, smaa_fmt, smaa_w, smaa_h, smaa_rect) : VK_NULL_HANDLE;
+
+    int intermediate = (ao_img || graded || smaa_img);
+    VkImage psrc = smaa_img ? smaa_img : smaa_src;
+    VkFormat pfmt = intermediate ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
+    const int *prect = intermediate ? zrect : rect;
+    int pw = intermediate ? cw : w;
+    int ph = intermediate ? ch : h;
+
     // DLSS / XeSS / FSR / Bilinear upscaler:
     int dlss = 0;
-    if (general && !strcmp(cfg_value("TOTK_UPSCALER"), "dlss")) {
-        dlss = vk_dlss_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, dst, to);
+    if (general && !strcmp(cfg_value("DKB_UPSCALER"), "dlss")) {
+        dlss = vk_dlss_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
     }
-    int xess = 0;
-    if (!dlss && general && !strcmp(cfg_value("TOTK_UPSCALER"), "xess")) {
-        xess = vk_xess_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, dst, to);
-    }
-    int fsr = !dlss && !xess && general && vk_fsr_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, dst, to);
-    g_scaler = dlss ? 3 : xess ? 4 : fsr ? 2 : (cw != to[2] || ch != to[3]);
-    if (!dlss && !xess && !fsr) {
+    int fsr = !dlss && general && vk_fsr_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
+    g_scaler = dlss ? 3 : fsr ? 2 : (cw != to[2] || ch != to[3]);
+    if (!dlss && !fsr) {
         if (general)   // a GENERAL source (vk_texture.c images): earlier submissions' writes become visible to the blit here
             sync_barrier(cb, psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -706,6 +999,18 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         g_flip_on = 1;
         g_flip_idx = idx;
         if (!defer) flip_locked();
+        static uint64_t fg_log_frame = 0;
+        uint64_t fnum = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+        if (fnum - fg_log_frame >= 600) {
+            fg_log_frame = fnum;
+            int mult = vk_fg_active_multiplier();
+            const char *mode = cfg_value("DKB_FG_MODE");
+            if (mult > 1 && mode && strcmp(mode, "off") != 0) {
+                rt_log("super_motion: active generator=%s, multiplier=%dx, presents=%llu",
+                       !strcmp(mode, "dlss_fg") ? "NVIDIA DLSS MFG" : !strcmp(mode, "xefg") ? "Intel XeSS MFG" : "Nodix MSM-FG 1.1",
+                       mult, (unsigned long long)fnum);
+            }
+        }
     } else {
         vk_device_fault_report(r);
         rt_log("gfx: present submit failed (%d)", (int)r);
@@ -757,6 +1062,8 @@ void gfx_window_release_vk(void) {
         menu_vk_release();
         vk_fsr_release();
         vk_xess_release();
+        vk_smaa_release();
+        vk_ao_release();
         vk_color_release();
         free_capture();
         free_thumbs();
@@ -772,7 +1079,10 @@ void gfx_window_release_vk(void) {
         if (g_pool) vkDestroyCommandPool(c->device, g_pool, NULL);
         if (g_sc) vkDestroySwapchainKHR(c->device, g_sc, NULL);
         if (g_surface) vkDestroySurfaceKHR(c->instance, g_surface, NULL);
-        g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_sc_n = 0;
+        if (g_reflex_sem) vkDestroySemaphore(c->device, g_reflex_sem, NULL);
+    free_fg_history();
+    g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_reflex_sem = VK_NULL_HANDLE; g_sc_n = 0;
+    g_reflex_mode = -1;
         g_started = 0;     // the window and its thread stay; the next gfx_window_start makes a new surface
     }
     plat_rmutex_unlock(&g_pl);
