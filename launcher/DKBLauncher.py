@@ -4,7 +4,7 @@ The layout and interaction model are adapted from the SteelTemple DKB launcher.
 See LICENSE-MIT.txt for the upstream notice. DKB Recomp retains inherited dkb.ini/DKB_ runtime names.
 """
 from __future__ import annotations
-import ctypes, hashlib, json, os, shutil, subprocess, sys, tempfile, threading, time, urllib.request
+import base64, ctypes, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, urllib.request, zipfile
 from datetime import datetime
 from pathlib import Path
 from ctypes import wintypes
@@ -265,6 +265,149 @@ def save_ini_settings(path, updates):
 def runtime_defaults():
     return {"locale":"en-US","menu_lang":"en","experimental_geometry":"0","native_gs":"0"}
 
+
+
+def is_same_version(ver1, ver2):
+    def norm(v):
+        v = re.sub(r"^v", "", str(v or "").strip().lower())
+        return re.sub(r"[^a-z0-9]", "", v)
+    return norm(ver1) == norm(ver2)
+
+def find_running_game_processes():
+    """Find running DKB game processes, excluding the launcher."""
+    if os.name != "nt" or not GAME_DIR:
+        return []
+    target = str((GAME_DIR / "dkb.exe").resolve()).replace("'", "''")
+    command = (
+        f"$target = '{target}'; "
+        "$items = @(Get-CimInstance Win32_Process -Filter \\\"Name='dkb.exe'\\\" -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.ExecutablePath -and "
+        "[String]::Equals([IO.Path]::GetFullPath($_.ExecutablePath), $target, "
+        "[StringComparison]::OrdinalIgnoreCase) } | "
+        "Select-Object ProcessId, ExecutablePath); "
+        "if ($items.Count -eq 1) { $items[0] | ConvertTo-Json -Compress } "
+        "else { $items | ConvertTo-Json -Compress }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True, text=True, timeout=8,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+        if result.returncode == 0:
+            output = result.stdout.strip()
+            if not output or output == "null":
+                return []
+            parsed = json.loads(output)
+            if isinstance(parsed, dict):
+                return [{"pid": parsed.get("ProcessId"), "path": parsed.get("ExecutablePath")}]
+            elif isinstance(parsed, list):
+                return [{"pid": item.get("ProcessId"), "path": item.get("ExecutablePath")} for item in parsed if isinstance(item, dict)]
+    except Exception:
+        pass
+    return []
+
+def game_process_warning(action):
+    processes = find_running_game_processes()
+    if not processes:
+        return None
+    details = []
+    for process in processes:
+        label = []
+        if process.get("pid") is not None:
+            label.append(f"PID {process['pid']}")
+        if process.get("path"):
+            label.append(str(process["path"]))
+        details.append(" - ".join(label) if label else "DKB game process")
+    return "A DKB game process is currently running:\n" + "\n".join(details) + f"\n\nPlease close the game before {action}."
+
+def merge_update_ini(current_ini, update_ini, output_ini):
+    """Preserve every existing user setting and add only new keys from an update's dkb.ini."""
+    current_ini, update_ini, output_ini = Path(current_ini), Path(update_ini), Path(output_ini)
+    if not current_ini.is_file():
+        shutil.copy2(update_ini, output_ini)
+        return
+    lines = current_ini.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
+    existing = set(parse_ini(current_ini))
+    additions = []
+    for line in update_ini.read_text(encoding="utf-8", errors="ignore").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", ";", "[")) or "=" not in stripped:
+            continue
+        key = stripped.split("=", 1)[0].strip().lower()
+        if key and key not in existing:
+            additions.append(line.rstrip("\r\n"))
+            existing.add(key)
+    if additions:
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            lines[-1] += "\n"
+        lines.extend(["\n# New settings supplied by the update; existing values were preserved.\n"]
+                     + [line + "\n" for line in additions])
+    output_ini.write_text("".join(lines), encoding="utf-8")
+
+def extract_update_archive(archive_path, stage_dir):
+    """Validate the official flat update archive and stage safe update files."""
+    archive_path, stage_dir = Path(archive_path), Path(stage_dir)
+    selected = {}
+    with zipfile.ZipFile(archive_path) as archive:
+        bad_member = archive.testzip()
+        if bad_member:
+            raise ValueError(f"Update archive CRC check failed for {bad_member}.")
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            name = info.filename
+            path = Path(name.replace("\\", "/"))
+            if path.is_absolute() or len(path.parts) != 1 or ".." in path.parts:
+                raise ValueError(f"Unexpected path in update archive: {name}")
+            mode = (info.external_attr >> 16) & 0o170000
+            if mode == 0o120000:
+                raise ValueError(f"Symbolic links are not allowed in updates: {name}")
+            key = path.name.casefold()
+            if key.startswith((".", "exefs", "romfs", "profile", "save")):
+                continue
+            if key in selected:
+                raise ValueError(f"Duplicate update file: {name}")
+            if info.file_size <= 0:
+                raise ValueError(f"Update file is empty: {name}")
+            selected[key] = info
+
+        for required in ("dkb.exe", "dkblauncher.exe"):
+            if required not in selected:
+                raise ValueError(f"Update archive is missing required binary: {required}.")
+        if selected["dkb.exe"].file_size < 1024 * 1024 or selected["dkblauncher.exe"].file_size < 1024 * 1024:
+            raise ValueError("Update executable is unexpectedly small.")
+
+        for key, info in selected.items():
+            target_name = info.filename
+            target = stage_dir / target_name
+            if key == "dkb.ini":
+                incoming = stage_dir / "_update_dkb.ini"
+                with archive.open(info) as source, incoming.open("wb") as dest:
+                    shutil.copyfileobj(source, dest)
+                merge_update_ini(GAME_DIR / "dkb.ini", incoming, stage_dir / "dkb.ini")
+                incoming.unlink(missing_ok=True)
+            else:
+                with archive.open(info) as source, target.open("wb") as dest:
+                    shutil.copyfileobj(source, dest)
+    return [path.name for path in stage_dir.iterdir() if path.is_file() and not path.name.startswith("_")]
+
+def validate_update_game_executable(exe_path, game_dir, timeout=30):
+    """Run an integrity probe on the staged dkb.exe before permitting installation."""
+    exe_path = Path(exe_path)
+    if not exe_path.is_file() or exe_path.stat().st_size < 1024 * 1024:
+        raise ValueError("The staged dkb.exe binary is missing or invalid.")
+    command = [str(exe_path), "--probe-dpi"]
+    result = subprocess.run(
+        command, cwd=str(game_dir), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=timeout,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    )
+    output = (result.stdout or "") + "\n" + (result.stderr or "")
+    if result.returncode != 0 or "probe-dpi: PASS" not in output:
+        excerpt = output[-1000:].strip()
+        raise RuntimeError("The update executable did not pass the integrity probe. No files were changed.\n" + excerpt)
+    return output
 
 def scan_mod_folders():
     MODS_DIR.mkdir(parents=True,exist_ok=True); found=[]
@@ -777,7 +920,7 @@ class DKBLauncherApp(tk.Tk):
         play_ui_sound.enabled=bool(self.launcher_cfg.get("launcher_sound_effects",True))
         monitors=enumerate_displays()
         self.target_monitor=next((m for m in monitors if m["device"]==self.launcher_cfg.get("target_display")),next((m for m in monitors if m["primary"]),monitors[0]))
-        self.latest_release=None; self.setup_background(); self.setup_ui_overlay()
+        self.latest_release=None; self.update_in_progress=False; self.setup_background(); self.setup_ui_overlay(); self.after(600, self.check_for_updates)
         if self.launcher_cfg.get("target_display"):self.move_to_monitor(self.target_monitor)
     def safe_quit(self):self.destroy()
     def move_to_monitor(self,monitor):place_window_on_monitor(self,monitor)
@@ -810,8 +953,9 @@ class DKBLauncherApp(tk.Tk):
         tk.Checkbutton(footer,text="KEEP LAUNCHER OPEN",variable=self.keep_launcher_var,command=self._save_keep_launcher,font=("Segoe UI",9,"bold"),fg=COLOR_WHITE,bg=COLOR_CARD,activebackground=COLOR_CARD,activeforeground=COLOR_GOLD,selectcolor=COLOR_CARD_BORDER,bd=0,highlightthickness=0).pack(anchor="e")
         tk.Label(footer,text=VERSION_STRING,font=("Segoe UI",9,"bold"),fg=COLOR_GOLD,bg=COLOR_CARD).pack(anchor="e",pady=(4,0))
         self.update_status=tk.Label(footer,text="",font=("Segoe UI",8),fg=COLOR_ACCENT_GREEN,bg=COLOR_CARD,wraplength=235,justify="right"); self.update_status.pack(anchor="e",pady=(4,0))
+        self.update_action_btn=tk.Button(footer,text="⚡ UPDATE NOW (1-CLICK)",command=self.apply_latest_update,font=("Segoe UI",8,"bold"),fg="#000",bg=COLOR_ACCENT_GREEN,activebackground="#8ef0a5",bd=0,padx=10,pady=6,cursor="hand2"); self.update_action_btn.pack_forget()
         tk.Button(footer,text="CHECK FOR UPDATES",command=self.check_for_updates,font=("Segoe UI",8,"bold"),fg=COLOR_WHITE,bg=COLOR_BUTTON_HOVER,activebackground=COLOR_GOLD,activeforeground="#000",bd=0,padx=10,pady=5,cursor="hand2").pack(anchor="e",pady=(6,0))
-        self.release_btn=tk.Button(footer,text="VIEW DKB RELEASE",command=self.open_latest_release,font=("Segoe UI",8,"bold"),fg="#000",bg=COLOR_GOLD,activebackground=COLOR_GOLD_HOVER,bd=0,padx=10,pady=6,cursor="hand2"); self.release_btn.pack_forget()
+        self.release_btn=tk.Button(footer,text="VIEW RELEASE NOTES",command=self.open_latest_release,font=("Segoe UI",8,"bold"),fg="#000",bg=COLOR_GOLD,activebackground=COLOR_GOLD_HOVER,bd=0,padx=10,pady=6,cursor="hand2"); self.release_btn.pack_forget()
         self.canvas.create_window(1050,565,window=footer,anchor="se")
         repo=tk.Button(self.canvas,text="★ DKB Recomp Project",font=("Segoe UI",9,"bold"),fg=COLOR_GOLD,bg=COLOR_CARD,activebackground=COLOR_CARD_BORDER,activeforeground=COLOR_GOLD_HOVER,bd=1,relief="solid",padx=14,pady=6,cursor="hand2",command=lambda:webbrowser.open(GITHUB_URL)); self.canvas.create_window(70,570,window=repo,anchor="w")
         self.canvas.create_text(70,608,text=f"{CURRENT_VERSION.upper()} RELEASE  ·  USE YOUR OWN GAME DATA",font=("Segoe UI",8,"bold"),fill=COLOR_TEXT_DIM,anchor="w")
@@ -945,35 +1089,199 @@ class DKBLauncherApp(tk.Tk):
                 user32.BringWindowToTop(hwnd)
         except Exception:pass
     def check_for_updates(self):
-        if getattr(self,"release_check_active",False):return
-        self.release_check_active=True; self.release_btn.pack_forget(); self.update_status.config(text="Checking the DKB fork for a published release…",fg=COLOR_TEXT_DIM)
-        threading.Thread(target=self._check_release_worker,daemon=True).start()
+        if getattr(self, "release_check_active", False) or getattr(self, "update_in_progress", False): return
+        self.release_check_active = True
+        self.update_action_btn.pack_forget()
+        self.release_btn.pack_forget()
+        self.update_status.config(text="Checking GitHub Releases…", fg=COLOR_TEXT_DIM)
+        threading.Thread(target=self._check_release_worker, daemon=True).start()
+
     def _check_release_worker(self):
         try:
-            req=urllib.request.Request(RELEASES_API_URL,headers={"Accept":"application/vnd.github+json","User-Agent":"DKBLauncher"})
-            with urllib.request.urlopen(req,timeout=12) as r:data=json.loads(r.read().decode("utf-8"))
+            req = urllib.request.Request(RELEASES_API_URL, headers={"Accept": "application/vnd.github+json", "User-Agent": "DKBLauncher"})
+            with urllib.request.urlopen(req, timeout=12) as r:
+                data = json.loads(r.read().decode("utf-8"))
             tag = (data.get("tag_name") or "").strip()
             title = (data.get("name") or tag or "Latest DKB release").strip()
-            url = data.get("html_url") or RELEASES_URL
-            result=(title, url, tag)
-            self.after(0,lambda:self._show_release(result,None))
+            page = data.get("html_url") or RELEASES_URL
+            if not tag:
+                raise ValueError("The latest release did not include a version tag.")
+            assets = data.get("assets", [])
+            tag_clean = tag.replace("-", "").replace(".", "")
+            candidates = [
+                f"SteelTemple-DKB-{tag}-Update.zip",
+                f"SteelTemple-DKB-{tag_clean}-Update.zip",
+                f"SteelTemple-DKB-Update-{tag}.zip",
+                f"dkb-{tag}-update.zip",
+            ]
+            asset = next((item for item in assets for cand in candidates if item.get("name", "").casefold() == cand.casefold()), None)
+            if not asset:
+                asset = next((item for item in assets if "update" in item.get("name", "").lower() and item.get("name", "").lower().endswith(".zip")), None)
+            asset_name = asset.get("name") if asset else None
+            asset_url = asset.get("browser_download_url") if asset else None
+            self.after(0, lambda: self._show_release_result(tag, title, page, asset_url, asset_name))
         except Exception as exc:
-            detail=str(exc)
-            if "404" in detail or "Not Found" in detail:self.after(0,lambda:self._show_release(None,f"Your DKB is up to date ({CURRENT_VERSION})."))
-            else:self.after(0,lambda:self._show_release(None,"Release check failed: "+detail))
-    def _show_release(self,result,error):
-        self.release_check_active=False
-        if error:self.update_status.config(text=error,fg=COLOR_TEXT_DIM); return
-        self.latest_release=(result[0], result[1])
-        tag = (result[2] if len(result) > 2 else "").lower()
-        title = result[0].lower()
-        if "alpha-1b" in tag or "alpha 1b" in title or tag == "alpha-1b":
-            self.update_status.config(text=f"Your DKB is up to date ({CURRENT_VERSION})",fg=COLOR_ACCENT_GREEN)
+            detail = str(exc)
+            if "404" in detail or "Not Found" in detail:
+                self.after(0, lambda: self._show_release_result(CURRENT_VERSION, f"Your DKB is up to date ({CURRENT_VERSION}).", RELEASES_URL, None, None))
+            else:
+                self.after(0, lambda: self._show_release_error("Update check failed: " + detail))
+
+    def _show_release_error(self, message):
+        self.release_check_active = False
+        self.update_status.config(text=message, fg="#ff7373")
+
+    def _show_release_result(self, tag, title, page, asset_url=None, asset_name=None):
+        self.release_check_active = False
+        self.latest_release = {"tag": tag, "title": title, "page": page, "asset_url": asset_url, "asset_name": asset_name}
+        clean_title = title.split(":", 1)[0].strip()
+        if is_same_version(CURRENT_VERSION, tag) or is_same_version(CURRENT_VERSION, clean_title):
+            self.update_status.config(text=f"Your DKB is up to date ({CURRENT_VERSION})", fg=COLOR_ACCENT_GREEN)
+            self.update_action_btn.pack_forget()
             self.release_btn.pack_forget()
-        else:
-            self.update_status.config(text=f"Published DKB release available: {result[0]}",fg=COLOR_GOLD)
-            self.release_btn.pack(anchor="e",pady=(5,0))
-    def open_latest_release(self):webbrowser.open(self.latest_release[1] if self.latest_release else RELEASES_URL)
+            return
+        if not asset_url:
+            self.update_status.config(text=f"Update found ({clean_title}), but update zip is missing.", fg=COLOR_GOLD)
+            self.update_action_btn.pack_forget()
+            self.release_btn.config(text="VIEW RELEASE NOTES")
+            self.release_btn.pack(anchor="e", pady=(5, 0))
+            return
+        self.update_status.config(text=f"Update available: {clean_title}", fg=COLOR_GOLD)
+        self.update_action_btn.config(state=tk.NORMAL, text="⚡ UPDATE NOW (1-CLICK)")
+        self.update_action_btn.pack(anchor="e", pady=(5, 0))
+        self.release_btn.config(text="VIEW RELEASE NOTES")
+        self.release_btn.pack(anchor="e", pady=(3, 0))
+
+    def open_latest_release(self):
+        url = self.latest_release["page"] if (self.latest_release and self.latest_release.get("page")) else RELEASES_URL
+        webbrowser.open(url)
+
+    def apply_latest_update(self):
+        if getattr(self, "update_in_progress", False) or not self.latest_release:
+            return
+        warning = game_process_warning("applying a launcher/game update")
+        if warning:
+            messagebox.showwarning("Close the Game First", warning, parent=self)
+            return
+        title = self.latest_release.get("title", "DKB Update")
+        if not messagebox.askyesno("Install DKB Update", f"Download and install {title} automatically now?\n\nThis will update your game executable, launcher, and pre-compiled Vulkan shaders.", parent=self):
+            return
+        self.update_in_progress = True
+        self.update_action_btn.config(state=tk.DISABLED, text="DOWNLOADING UPDATE…")
+        self.update_status.config(text="Connecting to GitHub Releases…", fg=COLOR_TEXT_DIM)
+        threading.Thread(target=self._download_update_worker, args=(self.latest_release.copy(),), daemon=True).start()
+
+    def _download_update_worker(self, release):
+        stage = None
+        try:
+            if not GAME_DIR:
+                raise ValueError("Game folder not selected.")
+            GAME_DIR.mkdir(parents=True, exist_ok=True)
+            stage = Path(tempfile.mkdtemp(prefix=".dkb-update-", dir=GAME_DIR))
+            archive_path = stage / release["asset_name"]
+            request = urllib.request.Request(release["asset_url"], headers={"User-Agent": "DKBLauncher", "Accept": "application/octet-stream"})
+            with urllib.request.urlopen(request, timeout=60) as response, archive_path.open("wb") as output:
+                total = int(response.headers.get("Content-Length", "0") or 0)
+                downloaded = 0
+                while True:
+                    block = response.read(1024 * 1024)
+                    if not block:
+                        break
+                    output.write(block)
+                    downloaded += len(block)
+                    if total:
+                        percent = min(100, downloaded * 100 // total)
+                        self._set_update_status(f"Downloading update… {percent}%", COLOR_TEXT_DIM)
+            self._set_update_status("Validating update archive…", COLOR_TEXT_DIM)
+            files = extract_update_archive(archive_path, stage)
+            archive_path.unlink(missing_ok=True)
+            if not {"dkb.exe", "DKBLauncher.exe"}.issubset(set(files)):
+                raise ValueError("The validated update archive is missing a required executable.")
+            self._set_update_status("Verifying updated game executable…", COLOR_TEXT_DIM)
+            validate_update_game_executable(stage / "dkb.exe", GAME_DIR)
+            self.after(0, lambda: self._update_ready(release, stage, files))
+        except Exception as exc:
+            if stage:
+                shutil.rmtree(stage, ignore_errors=True)
+            detail = str(exc)
+            self.after(0, lambda: self._update_failed(detail))
+
+    def _set_update_status(self, text, color):
+        try:
+            self.after(0, lambda: self.update_status.config(text=text, fg=color))
+        except tk.TclError:
+            pass
+
+    def _update_failed(self, detail):
+        self.update_in_progress = False
+        self.update_action_btn.config(state=tk.NORMAL, text="⚡ UPDATE NOW (1-CLICK)")
+        self.update_status.config(text=f"Update failed:\n{detail[:100]}", fg="#ff7373")
+
+    def _update_ready(self, release, stage, files):
+        title = release.get("title", "DKB Update")
+        if not messagebox.askyesno("Update Ready", f"{title} is downloaded and verified.\n\nInstall it now? The launcher will close, apply the files, and restart automatically.", parent=self):
+            shutil.rmtree(stage, ignore_errors=True)
+            self.update_in_progress = False
+            self.update_action_btn.config(state=tk.NORMAL, text="⚡ UPDATE NOW (1-CLICK)")
+            self.update_status.config(text="Update downloaded; installation cancelled.", fg=COLOR_TEXT_DIM)
+            return
+        try:
+            self._start_update_relauncher(stage, title)
+            os._exit(0)
+        except Exception as exc:
+            shutil.rmtree(stage, ignore_errors=True)
+            self._update_failed(str(exc))
+
+    def _start_update_relauncher(self, stage, title):
+        def ps_quote(value):
+            return "'" + str(value).replace("'", "''") + "'"
+        game_path = ps_quote(GAME_DIR.resolve())
+        stage_path = ps_quote(Path(stage).resolve())
+        title_text = ps_quote(title)
+        script = f'''
+$ErrorActionPreference = 'Stop'
+$game = {game_path}
+$stage = {stage_path}
+$rollback = Join-Path $stage '_rollback'
+New-Item -ItemType Directory -Force -Path $rollback | Out-Null
+$changed = [System.Collections.Generic.List[string]]::new()
+try {{
+    Wait-Process -Id {os.getpid()} -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 800
+    Get-ChildItem -LiteralPath $stage -File | ForEach-Object {{
+        $name = $_.Name
+        if ($name.StartsWith('_') -or $name.EndsWith('.tmp') -or $name.EndsWith('.zip')) {{ return }}
+        $source = $_.FullName
+        $target = Join-Path $game $name
+        $backup = Join-Path $rollback $name
+        if (Test-Path -LiteralPath $target -PathType Leaf) {{ Copy-Item -LiteralPath $target -Destination $backup -Force }}
+        $changed.Add($name)
+        $newFile = $target + '.update-new'
+        Copy-Item -LiteralPath $source -Destination $newFile -Force
+        Move-Item -LiteralPath $newFile -Destination $target -Force
+    }}
+}} catch {{
+    try {{ Add-Type -AssemblyName System.Windows.Forms }} catch {{}}
+    for ($i = $changed.Count - 1; $i -ge 0; $i--) {{
+        $name = $changed[$i]; $target = Join-Path $game $name; $backup = Join-Path $rollback $name
+        if (Test-Path -LiteralPath $backup -PathType Leaf) {{ Copy-Item -LiteralPath $backup -Destination $target -Force }}
+        else {{ Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue }}
+    }}
+    [System.Windows.Forms.MessageBox]::Show(('Update failed and changes were rolled back: ' + $_.Exception.Message), 'Update Failed') | Out-Null
+    exit 1
+}}
+try {{ Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show(({title_text} + ' installed successfully. The launcher will restart.'), 'Update Complete') | Out-Null }} catch {{}}
+$targetLauncher = Join-Path $game 'DKBLauncher.exe'
+if (Test-Path -LiteralPath $targetLauncher -PathType Leaf) {{
+    Start-Process -FilePath $targetLauncher -WorkingDirectory $game
+}}
+Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+'''
+        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0)
+        subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+                          "-EncodedCommand", encoded], cwd=str(GAME_DIR), creationflags=flags,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     def open_settings(self):
         if not self._ensure_game():return
         DKBSettingsDialog(self)
