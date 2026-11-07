@@ -26,6 +26,13 @@ This document archives the core architecture, solved bugs, launcher blueprints, 
 4. **Dynamic Resolution Scaling (DRS) & Upscalers:**
    - Decoupled master upscaler execution from AA.
    - PID-controlled anti-pumping loop based on GPU timestamp headroom queries (`vk_headroom.c`) to maintain lock-on frame rate targets (60 / 120 FPS).
+5. **NVIDIA Instanced Light-Quad GPU Fault vs. 3D World Mesh Separation (`runtime/vk_exec_draw.c`):**
+   - Bananza's instanced light quads fetch Location 9 across `>= 8` vertex streams where **every stream is per-instance** (`ex->pipe.vstream[stream].divisor != 0`) and `count <= 6` (4-vertex quad or 6-vertex two-triangle quad), which causes `VK_ERROR_DEVICE_LOST` (`instruction pointer (invalid)`) on NVIDIA drivers (`617.14`–`621.01`).
+   - Crucially, legitimate 3D world shaders (skybox, cave walls, distant terrain) also have vertex input masks with bit 9 and bit 0 set (`0x03ff`, `0x07ff`, `0x1fff`, `0x3fff`, `0x7fff`), so checking `(used >> 9 & 1) && (used & 1)` falsely skips 3D world geometry and turns the sky and distant world black!
+   - Solution: `light_quad_fault_skip` checks `count <= 6`, `active_streams >= 8`, and verifies that **every** active attribute stream has `divisor != 0` (plus the 7 known cutscene VS origins and `c0+0x530` SSBO light check). This skips 100% of faulting light quads while never touching a 3D mesh (`divisor == 0`).
+6. **Indirect Reset & Texture Fence Write-Back Integrity (`runtime/vk_exec_draw.c`, `runtime/vk_texture.c`, `runtime/vk_backend.c`):**
+   - `vk_exec_reset_indirect` must always read the pointer list through `vk_exec_read_buffer` (which resolves shadow/VRAM mirror state) rather than raw `memcpy` from guest VA, or destructible terrain indirect records read stale pointers.
+   - Keep `WB_SMALL_DEFAULT` (64 KB) fence write-backs active and `TOTK_NX2_READ_NOWAIT` opt-in so GPU-generated LUTs and environment maps are written back before CPU reads.
 
 ---
 

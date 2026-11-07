@@ -1,7 +1,7 @@
-"""Donkey Kong Bananza PC Recomp launcher prototype.
+"""Donkey Kong Bananza PC Recomp Launcher - Alpha 1.
 
-The layout and interaction model are adapted from the SteelTemple TotK launcher.
-See LICENSE-MIT.txt for the upstream notice. DKB Recomp retains inherited totk.ini/TOTK_ runtime names.
+The layout and interaction model are adapted from the SteelTemple DKB launcher.
+See LICENSE-MIT.txt for the upstream notice. DKB Recomp retains inherited dkb.ini/DKB_ runtime names.
 """
 from __future__ import annotations
 import ctypes, json, os, shutil, subprocess, sys, tempfile, threading, time, urllib.request
@@ -13,8 +13,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageDraw, ImageTk
 
-APP_TITLE = "Donkey Kong Bananza PC Recomp"
-VERSION_STRING = "Local Prototype · DKB"
+APP_TITLE = "Donkey Kong Bananza PC Recomp · Alpha 1"
+VERSION_STRING = "Alpha 1 · DKB"
 GITHUB_URL = "https://github.com/STS78721/dkb-BANANAS"
 RELEASES_URL = GITHUB_URL + "/releases"
 RELEASES_API_URL = "https://api.github.com/repos/STS78721/dkb-BANANAS/releases/latest"
@@ -158,16 +158,22 @@ def save_config(cfg):
     tmp=APP_CONFIG.with_suffix(".tmp"); tmp.write_text(json.dumps(cfg,indent=2),encoding="utf-8"); tmp.replace(APP_CONFIG)
 
 def valid_game_dir(path):
-    path=Path(path)
-    return path.is_dir() and (path/"dkb.exe").is_file()
+    if not path: return False
+    p = Path(path)
+    if not p.is_dir(): return False
+    return (p / "dkb.exe").is_file() or (p / "build" / "dkb100" / "dkb.exe").is_file()
 
 def find_game_dir(cfg):
     choices=[]
     if cfg.get("game_dir"): choices.append(Path(cfg["game_dir"]))
     if os.environ.get("DKB_GAME_DIR"): choices.append(Path(os.environ["DKB_GAME_DIR"]))
-    a=app_dir(); choices += [a, Path.cwd(), a/"jogo"/"build"/"dkb100", a/"build"/"dkb100", a/"GAME", a.parent/"build"/"dkb100", Path.cwd()/"build"/"dkb100"]
+    a=app_dir(); choices += [a, Path.cwd(), a/"build"/"dkb100", a/"jogo"/"build"/"dkb100", a.parent/"build"/"dkb100", Path.cwd()/"build"/"dkb100"]
     for path in choices:
-        if valid_game_dir(path): return path.resolve()
+        if valid_game_dir(path):
+            res = path.resolve()
+            if (res / "build" / "dkb100" / "dkb.exe").is_file() and not (res / "dkb.exe").is_file():
+                res = (res / "build" / "dkb100").resolve()
+            return res
     return None
 
 GAME_DIR = None
@@ -182,7 +188,7 @@ LAUNCHER_CONFIG = load_config()
 def set_game_dir(path):
     global GAME_DIR, INI_PATH, PROFILE_DIR, MODS_DIR, ACTIVE_MODS_DIR, LOGS_DIR, SHADER_CACHE_DIR
     GAME_DIR=Path(path).resolve()
-    INI_PATH=GAME_DIR/"totk.ini"
+    INI_PATH=GAME_DIR/"dkb.ini"
     PROFILE_DIR=Path(LAUNCHER_CONFIG.get("profile_dir") or (GAME_DIR.parent/"profile-dkb100"))
     if not PROFILE_DIR.exists() and (GAME_DIR.parent/"profile-dkb100").exists(): PROFILE_DIR=GAME_DIR.parent/"profile-dkb100"
     if not PROFILE_DIR.exists() and (GAME_DIR/"profile").exists(): PROFILE_DIR=GAME_DIR/"profile"
@@ -215,10 +221,12 @@ def save_ini_settings(path, updates):
         found=False
         active_section=""
         target_section=next((section for section, keys in {
-            "frame rate":{"fps_limit"}, "display":{"fullscreen","window_size","vk_present","output_res","render_scale","upscaler","upscaler_preset","dlss","dlss_preset","reflex","sharpness","aspect","fov","color_preset","color_brightness","color_contrast","color_saturation","color_gamma","device_profile","assume_focus","dlaa","low_latency","frame_gen","xess_preset"},
-            "language":{"locale","lang","menu_lang"}, "audio":{"volume"},
+            "frame rate":{"fps_limit","fps60","realtime","cloth_realtime","highfps_fix"},
+            "display":{"fullscreen","window_size","vk_present","output_res","render_scale","upscaler","upscaler_preset","dlss","dlss_preset","reflex","sharpness","aspect","fov","color_preset","color_brightness","color_contrast","color_saturation","color_gamma","device_profile","assume_focus","dlaa","low_latency","frame_gen","fg_mode","fg_mult","fg_flow","fg_type","xess_preset","perf_overlay","gpu_index","antilag2"},
+            "language":{"locale","lang","menu_lang","operation_mode"},
+            "audio":{"volume","audio_channels"},
             "input":{"motion","rumble_strength","rumble_curve","rumble_triggers","pad_layout","stick_deadzone","mouse_sens"},
-            "performance":{"pipe_wait","pipe_prebuild","lib_prebuild","experimental_geometry","fix_vs_fault","fix_zero","lod_guard","fix_indirect_reset"},
+            "performance":{"pipe_wait","pipe_skip","pipe_prebuild","lib_prebuild","experimental_geometry","fix_vs_fault","fix_zero","lod_guard","fix_indirect_reset","astc","memory","tex_alias","astc_bc","native_gs","fix_c0","bind_skip","shader_memo","pipe_memo","tex_memo","desc_template","push_skip","split_draws","split_us","vk_validation","vk_dyn_vertex","vk_dyn_a2c","vk_subgroup_pin","async_preempt","replay_async","timer_1ms","nx2_read_nowait"},
             "files":{"romfs_mods"}
         }.items() if key.casefold() in keys), "")
         if target_section:
@@ -393,7 +401,7 @@ class DKBSlider(tk.Canvas):
 
 class DKBSettingsDialog(tk.Toplevel):
     def __init__(self,parent):
-        super().__init__(parent); self.parent_app=parent; self.title("DKB Display & Graphics Settings")
+        super().__init__(parent); self.parent_app=parent; self.title("DKB Alpha 1 · Display & Graphics Settings")
         self.geometry("900x700"); self.minsize(820,630); self.configure(bg=COLOR_BG_DARK); self.transient(parent); self.grab_set()
         self.ini_values=parse_ini(INI_PATH); self.vars={}; self.monitors=enumerate_displays()
         saved=parent.launcher_cfg.get("target_display")
@@ -412,7 +420,7 @@ class DKBSettingsDialog(tk.Toplevel):
     def get_val(self,key,default=""): return self.ini_values.get(key.lower(),default)
     def setup_ui(self):
         header=tk.Frame(self,bg=COLOR_CARD,height=58); header.pack(fill=tk.X,side=tk.TOP); header.pack_propagate(False)
-        tk.Label(header,text="GAME SETTINGS & GRAPHICS CONFIGURATION",font=("Segoe UI",12,"bold"),fg=COLOR_GOLD,bg=COLOR_CARD).pack(side=tk.LEFT,padx=24,pady=17)
+        tk.Label(header,text="DKB ALPHA 1  ·  GRAPHICS & SYSTEM CONFIGURATION",font=("Segoe UI",12,"bold"),fg=COLOR_GOLD,bg=COLOR_CARD).pack(side=tk.LEFT,padx=24,pady=17)
         self.gpu_header=tk.Label(header,text=f"Detected: {self.gpu_name}",font=("Segoe UI",9),fg=COLOR_ACCENT_GREEN if self.gpu_vendor!="Other" else COLOR_TEXT_DIM,bg=COLOR_CARD)
         self.gpu_header.pack(side=tk.RIGHT,padx=20)
         style=ttk.Style(self); style.theme_use("clam")
@@ -501,6 +509,7 @@ class DKBSettingsDialog(tk.Toplevel):
         rates=sorted(set(["30","40","45","60","90","120","144",str(self.display_refresh),"display"]),key=lambda x:(x=="display",int(x) if x.isdigit() else 1000))
         self.create_row_dropdown(f,"Frame Rate Limit","fps_limit",rates,self.get_val("fps_limit",str(self.display_refresh)),"Use Display to follow the selected monitor's refresh rate.")
         self.create_row_dropdown(f,"V-Sync / Presentation Mode","vk_present",["mailbox","fifo","immediate"],"mailbox","Mailbox is low-latency; FIFO is strict V-Sync; Immediate may tear.")
+        self.create_row_dropdown(f,"Performance Metrics Overlay","perf_overlay",["off","fps","full"],self.get_val("perf_overlay","off"),"Display in-game real-time FPS and frametime metrics overlay.")
         output_sizes=["1280x720","1600x900","1920x1080","2560x1440","3200x1800","3840x2160","2560x1080","3440x1440","3840x1600","5120x2160","3840x1080","5120x1440","1280x800","1680x1050","1920x1200","2560x1600"]
         if self.display_resolution not in output_sizes:output_sizes.insert(0,self.display_resolution)
         self.create_row_dropdown(f,"Game Render Resolution","output_res",output_sizes,self.get_val("output_res",self.display_resolution),"Render the picture and HUD at this size. Requires matching layout support in the game build for non-standard aspect ratios.")
@@ -568,6 +577,11 @@ class DKBSettingsDialog(tk.Toplevel):
         self.create_row_slider(f,"Color Contrast","color_contrast",70,150,100,"%","Display contrast adjustment.")
         self.create_row_slider(f,"Color Saturation","color_saturation",50,200,100,"%","Display saturation adjustment.")
         self.create_row_dropdown(f,"Color Gamma","color_gamma",["0.8","0.9","1.0","1.1","1.2"],"1.0","Gamma adjustment.")
+        self.create_row_toggle(f,"High-FPS Realtime Physics","realtime","1","Unlocks game physics calculation tickrate for smooth 60+ FPS without slow motion.")
+        self.create_row_toggle(f,"Realtime Cloth & Fur Physics","cloth_realtime","1","Evaluates Donkey Kong fur and cloth physics in real time at high refresh rates.")
+        self.create_row_toggle(f,"High-FPS Camera Smoothing Fix","highfps_fix","1","Fixes camera tracking jitter and maintains smooth animation pacing.")
+        self.create_row_dropdown(f,"Console Emulation Profile","operation_mode",["docked","handheld"],self.get_val("operation_mode","docked"),"Docked provides full quality rendering and shadows; handheld emulates portable mode.")
+        self.create_row_toggle(f,"Native Vulkan Geometry Shaders","native_gs","1","Directly compiles native geometry shaders on supported Vulkan GPUs.")
         self.create_row_toggle(f,"Experimental Geometry","experimental_geometry","0","Experimental DKB geometry path; leave off if destructible terrain renders incorrectly.")
         self.create_row_toggle(f,"Skip Known NVIDIA Movie Fault","fix_vs_fault","1","Avoids a known NVIDIA GPU fault after the first guide movie.")
         self.create_row_toggle(f,"Zero New GPU Memory","fix_zero","1","Initializes new GPU memory to match the console's behavior.")
@@ -604,6 +618,7 @@ class DKBSettingsDialog(tk.Toplevel):
         self.create_row_slider(f,"Stick Deadzone","stick_deadzone",0,50,8,"%","Ignore small stick movements below this threshold.")
         self.create_row_slider(f,"Mouse Sensitivity","mouse_sens",0,10,1,"x","Adjust mouse input sensitivity.")
         self.create_row_slider(f,"Game Volume","volume",0,100,100,"%","Set the game's master volume.")
+        self.create_row_dropdown(f,"Audio Output Channels","audio_channels",["stereo","5.1"],self.get_val("audio_channels","stereo"),"Choose between stereo or 5.1 surround sound audio mixing.")
         self.create_row_dropdown(f,"Game Language","locale",["en-US","en-GB","ja","fr","de","it","es","nl","ru","zh-Hans","zh-Hant","ko"],"en-US","English is selected by default.")
         self.create_row_dropdown(f,"Launcher Menu Language","menu_lang",["en"],"en","The game menu and overlay are kept in English.")
         self.create_row_toggle(f,"Keep Game Active When Unfocused","assume_focus","1","Keep the game running when its window is not in front.")
@@ -628,7 +643,9 @@ class DKBSettingsDialog(tk.Toplevel):
             updates["dlaa"] = "0"
         updates["reflex"] = updates.get("reflex", "boost")
         updates["low_latency"] = updates.get("reflex", "boost")
-        updates["frame_gen"] = updates.get("frame_gen", "0")
+        fg = updates.get("frame_gen", "0")
+        updates["frame_gen"] = fg
+        updates["fg_mode"] = "dlss_fg" if fg == "1" else "off"
         try:
             save_ini_settings(INI_PATH,updates)
             self.parent_app.launcher_cfg["target_display"]=self.target_monitor["device"]
@@ -772,7 +789,7 @@ class DKBLauncherApp(tk.Tk):
     def setup_ui_overlay(self):
         self.canvas.create_text(70,62,text="DKB RECOMP",font=("Segoe UI",11,"bold"),fill=COLOR_GOLD,anchor="w")
         self.canvas.create_text(70,104,text="DONKEY KONG BANANZA",font=("Impact",34),fill=COLOR_WHITE,anchor="w")
-        self.canvas.create_text(70,141,text="PC RECOMPILED  ·  LOCAL PROTOTYPE",font=("Segoe UI",10,"bold"),fill=COLOR_ACCENT_GREEN,anchor="w")
+        self.canvas.create_text(70,141,text="PC RECOMPILED  ·  ALPHA 1",font=("Segoe UI",10,"bold"),fill=COLOR_ACCENT_GREEN,anchor="w")
         for i,(label,cb,primary) in enumerate([("PLAY",self.launch_game,True),("SETTINGS",self.open_settings,False),("DIGITAL EXTRAS",self.open_extras,False),("QUIT",self.safe_quit,False)]):
             item=tk.Label(self,text=label,font=("Segoe UI",22,"bold"),fg=COLOR_GOLD if primary else COLOR_WHITE,bg=COLOR_BG_DARK,cursor="hand2")
             self.canvas.create_window(70,230+i*62,window=item,anchor="w"); self._menu_bind(item,cb,primary)
@@ -785,7 +802,7 @@ class DKBLauncherApp(tk.Tk):
         self.release_btn=tk.Button(footer,text="VIEW DKB RELEASE",command=self.open_latest_release,font=("Segoe UI",8,"bold"),fg="#000",bg=COLOR_GOLD,activebackground=COLOR_GOLD_HOVER,bd=0,padx=10,pady=6,cursor="hand2"); self.release_btn.pack_forget()
         self.canvas.create_window(1050,565,window=footer,anchor="se")
         repo=tk.Button(self.canvas,text="★ DKB Recomp Project",font=("Segoe UI",9,"bold"),fg=COLOR_GOLD,bg=COLOR_CARD,activebackground=COLOR_CARD_BORDER,activeforeground=COLOR_GOLD_HOVER,bd=1,relief="solid",padx=14,pady=6,cursor="hand2",command=lambda:webbrowser.open(GITHUB_URL)); self.canvas.create_window(70,570,window=repo,anchor="w")
-        self.canvas.create_text(70,608,text="EXPERIMENTAL BUILD  ·  USE YOUR OWN GAME DATA",font=("Segoe UI",8,"bold"),fill=COLOR_TEXT_DIM,anchor="w")
+        self.canvas.create_text(70,608,text="ALPHA 1 RELEASE  ·  USE YOUR OWN GAME DATA",font=("Segoe UI",8,"bold"),fill=COLOR_TEXT_DIM,anchor="w")
     def _save_keep_launcher(self):self.launcher_cfg["show_launcher"]=self.keep_launcher_var.get(); save_config(self.launcher_cfg)
     def choose_game_directory(self):
         selected=filedialog.askdirectory(title="Select the folder containing dkb.exe")
@@ -800,9 +817,8 @@ class DKBLauncherApp(tk.Tk):
     def launch_game(self):
         if not self._ensure_game():return
         env=os.environ.copy(); _gpu,vendor=detect_gpu()
-        if vendor!="Other" and not env.get("TOTK_GPU_NAME"):env["TOTK_GPU_NAME"]="NVIDIA" if vendor=="NVIDIA" else vendor
-        script=GAME_DIR.parent.parent/"amigos"/"jogar-dk.ps1"
-        command=["powershell.exe","-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File",str(script)] if script.is_file() else [str(GAME_DIR/"dkb.exe")]
+        if vendor!="Other" and not env.get("DKB_GPU_NAME"):env["DKB_GPU_NAME"]="NVIDIA" if vendor=="NVIDIA" else vendor
+        command = [str(GAME_DIR / "dkb.exe")]
         try:
             args=[]
             if len(sys.argv)>1:args=[a for a in sys.argv[1:] if a!="--launcher"]
@@ -811,7 +827,7 @@ class DKBLauncherApp(tk.Tk):
             if not self.keep_launcher_var.get():
                 self.withdraw()
                 self.after(2500,self.safe_quit)
-            if p.pid and not script.is_file():
+            if p.pid:
                 threading.Thread(target=self._place_game_window,args=(p.pid,self.target_monitor),daemon=True).start()
         except Exception as exc:messagebox.showerror("Launch Error",f"Could not start dkb.exe:\n{exc}",parent=self)
     def _place_game_window(self,pid,monitor):
@@ -846,7 +862,7 @@ class DKBLauncherApp(tk.Tk):
             self.after(0,lambda:self._show_release(result,None))
         except Exception as exc:
             detail=str(exc)
-            if "404" in detail or "Not Found" in detail:self.after(0,lambda:self._show_release(None,"No DKB releases are published yet; this prototype will not self-update."))
+            if "404" in detail or "Not Found" in detail:self.after(0,lambda:self._show_release(None,"No DKB releases are published yet; this Alpha 1 build is up to date."))
             else:self.after(0,lambda:self._show_release(None,"Release check failed: "+detail))
     def _show_release(self,result,error):
         self.release_check_active=False

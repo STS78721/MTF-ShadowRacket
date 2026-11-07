@@ -580,6 +580,21 @@ static LONG CALLBACK crash_veh(EXCEPTION_POINTERS *ep) {
     PlatCrash c = {what, (uint32_t)code, rip, rip - (uintptr_t)mi.lpBaseOfDll, -1, 0};
     if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
         c.access = (int)ep->ExceptionRecord->ExceptionInformation[0], c.addr = ep->ExceptionRecord->ExceptionInformation[1];
+    // A fault in lifted code keeps its guest registers in host locals, so the guest frame walk in crash_handler finds
+    // nothing. Return addresses into this executable on the faulting host stack name the callers instead (crash_handler
+    // prints each with its lifted function). A scan, not an unwind: stale slots can appear, the innermost are reliable.
+    // Bounded by the current stack's base in the TIB (a host fiber's own stack while one runs).
+    c.frames[c.nframes++] = rip;
+    {
+        const NT_TIB *tib = (const NT_TIB *)NtCurrentTeb();
+        uintptr_t base = (uintptr_t)mi.lpBaseOfDll, sp = (uintptr_t)ep->ContextRecord->Rsp & ~(uintptr_t)7;
+        uintptr_t top = (uintptr_t)tib->StackBase, end = top - sp > 0x10000 ? sp + 0x10000 : top;
+        if (sp && top > sp && top - sp < ((uintptr_t)1 << 30))
+            for (uintptr_t a = sp; a + 8 <= end && c.nframes < (int)(sizeof c.frames / sizeof *c.frames); a += 8) {
+                uintptr_t v = *(const uintptr_t *)a;
+                if (v - base < mi.SizeOfImage && v != c.frames[c.nframes - 1]) c.frames[c.nframes++] = v;
+            }
+    }
     crash_fn(&c);
     return EXCEPTION_CONTINUE_SEARCH;
 }

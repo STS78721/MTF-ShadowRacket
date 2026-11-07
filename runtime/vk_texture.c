@@ -331,8 +331,18 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     // NVN_TEXTURE_FLAGS_IMAGE: NVN 2 binds textures made without the flag as images (Bananza's upscaler writes its
     // 2880x1620 r11g11b10f output, flags 0), and an image without the usage got a stand-in, so the frame stayed the
     // clear colour. Vulkan cannot add the usage later.
-    if (!ds && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && samples == 1) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    int mutable_storage = 0;
+    if (!ds && samples == 1) {
+        if (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        else if (f.vk == VK_FORMAT_R8G8B8A8_SRGB &&
+                 (features_of(VK_FORMAT_R8G8B8A8_UNORM) & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))
+            usage |= VK_IMAGE_USAGE_STORAGE_BIT, mutable_storage = 1;
+        else if (f.vk == VK_FORMAT_B8G8R8A8_SRGB &&
+                 (features_of(VK_FORMAT_B8G8R8A8_UNORM) & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT))
+            usage |= VK_IMAGE_USAGE_STORAGE_BIT, mutable_storage = 1;
+    }
     VkImageCreateFlags flags = ds ? 0 : VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // format-reinterpreting views
+    if (mutable_storage) flags |= VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
     // Cube compatible only for cube targets: the replay makes cube views of nothing else (vk_exec_draw.c get_view checks
     // the image's own view type). The flag on every square array of 6+ layers changed how AMD's Windows driver lays such
     // an image out, and terrain material arrays sampled through it came out in rainbow blocks that moved with the mip

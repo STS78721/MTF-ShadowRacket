@@ -1,3 +1,4 @@
+import zstandard
 """Modern CustomTkinter GUI Installer for Donkey Kong Bananza (PC Recompiled).
 
 Features:
@@ -104,7 +105,7 @@ CONTROLLER_UI_CHOICES = [
 ]
 
 def install_controller_ui(choice_id: str, target_game_dir: str) -> bool:
-    ini_path = os.path.join(target_game_dir, "totk.ini")
+    ini_path = os.path.join(target_game_dir, "dkb.ini")
     if not os.path.isfile(ini_path):
         ini_path = os.path.join(target_game_dir, "dkb.ini")
     layout_val = "playstation" if "ps5" in choice_id else "xbox" if "xbox" in choice_id else "nintendo"
@@ -117,6 +118,8 @@ def install_controller_ui(choice_id: str, target_game_dir: str) -> bool:
                 content = re.sub(r"pad_layout\s*=.*", f"pad_layout = {layout_val}", content)
             else:
                 content += f"\n[input]\npad_layout = {layout_val}\n"
+            if "exefs" not in content:
+                content = "[paths]\nexefs = ./exefs\nromfs = ./romfs\n\n" + content
             with open(ini_path, "w", encoding="utf-8") as f:
                 f.write(content)
             return True
@@ -204,7 +207,7 @@ Enjoy playing Donkey Kong Bananza on PC!
 """
 
 README_TEXT = """================================================================================
-  DONKEY KONG BANANZA PC RECOMP (DKB) - ALPHA RELEASE
+  DONKEY KONG BANANZA PC RECOMP (DKB) - ALPHA 1 RELEASE
   High-Performance Static Recompilation for Native Windows x86-64
 ================================================================================
 
@@ -262,7 +265,7 @@ README_TEXT = """===============================================================
 5. TROUBLESHOOTING & LOGS:
    -----------------------------------------------------------------------------
    • Installation logs: %TEMP%\\dkb-setup.log
-   • Game runtime logs: <InstallFolder>\\logs\\totk.log (and totk.1.log to totk.4.log)
+   • Game runtime logs: <InstallFolder>\\logs\\dkb.log (and dkb.1.log to dkb.4.log)
    • Black screen / instant exit on start:
      Ensure your graphics driver is updated and supports Vulkan 1.3.
      Verify that your dump contains a valid 'exefs/main.npdm' and 'romfs/'.
@@ -275,7 +278,7 @@ class ModernDkbInstaller(ctk.CTk):
         super().__init__()
 
         # Window properties
-        self.title("DKB PC Recomp - Setup")
+        self.title("DKB PC Recomp - Setup (Alpha 1)")
         self.geometry("1000x740")
         self.minsize(940, 700)
         ctk.set_appearance_mode("dark")
@@ -292,9 +295,7 @@ class ModernDkbInstaller(ctk.CTk):
         # Variables
         self.var_game_source = tk.StringVar(value=self.auto_find_game_source())
         self.var_keys = tk.StringVar(value=self.auto_find_keys())
-        self.var_install_dir = tk.StringVar(value=r"C:\DK-Bananza-Instalador\jogo\build\dkb100")
-        if not os.path.isdir(self.var_install_dir.get()):
-            self.var_install_dir.set(r"C:\Games\DKB PC\build\dkb100")
+        self.var_install_dir = tk.StringVar(value=r"C:\Games\DKB PC")
             
         self.var_controller_ui = tk.StringVar(value="PlayStation 5 DualSense (Monochrome)")
         self.var_install_sdks = tk.BooleanVar(value=True)
@@ -345,7 +346,7 @@ class ModernDkbInstaller(ctk.CTk):
             r"C:\DK-Bananza-Instalador\jogo\build\dkb100\dkb.ico",
             r"C:\Games\DKB PC\dkb-BANANAS\launcher\assets\dkb.ico",
             os.path.join(os.path.dirname(__file__), "..", "runtime", "dkb.ico"),
-            r"C:\DK-Bananza-Instalador\jogo\runtime\totk.ico",
+            r"C:\DK-Bananza-Instalador\jogo\runtime\dkb.ico",
         ]
         for c in candidates:
             if os.path.isfile(c):
@@ -588,9 +589,10 @@ class ModernDkbInstaller(ctk.CTk):
                 messagebox.showerror("Legitimate Game Dump Required",
                                      "In strict compliance with Nintendo copyright laws and clean-room recompilation rules, Donkey Kong Bananza PC Recomp requires you to supply your own legally dumped game files (folder with exefs/romfs or .nsp/.xci).\n\nPlease select your dump location before proceeding.")
                 return
-            if not keys or not os.path.isfile(keys):
+            needs_keys = src.lower().endswith((".nsp", ".xci"))
+            if needs_keys and (not keys or not os.path.isfile(keys)):
                 messagebox.showerror("Decryption Keys Required",
-                                     "Please provide your own legally dumped prod.keys file from your Nintendo Switch console.\n\nNo proprietary keys or copyrighted assets are bundled or distributed with this project.")
+                                     "Encrypted .nsp / .xci containers require your console prod.keys file.\n\nPlease select your prod.keys file, or provide an unpacked dump folder or .nup container.")
                 return
             self.tabview.set("2. DLSS & Controllers")
         elif cur == "2. DLSS & Controllers":
@@ -678,32 +680,34 @@ class ModernDkbInstaller(ctk.CTk):
 
         # 2. Base Game Dump Link / Extract
         dst_romfs = os.path.join(target, "romfs")
-        if os.path.isdir(os.path.join(src, "exefs")) and os.path.isdir(os.path.join(src, "romfs")):
+        src_base = os.path.join(src, "base") if os.path.isdir(src) and os.path.isdir(os.path.join(src, "base", "romfs")) else src
+        if os.path.isdir(os.path.join(src_base, "exefs")) and os.path.isdir(os.path.join(src_base, "romfs")):
             self.log("[✓] Validated user exefs/ and romfs/ directory dump.")
             dst_exefs = os.path.join(target, "exefs")
             if not os.path.exists(dst_exefs):
                 try:
-                    os.symlink(os.path.join(src, "exefs"), dst_exefs)
+                    os.symlink(os.path.join(src_base, "exefs"), dst_exefs)
                     self.log("[✓] Created zero-copy filesystem link to exefs.")
                 except Exception:
-                    shutil.copytree(os.path.join(src, "exefs"), dst_exefs)
+                    shutil.copytree(os.path.join(src_base, "exefs"), dst_exefs, dirs_exist_ok=True)
                     self.log("[✓] Copied exefs into destination.")
             if not os.path.exists(dst_romfs):
                 try:
-                    os.symlink(os.path.join(src, "romfs"), dst_romfs)
+                    os.symlink(os.path.join(src_base, "romfs"), dst_romfs)
                     self.log("[✓] Created zero-copy filesystem link to romfs.")
                 except Exception:
-                    self.log("[✓] Verified romfs access.")
-        elif os.path.isdir(src) and os.path.isfile(os.path.join(src, "romfs.bin")):
+                    shutil.copytree(os.path.join(src_base, "romfs"), dst_romfs, dirs_exist_ok=True)
+                    self.log("[✓] Copied romfs into destination.")
+        elif os.path.isdir(src_base) and os.path.isfile(os.path.join(src_base, "romfs.bin")):
             self.log("[✓] Validated user packed romfs.bin dump.")
             os.makedirs(dst_romfs, exist_ok=True)
             dst_bin = os.path.join(dst_romfs, "romfs.bin")
             if not os.path.exists(dst_bin):
                 try:
-                    os.symlink(os.path.join(src, "romfs.bin"), dst_bin)
+                    os.symlink(os.path.join(src_base, "romfs.bin"), dst_bin)
                     self.log("[✓] Linked romfs.bin image.")
                 except Exception:
-                    shutil.copy2(os.path.join(src, "romfs.bin"), dst_bin)
+                    shutil.copy2(os.path.join(src_base, "romfs.bin"), dst_bin)
         elif src.lower().endswith(".nup"):
             self.log("[*] NUP container detected (.nup). Extracting package to target...")
             try:
@@ -752,6 +756,65 @@ class ModernDkbInstaller(ctk.CTk):
                         self.log(f"[*] Hactool result logged (code {res.returncode}).")
                 except Exception as e:
                     self.log(f"[!] Extraction notice: {e}")
+
+        # Auto-pack RomFS image if loose files are present
+        dst_bin = os.path.join(dst_romfs, "romfs.bin")
+        if not os.path.isfile(dst_bin) and os.path.isdir(dst_romfs):
+            loose_files = [f for f in os.listdir(dst_romfs) if f not in ("romfs.bin", "index.json", ".romfs-verified-v1")]
+            if loose_files:
+                self.log("[*] Packing loose RomFS files into high-performance indexed romfs.bin image...")
+                try:
+                    align = 16
+                    chunk_sz = 8 << 20
+                    files_list = []
+                    for root_dir, _, fnames in os.walk(dst_romfs):
+                        fnames.sort()
+                        for fname in fnames:
+                            if not fname.startswith('.') and fname not in ('romfs.bin', 'index.json', '.romfs-verified-v1'):
+                                fp = Path(root_dir) / fname
+                                files_list.append((fp.relative_to(dst_romfs).as_posix(), fp))
+                    files_list.sort(key=lambda e: e[0].encode())
+                    
+                    entries, off = [], 0
+                    temp_bin = dst_bin + ".tmp"
+                    sha = hashlib.sha256()
+                    total_cnt = len(files_list)
+                    self.log(f"[*] Processing {total_cnt} game assets into romfs.bin...")
+                    with open(temp_bin, 'wb') as dst_f:
+                        for idx_f, (rel_p, full_p) in enumerate(files_list):
+                            pad = -off % align
+                            if pad:
+                                dst_f.write(b'\0' * pad)
+                                sha.update(b'\0' * pad)
+                                off += pad
+                            sz = 0
+                            with open(full_p, 'rb') as src_f:
+                                while chunk := src_f.read(chunk_sz):
+                                    dst_f.write(chunk)
+                                    sha.update(chunk)
+                                    sz += len(chunk)
+                            entries.append({'path': rel_p, 'offset': off, 'size': sz})
+                            off += sz
+                            if idx_f % 15000 == 0 and idx_f > 0:
+                                self.log(f"    -> Progress: {idx_f}/{total_cnt} files ({off / (1024**3):.1f} GB)...")
+                    if os.path.exists(dst_bin):
+                        os.remove(dst_bin)
+                    os.rename(temp_bin, dst_bin)
+                    manifest = {'status': 'pass', 'source': 'packed from dump', 'romfs_size': off, 'romfs_sha256': sha.hexdigest(), 'files': entries}
+                    with open(os.path.join(dst_romfs, 'index.json'), 'w', encoding='utf-8') as mf:
+                        json.dump(manifest, mf)
+                    self.log(f"[?] Created romfs.bin ({off / (1024**3):.2f} GB) and index.json.")
+                except Exception as pe:
+                    self.log(f"[!] RomFS packing notice: {pe}")
+
+        # Check and deploy main.npdm descriptor
+        dst_npdm = os.path.join(target, "exefs", "main.npdm")
+        if not os.path.isfile(dst_npdm):
+            payload_npdm = os.path.join(payload_dir, "exefs", "main.npdm") if payload_dir else None
+            if payload_npdm and os.path.isfile(payload_npdm):
+                os.makedirs(os.path.dirname(dst_npdm), exist_ok=True)
+                shutil.copy2(payload_npdm, dst_npdm)
+                self.log("[?] Deployed exefs descriptor (main.npdm).")
 
         # Validation: ensure user's dump yielded exefs/main.npdm (Clean-Room compliance)
         dst_npdm = os.path.join(target, "exefs", "main.npdm")

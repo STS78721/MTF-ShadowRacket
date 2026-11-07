@@ -39,6 +39,7 @@
 #include <string.h>
 
 #include "host.h"
+#include "cfg.h"
 #include "nvn_api.h"
 #include "nvn_tex.h"
 #include "tex.h"

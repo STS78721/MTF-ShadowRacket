@@ -581,7 +581,8 @@ static nvn_hmap views_by_image;          // VkImage -> its first ViewNode
 
 // An image view of a registered texture for a shader resource of type `rtype` (GfxShaderRes.type); VK_NULL_HANDLE when
 // the image cannot serve it (the caller binds a stand-in). Texture lock held.
-static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, int hv, uint16_t rtype, int storage) {
+static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, int hv, uint16_t rtype, int storage,
+                            uint8_t image_format) {
     (void)ex;
     VkImageViewType vt = res_view_type(rtype);
     int ms = (rtype & 0x200) != 0;
@@ -629,18 +630,26 @@ static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, 
                     sw[i] = img->chan[sw[i] - NVN_TEXTURE_SWIZZLE_R];
             }
     }
+    // Storage images must use the format declared by the shader. NVN lets a texture handle be bound as an image
+    // with a format that differs from the texture's sampling format (the OOT NDSR output is RGBA8 over an sRGB
+    // texture). Vulkan descriptors require the storage view's format to match OpTypeImage, so use a compatible
+    // format view when the image was created mutable. Sampled views continue to use the NVN texture format.
+    VkFormat format = img->format;
+    if (storage && image_format > 0 && image_format < sizeof tex_format / sizeof tex_format[0])
+        format = tex_format[image_format];
     uint32_t swz = (uint32_t)sw[0] | (uint32_t)sw[1] << 8 | (uint32_t)sw[2] << 16 | (uint32_t)sw[3] << 24;
-    ViewKey k = {img->image, img->format, vt, aspect, l0, nl, y0, ny, swz};
+    ViewKey k = {img->image, format, vt, aspect, l0, nl, y0, ny, swz};
     if (!view_of.klen) nvn_hm_init(&view_of, sizeof(ViewKey)), nvn_hm_init(&views_by_image, sizeof(VkImage));
     VkImageView found = (VkImageView)nvn_hm_get(&view_of, &k);
     if (found) return found;
     VkImageViewCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img->image, .viewType = vt,
-                                .format = img->format,
+                                .format = format,
                                 .components = {swz_of(sw[0]), swz_of(sw[1]), swz_of(sw[2]), swz_of(sw[3])},
                                 .subresourceRange = {aspect, l0, nl, y0, ny}};
     VkImageViewUsageCreateInfo use = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
-                                      .usage = VK_IMAGE_USAGE_SAMPLED_BIT};
-    if (img->block_views) ci.pNext = &use;   // the image's COLOR_ATTACHMENT usage is its block views' (vk_texture.c)
+                                      .usage = storage ? VK_IMAGE_USAGE_STORAGE_BIT : VK_IMAGE_USAGE_SAMPLED_BIT};
+    if (img->block_views || (storage && format != img->format))
+        ci.pNext = &use;   // block views expose COLOR_ATTACHMENT; storage views expose only their declared format
     VkImageView view;
     if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS) return VK_NULL_HANDLE;
     ViewNode *n = malloc(sizeof *n);
@@ -1502,7 +1511,7 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
         view_t v;
         int hv;
         const VkTexImage *img = vk_texture_by_id_locked(&ex->tex_pool, (int)(h & 0xfffff), &v, &hv);
-        if (img) view = get_view(ex, img, &v, hv, r->type, storage), *image = img->image;
+        if (img) view = get_view(ex, img, &v, hv, r->type, storage, r->format), *image = img->image;
         if (img && storage) vk_texture_storage_bound_locked(img);
         if (img && !storage && ex->nfbl && in_fbl(ex, img->image)) layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
         if (!storage && !separate) {
@@ -2332,28 +2341,65 @@ static int stage_diag_skip(const VkExec *ex, const GfxShader *vs) {
     return 0;
 }
 
-static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const GfxShader *fs) {
+static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const GfxShader *fs, int32_t count) {
     static int on = -1;
     if (on < 0) on = !rt_game_version && cfg_bool("TOTK_FIX_VS_FAULT") && vk_ctx()->props.vendorID == 0x10de;   // 0: Bananza
-    if (!on || !vs || !fs) return 0;
+    if (!on || !vs) return 0;
     const uint8_t *ctl, *code = NULL;
     uint32_t len;
+    uint64_t orig = 0;
     if (find_stage(ex->prog, NVN_STAGE_VS, &ctl, &code, &len)) {
-        uint64_t orig = nvn2_origin(code);
+        orig = nvn2_origin(code);
         if (orig == 0xcae0ef8e9fe9147full ||
             orig == 0xa05d707357ffc917ull || orig == 0xc081588c78ee16f3ull || orig == 0x89300537d4fff15eull ||
             orig == 0xfb6e80e4f0bd1ac5ull || orig == 0x140a1eac75f7b5c0ull || orig == 0x163bd4735277403aull) {
-            warn_once(W_FAULT_SKIP2, "known faulting NVN 2 vertex stage is skipped on NVIDIA (#9/cutscene)");
+            warn_once(W_FAULT_SKIP2, "the light quad of NVN 2 vertex stage %016llx is skipped on NVIDIA (#9/cutscene)", (unsigned long long)orig);
             return 1;
         }
     }
-    const GfxShaderRes *r;
-    int n = gfx_shader_resources(fs, GFX_RES_SSBO, &r), lights = 0;
-    for (int i = 0; i < n; i++) lights |= r[i].cbuf_slot == 0 && r[i].handle * 4 == 0x530;
+    // Whitelist known-safe gameplay quads
+    if (orig == 0x782b2585777d2b4eull || orig == 0x392e2956038a9e64ull || orig == 0x7d85669ac430f01aull)
+        return 0;
+
     GfxShaderIo io[32];
-    if (!lights || !(gfx_shader_inputs(vs, io) >> 9 & 1)) return 0;
-    warn_once(W_FAULT_SKIP, "light-quad draws with ten instance streams are skipped on NVIDIA (#9; TOTK_FIX_VS_FAULT=0 draws them)");
-    return 1;
+    uint32_t used = gfx_shader_inputs(vs, io);
+    if (!(used >> 9 & 1)) return 0;
+
+    // Check if fragment shader reads light SSBO at c0+0x530
+    int lights = 0;
+    if (fs) {
+        const GfxShaderRes *r;
+        int n = gfx_shader_resources(fs, GFX_RES_SSBO, &r);
+        for (int i = 0; i < n; i++) lights |= r[i].cbuf_slot == 0 && r[i].handle * 4 == 0x530;
+    }
+    if (lights) {
+        warn_once(W_FAULT_SKIP, "light-quad draws with ten instance streams are skipped on NVIDIA (#9; TOTK_FIX_VS_FAULT=0 draws them)");
+        return 1;
+    }
+
+    // Instanced light-quad draws in Bananza have count <= 6 (4-vertex quad or 6-vertex two-triangle quad)
+    // and every active vertex attribute stream is per-instance (divisor != 0).
+    // Legitimate 3D world meshes (skybox, cave walls, terrain) use per-vertex attributes (divisor == 0).
+    if (count > 0 && count <= 6) {
+        int all_instanced = 1, active_streams = 0;
+        for (int l = 0; l < 16; l++) {
+            if (!(used >> l & 1)) continue;
+            va_st va = {0};
+            memcpy(&va, &ex->pipe.vattr[l], sizeof va);
+            if (!va.fmt || va.stream >= 16) continue;
+            active_streams++;
+            if (ex->pipe.vstream[va.stream].divisor == 0) {
+                all_instanced = 0;
+                break;
+            }
+        }
+        if (all_instanced && active_streams >= 8) {
+            warn_once(W_FAULT_SKIP, "instanced light-quad draw is skipped on NVIDIA (#9/cutscene; TOTK_FIX_VS_FAULT=0 draws them)");
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 static struct { int on, valid, has_fs, has_gs; MemoKey k; const GfxShader *vs, *fs, *gs; } SM = {-1};
@@ -2570,7 +2616,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (gs_wait) gs = shader_for(ex, NVN_STAGE_GS, &has_gs, NULL, 1);
     }
     if (stage_diag_skip(ex, vs)) return 0;
-    if (light_quad_fault_skip(ex, vs, fs)) return 0;
+    if (light_quad_fault_skip(ex, vs, fs, count)) return 0;
     if (!vs || (has_fs && !fs) || (want_gs && (!has_gs || !gs))) return 0;
     if (!geometry_feedback_safe(ex, vs, gs)) return 0;
     uint32_t fbl = feedback_prepare(ex, fs);

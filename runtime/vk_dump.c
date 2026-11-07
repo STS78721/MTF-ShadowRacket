@@ -785,11 +785,24 @@ void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPip
     pass_decide(0);
     last_targets = 0;
     Str b = {0};
+    uint64_t origin = 0;
+    if (ex->prog) {
+        for (uint32_t i = 0; i < ex->prog->nstage && i < 6; i++) {
+            if (!ex->prog->sd[i].control || !ex->prog->sd[i].data) continue;
+            uint32_t stage = 0;
+            memcpy(&stage, ex->prog->sd[i].control + 0x714, sizeof stage);
+            if (stage == 5) {
+                origin = nvn2_origin((const uint8_t *)(uintptr_t)ex->prog->sd[i].data);
+                break;
+            }
+        }
+    }
     describe_bindings(&b, ex, info);
-    fprintf(passes_f, "pass %04d: dispatch %dx%dx%d cs %016llx prog %llu caller %#llx, fence %llu\n%s", n, d->x, d->y,
-            d->z, (unsigned long long)shader_hash(cs), (unsigned long long)(ex->prog ? ex->prog->serial : 0),
+    fprintf(passes_f, "pass %04d: dispatch %dx%dx%d cs %016llx nvn2 %016llx prog %llu caller %#llx, fence %llu\n%s", n, d->x, d->y,
+            d->z, (unsigned long long)shader_hash(cs), (unsigned long long)origin, (unsigned long long)(ex->prog ? ex->prog->serial : 0),
             (unsigned long long)d->caller, (unsigned long long)ex->fence, b.s ? b.s : "");
     free(b.s);
+    fflush(passes_f);
     for (uint32_t i = 0; i < info->n_bindings && !pass_skip; i++) {   // storage images the dispatch writes
         const VkPipeBinding *bd = &info->bindings[i];
         if (!bd->res || bd->kind != GFX_RES_IMG || !(bd->res->flags & 4) || bd->type != VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)

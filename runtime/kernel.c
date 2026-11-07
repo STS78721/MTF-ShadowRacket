@@ -1950,7 +1950,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
         }
         uint64_t start = kern_now_ns();
         uint32_t r;
-        int idx = -1;
+        int idx = -1, slept = 0;
         lock();
         g_sync_calls++;
         for (;;) {
@@ -1981,9 +1981,32 @@ int kern_svc(Cpu *c, uint32_t imm) {
             }
             t->wobj = n ? hs[0] | (uint64_t)n << 32 : 0;
             g_sync_blocks++;
+            slept |= left != 0;
             if (block(t, W_SYNC, left) == R_TIMEOUT) {
                 r = R_TIMEOUT;
                 break;
+            }
+        }
+        {   // Diagnostic (OoT loading-screen hang: 7 threads at 100% in the SDK's MultiWait loop): a thread whose waits
+            // keep coming back without sleeping is spinning. The first run of 50000 in a row is logged once per host
+            // thread with what the wait saw: timeout, result, index and each handle's kind and signaled state.
+            static _Thread_local uint32_t spins;
+            static _Thread_local int logged;
+            if (slept) {
+                spins = 0;
+            } else if (++spins == 50000 && !logged) {
+                logged = 1;
+                rt_log("kernel: WaitSynchronization spin: thread %#x, %d waits in a row without sleeping; this one: "
+                       "%d handles, timeout %lld ns, result %#x, index %d, lr %#llx",
+                       t->handle, (int)spins, n, (long long)ns, r, idx, (unsigned long long)x[30]);
+                for (int i = 0; i < n && i < 16; i++) {
+                    unsigned k = hs[i] - 0x1000;
+                    int kind = hs[i] == H_CUR_THREAD ? -1 : k && k < MAX_H ? g_h[k].type : -2;
+                    int sig = kind == O_EVENT_R ? ((Event *)g_h[k].obj)->signaled
+                            : kind == O_THREAD ? ((RtThread *)g_h[k].obj)->exited : -1;
+                    rt_log("kernel:   handle[%d] %#x kind %d (1 thread, 2 readable event, 3 writable event) signaled %d",
+                           i, hs[i], kind, sig);
+                }
             }
         }
         unlock();

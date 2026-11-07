@@ -829,9 +829,11 @@ static void ov_account_offline(Cpu *c) { ret_x(c, 0x1f4000u | 124u); }   // acco
 static void ov_report_send(Cpu *c) {
     int64_t n = plat_inc64(&reports);
     if (n % 100 == 1) rt_log("prepo: play report kept local (not sent), %lld so far", (long long)n);
-    void *out = (void *)(uintptr_t)c->x[8];
+    // Return an already-completed context with no implementation. The OOT
+    // SDK's guest AsyncContext handles this synchronously; a failure result
+    // can send its completion path into an uninitialized event/mutex.
+    uint64_t *out = (uint64_t *)(uintptr_t)c->x[8];
     if (out) memset(out, 0, 16);
-    ret_x(c, c->x[8]);
 }
 static void ov_async_event(Cpu *c) {
     uint64_t ev = arg_x(c, 1);
