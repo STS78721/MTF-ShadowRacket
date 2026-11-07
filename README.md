@@ -22,52 +22,79 @@ Our goal is to **elevate *Donkey Kong Bananza* into a native, flagship PC experi
 - **Next-Gen Tactile Immersion:** Native PlayStation 5 DualSense integration with 4-channel audio-driven voice-coil haptics, adaptive trigger tension for terrain smashing and rolling dashes, and real-time controller battery telemetry.
 - **State-of-the-Art Rendering & Upscaling:** Multi-vendor AI upscaling hub featuring **NVIDIA DLSS 4.5 / DLSS-NR**, **Intel XeSS 1.3+**, **AMD FSR**, and **DLAA**, paired with ultra-low latency **NVIDIA Reflex** (`VK_NV_low_latency2`) and **AMD Anti-Lag 2**.
 - **Destructible World Fidelity:** Full native passthrough geometry shader support (`NATIVE_GS=1`), Ampere RGB-mask `TXD` gradient texture lowering, and instanced light-quad fault protection for rock-solid stability across NVIDIA RTX, AMD RDNA, and Intel Arc GPUs.
-- **Community-Guided Development:** Built for players, with players—featuring a Sony/Nixxes-inspired standalone launcher (`DKBLauncher.exe`) and a 1-click setup wizard (`DKB-Setup.exe`).
+- **A Completely Community-Guided Project:** Built for players, with players—featuring a Sony/Nixxes-inspired standalone launcher (`DKBLauncher.exe`) and a 1-click setup wizard (`DKB-Setup.exe`).
 
 ---
 
-## 🎮 What Makes Alpha 1 Unique (Feature Highlights)
+## 🎮 What Makes This Build Unique (Alpha 1 Feature Highlights)
+
+### 🕹️ Sony PlayStation 5 DualSense & Native Controller Integration
+* **4-Channel Haptic Streaming & Tactile Feedback:** Real-time audio-driven vibration and DualSense trigger rumble support (`rumble_triggers`, `rumble_strength`).
+* **Selectable Button Prompt Layouts:** Switch effortlessly between **PlayStation 5 DualSense** (Monochrome & Color), **Xbox Series X|S** (Monochrome & Color), and **Nintendo Switch** button prompts (`pad_layout`).
+* **Full In-Game Controller Overlay Navigation:** Open and control the entire Recomp settings menu with **`[Select + Start]`** and toggle the performance HUD with **`[L3 + R3]`** without touching a keyboard.
 
 ### 🖥️ Standalone Nixxes/Sony-Style PC Launcher (`DKBLauncher.exe`)
-* **Synchronized In-Game Settings:** Configure Display, Upscaler (DLSS 4.5 / XeSS / FSR / DLAA), Low Latency (Reflex / Anti-Lag 2), Frame Generation, Frame Pacing (30 / 60 / 120 / Unlimited FPS), Audio, and Controller Glyphs before or during play.
-* **Pre-Warm Vulkan Shaders:** 1-click multi-threaded shader and pipeline library pre-compilation into the GPU driver cache.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/STS78721/dkb-BANANAS/bananza/launcher/launcher_showcase.png" alt="SteelTemple DKB Standalone Launcher" width="90%">
+</p>
+
+* **Synchronized In-Game Settings:** Configure Display, Upscaler (`Off`, `DLSS 4.5`, `FSR`, `XeSS`, `DLAA`), Upscaler Quality Preset, DLSS Preset (`Preset K`, `Preset L`, `Preset M`), Low Latency (`NVIDIA Reflex` / `AMD Anti-Lag 2`), Frame Generation, Frame Pacing (`30` / `60` / `120` / `Unlimited` FPS), FOV (`70`–`120`), Color Grading (`Default`, `Vivid`, `Warm`, `Cool`, `Cinema`), Audio, and Controller Glyphs before or during play.
+* **Pre-Warm Vulkan Shaders:** 1-click multi-threaded shader and pipeline library pre-compilation directly into your GPU driver cache.
 * **Pre-Flight Startup Protection:** Automatically verifies `exefs/main.npdm` and `romfs/` before launching, with a 1-click *Open Game Folder* prompt if missing.
-* **Save Backup Vault & Mod Manager:** Instant timestamped save snapshots with pre-restore safety backups and 1-click `.disabled` mod toggling.
+* **Save Backup Vault & Mod Manager:** Instant timestamped save snapshots (`profile-dkb100/backups/save_<timestamp>/`) with pre-restore safety backups and 1-click `.disabled` mod toggling.
 
-### ⚡ Multi-Vendor AI Upscalers & Low-Latency Pipeline
-* **NVIDIA DLSS 4.5 & DLAA:** Native NGX / Streamline integration with selectable presets (`Preset K`, `Preset L`, `Preset M`) and character motion-vector masking.
-* **Intel XeSS 1.3+ & AMD FSR:** Cross-vendor hardware-accelerated upscaling and frame generation (`libxess.dll`, `libxess_fg.dll`).
-* **NVIDIA Reflex & AMD Anti-Lag 2:** Hardware-synchronized low-latency frame pacing (`On` / `On + Boost`) for responsive platforming and combat.
-
-### 🛠️ Engine & Shader Breakthroughs (Alpha 1)
-* **NVIDIA Cutscene & Save-Load Fault Prevention:** Intelligent per-instance light-quad guard in `runtime/vk_exec_draw.c` that skips faulting 10-stream instanced light quads (`count <= 6`, all streams `divisor != 0`) while preserving 100% of 3D world meshes, skyboxes, cave walls, and destructible terrain.
-* **Destructible Terrain & Opening Wall Restoration:** Enabled native passthrough geometry stages by default (`NATIVE_GS=1`), added Ampere RGB-mask `TXD` lowering in `lower_to_maxwell.h`, and integrated translator patch `0019` so instructions following unpredicated `CAL` calls execute properly.
-* **Native Switch 2 Video Cutscenes (`nn::codec`):** Hardware-accelerated VP9 video decoding (`runtime/ov_codec.c`) for seamless guide movies and story cutscenes.
-* **Indexed Shadow Memory Sync:** Fast binary-searched union of pending GPU writes during shadow memory synchronization (`runtime/vk_memory.c`) and sRGB mutable storage image views (`runtime/vk_texture.c`).
+### ⚡ Upstream Bananza Engine Sync & Pre-Tested Alpha 1 Fixes
+* **NVIDIA Cutscene & Save-Load Device-Loss Fix (`runtime/vk_exec_draw.c`):** Resolved `VK_ERROR_DEVICE_LOST` (`instruction pointer (invalid)`) crashes when loading saves and during the Ingot Isle Cave-In cutscenes by accurately identifying faulting per-instance light-quad draws (`count <= 6`, `>= 8` active streams, all active streams `divisor != 0`) plus 7 cutscene vertex stage origins—while preserving 100% of 3D world meshes, skyboxes, cave walls, and distant terrain (`0x03ff`–`0x7fff` per-vertex shaders).
+* **Destructible Terrain & Opening Wall Restoration:**
+  - Enabled native passthrough geometry stages by default (`NATIVE_GS=1`) so destructible terrain renders with full geometry and materials instead of black.
+  - Integrated Ampere RGB-mask `TXD` gradient texture lowering (`lower_to_maxwell.h`) and shader translator patch `0019` (allowing instructions after unpredicated `CAL` calls to run, restoring the opening tutorial wall).
+  - Allowed passthrough geometry shaders to read unforwarded inputs (`runtime/gfx_shader.c`).
+* **Indirect Reset & Texture Fence Write-Back Integrity (`runtime/vk_exec_draw.c`, `runtime/vk_texture.c`, `runtime/vk_backend.c`):**
+  - Enforced `vk_exec_read_buffer` in `vk_exec_reset_indirect` so destructible terrain indirect-reset pointer lists always resolve shadow/VRAM mirror memory cleanly.
+  - Maintained synchronous 64 KB fence write-backs (`WB_SMALL_DEFAULT`) and sRGB mutable storage image views (`VK_IMAGE_CREATE_EXTENDED_USAGE_BIT`) so GPU-generated LUTs and distant environment maps never read stale zeros.
+* **Indexed Shadow Memory Sync & Alpha-Test Key Rounding:**
+  - Binary-searched union of pending GPU writes during shadow memory synchronization (`runtime/vk_memory.c`).
+  - Rounded alpha-test pipeline key references to nearest `1/255` step (`runtime/vk_pipeline.c`) to eliminate per-frame pipeline compilation stutter during camera/scene fades.
 
 ---
 
-## 📥 Quick Start & Installation (Alpha 1)
+## 📥 Quick Start & Downloads
 
-### 🎮 Option A: Modern All-In-One Setup Wizard (Recommended)
-1. Download **`DKB-Setup.exe`** (or **`Donkey-Kong-Bananza-Setup.exe`** / `.zip`).
-2. Launch the setup executable (**DKB PC Recomp - Setup (Alpha 1)**).
-3. Select your legally dumped **Donkey Kong Bananza v1.0.0** source:
+Grab the latest prebuilt packages from our **[Latest Release (Alpha 1)](https://github.com/STS78721/dkb-BANANAS/releases/tag/Alpha-1)**:
+
+### 🛠️ 1. All-In-One Setup Wizard (Recommended for New Players)
+👉 **Download: [`SteelTemple-DKB-Alpha1-Full-Setup-Wizard.exe`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1/SteelTemple-DKB-Alpha1-Full-Setup-Wizard.exe)** (~442 MB) *(or [`DKB-Setup.zip`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1/DKB-Setup.zip))*
+1. Run the setup executable (**DKB PC Recomp - Setup (Alpha 1)**).
+2. Select your legally dumped **Donkey Kong Bananza v1.0.0** source:
    - **`.nup` container** (unpacked natively with zero external tools or keys required),
    - **Unpacked dump folder** containing `exefs/` and `romfs/` (or `base/exefs` and `base/romfs`), or
    - **`.nsp` / `.xci` container** (with your console `prod.keys`).
-4. Choose your target installation directory (default: `C:\Games\DKB PC`), select your preferred controller prompt style (**PS5 DualSense**, **Xbox Series X|S**, or **Nintendo Switch**), and click **Install & Launch**!
+3. Choose your target installation directory (default: `C:\Games\DKB PC`), pick your preferred controller prompt style (**PS5 DualSense**, **Xbox Series X|S**, or **Nintendo Switch**), and click **Install & Launch**!
 
-### 📂 Expected Game Directory Layout
-```text
-C:\Games\DKB PC\
-├── dkb.exe                <-- Recompiled Native x86-64 Game Engine
-├── DKBLauncher.exe        <-- Standalone PC Launcher (Alpha 1)
-├── dkb.ini                <-- Synchronized Game & Graphics Configuration
-├── SDL3.dll, nvngx_dlss.dll, libxess.dll, etc.
-├── exefs/                 <-- Contains main.npdm (from your v1.0.0 dump)
-└── romfs/                 <-- Contains romfs.bin or unpacked game assets
-```
+---
+
+### 🎮 2. Portable Standalone Package (Zero-Install Zip)
+👉 **Download: [`SteelTemple-DKB-Alpha1-Portable-StandAlone.zip`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1/SteelTemple-DKB-Alpha1-Portable-StandAlone.zip)** (~445 MB)
+1. Extract the archive into your chosen game folder (e.g. `C:\Games\DKB PC`).
+   - *Includes `DKBLauncher.exe`, `dkb.exe`, `SDL3.dll`, pre-warmed shader/pipeline caches, and vendor upscalers (DLSS 4.5, XeSS 1.3, Reflex).*
+2. Copy **both** your dumped **`exefs`** and **`romfs`** folders (from your legally owned Base v1.0.0 dump) directly into this folder:
+   ```text
+   C:\Games\DKB PC\
+   ├── dkb.exe                <-- Recompiled Native x86-64 Game Engine
+   ├── DKBLauncher.exe        <-- Standalone PC Launcher (Alpha 1)
+   ├── dkb.ini                <-- Synchronized Game & Graphics Configuration
+   ├── SDL3.dll, nvngx_dlss.dll, libxess.dll, etc.
+   ├── exefs/                 <-- Contains main.npdm (from your v1.0.0 dump)
+   └── romfs/                 <-- Contains romfs.bin or unpacked game assets
+   ```
+3. Launch **`DKBLauncher.exe`** to configure graphics, pre-warm shaders, and hit **PLAY**!
+
+---
+
+### ⚡ 3. Upgrading Existing Builds (Drop-in Update)
+👉 **Download: [`SteelTemple-DKB-Alpha1-Update.zip`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1/SteelTemple-DKB-Alpha1-Update.zip)** (~150 MB)
+1. Extract and overwrite files directly into your existing game directory (`C:\Games\DKB PC`).
+2. Preserves all your save files (`profile-dkb100/save`), custom `dkb.ini` configuration, and mods.
 
 ---
 
@@ -95,4 +122,4 @@ C:\Games\DKB PC\
 
 DKB Recomp is distributed under the **[GNU GPL v3 or later](LICENSE)** (incorporating Eglantine's GPL Ampere shader lowering in `runtime/third_party/eglantine/`). Files originating from TotK Recomp retain their **[MIT License](LICENSE-MIT)**; third-party notices are detailed in **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)**.
 
-*DKB Recomp is an independent, non-commercial fan project and is not affiliated with or endorsed by Nintendo. Donkey Kong Bananza and Nintendo Switch 2 are trademarks of Nintendo.*
+*Thank you to all contributors, testers, and players building the ultimate Donkey Kong Bananza PC experience!* 🍌🌴✨
