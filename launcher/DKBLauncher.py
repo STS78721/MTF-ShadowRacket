@@ -13,8 +13,9 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageDraw, ImageTk
 
-APP_TITLE = "Donkey Kong Bananza PC Recomp · Alpha 1"
-VERSION_STRING = "Alpha 1 · DKB"
+CURRENT_VERSION = "Alpha 1b"
+APP_TITLE = f"Donkey Kong Bananza PC Recomp · {CURRENT_VERSION}"
+VERSION_STRING = f"{CURRENT_VERSION} · DKB"
 GITHUB_URL = "https://github.com/STS78721/dkb-BANANAS"
 RELEASES_URL = GITHUB_URL + "/releases"
 RELEASES_API_URL = "https://api.github.com/repos/STS78721/dkb-BANANAS/releases/latest"
@@ -401,7 +402,7 @@ class DKBSlider(tk.Canvas):
 
 class DKBSettingsDialog(tk.Toplevel):
     def __init__(self,parent):
-        super().__init__(parent); self.parent_app=parent; self.title("DKB Alpha 1 · Display & Graphics Settings")
+        super().__init__(parent); self.parent_app=parent; self.title(f"DKB {CURRENT_VERSION} · Display & Graphics Settings")
         self.geometry("900x700"); self.minsize(820,630); self.configure(bg=COLOR_BG_DARK); self.transient(parent); self.grab_set()
         self.ini_values=parse_ini(INI_PATH); self.vars={}; self.monitors=enumerate_displays()
         saved=parent.launcher_cfg.get("target_display")
@@ -420,7 +421,7 @@ class DKBSettingsDialog(tk.Toplevel):
     def get_val(self,key,default=""): return self.ini_values.get(key.lower(),default)
     def setup_ui(self):
         header=tk.Frame(self,bg=COLOR_CARD,height=58); header.pack(fill=tk.X,side=tk.TOP); header.pack_propagate(False)
-        tk.Label(header,text="DKB ALPHA 1  ·  GRAPHICS & SYSTEM CONFIGURATION",font=("Segoe UI",12,"bold"),fg=COLOR_GOLD,bg=COLOR_CARD).pack(side=tk.LEFT,padx=24,pady=17)
+        tk.Label(header,text=f"DKB {CURRENT_VERSION.upper()}  ·  GRAPHICS & SYSTEM CONFIGURATION",font=("Segoe UI",12,"bold"),fg=COLOR_GOLD,bg=COLOR_CARD).pack(side=tk.LEFT,padx=24,pady=17)
         self.gpu_header=tk.Label(header,text=f"Detected: {self.gpu_name}",font=("Segoe UI",9),fg=COLOR_ACCENT_GREEN if self.gpu_vendor!="Other" else COLOR_TEXT_DIM,bg=COLOR_CARD)
         self.gpu_header.pack(side=tk.RIGHT,padx=20)
         style=ttk.Style(self); style.theme_use("clam")
@@ -790,7 +791,7 @@ class DKBLauncherApp(tk.Tk):
     def setup_ui_overlay(self):
         self.canvas.create_text(70,62,text="DKB RECOMP",font=("Segoe UI",11,"bold"),fill=COLOR_GOLD,anchor="w")
         self.canvas.create_text(70,104,text="DONKEY KONG BANANZA",font=("Impact",34),fill=COLOR_WHITE,anchor="w")
-        self.canvas.create_text(70,141,text="PC RECOMPILED  ·  ALPHA 1",font=("Segoe UI",10,"bold"),fill=COLOR_ACCENT_GREEN,anchor="w")
+        self.canvas.create_text(70,141,text=f"PC RECOMPILED  ·  {CURRENT_VERSION.upper()}",font=("Segoe UI",10,"bold"),fill=COLOR_ACCENT_GREEN,anchor="w")
         for i,(label,cb,primary) in enumerate([("PLAY",self.launch_game,True),("SETTINGS",self.open_settings,False),("DIGITAL EXTRAS",self.open_extras,False),("QUIT",self.safe_quit,False)]):
             item=tk.Label(self,text=label,font=("Segoe UI",22,"bold"),fg=COLOR_GOLD if primary else COLOR_WHITE,bg=COLOR_BG_DARK,cursor="hand2")
             self.canvas.create_window(70,230+i*62,window=item,anchor="w"); self._menu_bind(item,cb,primary)
@@ -803,7 +804,7 @@ class DKBLauncherApp(tk.Tk):
         self.release_btn=tk.Button(footer,text="VIEW DKB RELEASE",command=self.open_latest_release,font=("Segoe UI",8,"bold"),fg="#000",bg=COLOR_GOLD,activebackground=COLOR_GOLD_HOVER,bd=0,padx=10,pady=6,cursor="hand2"); self.release_btn.pack_forget()
         self.canvas.create_window(1050,565,window=footer,anchor="se")
         repo=tk.Button(self.canvas,text="★ DKB Recomp Project",font=("Segoe UI",9,"bold"),fg=COLOR_GOLD,bg=COLOR_CARD,activebackground=COLOR_CARD_BORDER,activeforeground=COLOR_GOLD_HOVER,bd=1,relief="solid",padx=14,pady=6,cursor="hand2",command=lambda:webbrowser.open(GITHUB_URL)); self.canvas.create_window(70,570,window=repo,anchor="w")
-        self.canvas.create_text(70,608,text="ALPHA 1 RELEASE  ·  USE YOUR OWN GAME DATA",font=("Segoe UI",8,"bold"),fill=COLOR_TEXT_DIM,anchor="w")
+        self.canvas.create_text(70,608,text=f"{CURRENT_VERSION.upper()} RELEASE  ·  USE YOUR OWN GAME DATA",font=("Segoe UI",8,"bold"),fill=COLOR_TEXT_DIM,anchor="w")
     def _save_keep_launcher(self):self.launcher_cfg["show_launcher"]=self.keep_launcher_var.get(); save_config(self.launcher_cfg)
     def choose_game_directory(self):
         selected=filedialog.askdirectory(title="Select the folder containing dkb.exe")
@@ -944,16 +945,27 @@ class DKBLauncherApp(tk.Tk):
         try:
             req=urllib.request.Request(RELEASES_API_URL,headers={"Accept":"application/vnd.github+json","User-Agent":"DKBLauncher"})
             with urllib.request.urlopen(req,timeout=12) as r:data=json.loads(r.read().decode("utf-8"))
-            result=(data.get("name") or data.get("tag_name") or "Latest DKB release",data.get("html_url") or RELEASES_URL)
+            tag = (data.get("tag_name") or "").strip()
+            title = (data.get("name") or tag or "Latest DKB release").strip()
+            url = data.get("html_url") or RELEASES_URL
+            result=(title, url, tag)
             self.after(0,lambda:self._show_release(result,None))
         except Exception as exc:
             detail=str(exc)
-            if "404" in detail or "Not Found" in detail:self.after(0,lambda:self._show_release(None,"No DKB releases are published yet; this Alpha 1 build is up to date."))
+            if "404" in detail or "Not Found" in detail:self.after(0,lambda:self._show_release(None,f"Your DKB is up to date ({CURRENT_VERSION})."))
             else:self.after(0,lambda:self._show_release(None,"Release check failed: "+detail))
     def _show_release(self,result,error):
         self.release_check_active=False
         if error:self.update_status.config(text=error,fg=COLOR_TEXT_DIM); return
-        self.latest_release=result; self.update_status.config(text=f"Published DKB release available: {result[0]}",fg=COLOR_ACCENT_GREEN); self.release_btn.pack(anchor="e",pady=(5,0))
+        self.latest_release=(result[0], result[1])
+        tag = (result[2] if len(result) > 2 else "").lower()
+        title = result[0].lower()
+        if "alpha-1b" in tag or "alpha 1b" in title or tag == "alpha-1b":
+            self.update_status.config(text=f"Your DKB is up to date ({CURRENT_VERSION})",fg=COLOR_ACCENT_GREEN)
+            self.release_btn.pack_forget()
+        else:
+            self.update_status.config(text=f"Published DKB release available: {result[0]}",fg=COLOR_GOLD)
+            self.release_btn.pack(anchor="e",pady=(5,0))
     def open_latest_release(self):webbrowser.open(self.latest_release[1] if self.latest_release else RELEASES_URL)
     def open_settings(self):
         if not self._ensure_game():return
