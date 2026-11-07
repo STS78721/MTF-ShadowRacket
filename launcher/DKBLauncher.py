@@ -13,7 +13,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageDraw, ImageTk
 
-CURRENT_VERSION = "Alpha 1b"
+CURRENT_VERSION = "Alpha 1c"
 APP_TITLE = f"Donkey Kong Bananza PC Recomp · {CURRENT_VERSION}"
 VERSION_STRING = f"{CURRENT_VERSION} · DKB"
 GITHUB_URL = "https://github.com/STS78721/dkb-BANANAS"

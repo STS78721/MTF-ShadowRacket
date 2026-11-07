@@ -4,6 +4,31 @@ All notable changes to the **SteelTempSaint Donkey Kong Bananza PC Recomp (DKB)*
 
 ---
 
+## [Alpha 1c] - 2026-11-07
+
+### 🍌 Upstream Engine Integration & Cutscene Stability (Alpha 1c)
+- **SPIR-V Fused-Multiply-Zero (FMZ) Hardware Emulation (`runtime/vk_pipeline.c`, `runtime/cfg.c`):**
+  - Implemented automatic SPIR-V instruction rewrites for 32-bit float `OpFMul` and GLSL.std.450 `Fma` so `0 * x = 0` holds strictly even when `x` is `±Infinity` or `NaN` (NVIDIA hardware FMZ behavior).
+  - Enabled by default for all vertex stages (`DKB_FMZ=vertex`), resolving the end-of-tutorial cutscene device loss mathematically on NVIDIA GPUs without dropping visual meshes.
+  - Added bisection control `TOTK_FMZ_SEL=<mask:val>` and stage selector `TOTK_FMZ=0/vertex/all`.
+- **Live GPU Checkpoints & Fault Diagnostics (`runtime/vk_device.c`, `runtime/vk_crumbs.c`, `runtime/vk_pipeline.c`):**
+  - Integrated `VK_NV_device_diagnostic_checkpoints` under `DKB_GPU_CHECKPOINTS=1`.
+  - Added automatic driver binary fault dump generation (`logs/dkb-fault-<time>.bin`) when `VK_ERROR_DEVICE_LOST` is encountered for zero-guesswork debugging.
+  - Added `DKB_SKIP_VS` / `DKB_SKIP_FS` stage origin filters, SPIR-V bytecode dumping (`DKB_DUMP_SPV=1`), and hot-override support (`DKB_SPV_OVERRIDE`).
+- **Vulkan Pipeline & Command Recorder Optimizations (`runtime/vk_rec.c`, `runtime/vk_pipeline.c`):**
+  - Cache-line aligned (`alignas(64)`) command ring buffer `head` and `tail` pointers to eliminate false sharing.
+  - Added `TOTK_REC_BATCH` recording batching for reduced CPU overhead.
+  - Declared `StorageImageReadWithoutFormat` capability for unknown-format storage images.
+- **Portuguese Language Normalization (`runtime/locale.c`):**
+  - Mapped base Portuguese `pt` locale code to `pt-BR` for Bananza.
+- **Proprietary Core Features Preserved:**
+  - Retained AMD RX 9070 XT 1 MiB zero dummy buffer & full range SSBO binding (`ZERO_BYTES 1048576u`) in `vk_exec_draw.c`.
+  - Retained 1500ms fence wait (`ONESHOT_WAIT_MS 1500u`) preventing Windows 2-second TDR driver resets.
+  - Retained AMD recorder default 0 for stutter-free command dispatch.
+  - Retained NVIDIA DLSS 4.5, DLAA, Reflex, Intel XeSS 1.3, Frame Generation, DualSense haptics/adaptive triggers, F10 HUD, and 1-Click Launcher Auto-Updater.
+
+---
+
 ## [Alpha 1b] - 2026-11-07
 
 ### 🔥 Community Tester Hotfixes (Alpha 1b)
