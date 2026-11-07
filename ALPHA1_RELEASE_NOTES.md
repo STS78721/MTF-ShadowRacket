@@ -12,6 +12,12 @@ Modeled directly after our flagship **SteelTempSaint ToTK Recomp** architecture 
 
 ### 🔥 What's New in Patch Alpha 1b (Community Tester Hotfix)
 
+* **🔊 In-Game F1 Sound & Controls Menu Crash Fix (`runtime/cfg.c`, `runtime/ui/menu.cpp`):**
+  * Added missing settings table entries (`AUDIO_CHANNELS`, `DUALSENSE`, `DUALSENSE_TRIGGERS`, `DUALSENSE_TRIGGER_STRENGTH`, `DUALSENSE_AUDIO`, `DUALSENSE_AUDIO_MODE`, `DUALSENSE_VOL`, `DUALSENSE_HAPTICS`, `SPIN`, `VRAM_HEADROOM`) to `known[]`, `sections[]`, and `metas[]` in `runtime/cfg.c`.
+  * Added resilient fallback in `cfg_value()` to log a warning instead of calling `rt_fatal()`, completely eliminating crashes when switching to the Sound or Controls tabs in the in-game `F1` menu.
+* **📊 Full Performance Overlay (`F10`) Real-Time Metrics Alignment (`runtime/perfmon.h`, `runtime/perfmon.c`, `runtime/ui/menu.cpp`):**
+  * Rebuilt all runtime objects from source, resolving an 8-byte struct offset shift (`low1_fps` / `low01_fps`) in `PerfStats`.
+  * Fixes corrupted telemetry numbers on AMD Radeon and NVIDIA cards (`301 °C`, `2490 W`, `16304 MHz`, `game 11009%`, `0.0 GB VRAM`) and restores proper full-width layout for GPU, CPU, and Controller names.
 * **🛡️ Cross-Vendor Cutscene Light-Quad Fault Guard (`runtime/vk_exec_draw.c`):**
   * Extended the NVN 2 instanced light-quad fault guard (`light_quad_fault_skip`) across **all GPU vendors (AMD RDNA 4 / RX 9070 XT / Radeon 890M, NVIDIA RTX, and Intel Arc)** instead of only NVIDIA (`0x10de`), resolving the `vkQueueSubmit2` device-lost crash during the opening cutscene on AMD RDNA GPUs.
 * **⏱️ Strict 30 / 60 FPS Native Timing Cap (`runtime/frame_rate.c`, `runtime/cfg.c`, `runtime/ui/menu.cpp`, `launcher/DKBLauncher.py`):**
