@@ -556,6 +556,8 @@ static struct {
     NgxParam *params;
     uint32_t cur_in_w, cur_in_h;
     uint32_t cur_out_w, cur_out_h;
+    int cur_q;
+    unsigned cur_pr;
     int reset;
     VkImage out_img;
     VmaAllocation out_alloc;
@@ -691,9 +693,7 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
     }
 
     if (dw <= (uint32_t)cw && dh <= (uint32_t)ch) {
-        int sharp = cfg_int("DKB_SHARPNESS");
-        if (!sharp) sharp = cfg_int("TOTK_SHARPNESS");
-        if (sharp > 0) return vk_fsr_record(cb, slot, src, fmt, sw, sh, crop, dst, out);
+        // When output is <= source, Vulkan hardware blit handles with 0 ms overhead and pristine supersampled sharpness
         return 0;
     }
 
@@ -702,8 +702,11 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
         return vk_fsr_record(cb, slot, src, fmt, sw, sh, crop, dst, out);
     }
 
+    unsigned pr = dlss_hint_preset();
+    int q = dlss_perf_quality();
+
     if (!D.feat || D.cur_in_w != (uint32_t)cw || D.cur_in_h != (uint32_t)ch ||
-        D.cur_out_w != dw || D.cur_out_h != dh) {
+        D.cur_out_w != dw || D.cur_out_h != dh || D.cur_q != q || D.cur_pr != pr) {
         if (D.feat) {
             N.release(D.feat);
             D.feat = NULL;
@@ -713,8 +716,6 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
                 return vk_fsr_record(cb, slot, src, fmt, sw, sh, crop, dst, out);
             }
         }
-        unsigned pr = dlss_hint_preset();
-        int q = dlss_perf_quality();
         p_setu(D.params, "CreationNodeMask", 1);
         p_setu(D.params, "VisibilityNodeMask", 1);
         p_setu(D.params, "Width", (unsigned)cw);
@@ -741,19 +742,28 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
         D.cur_in_h = (uint32_t)ch;
         D.cur_out_w = dw;
         D.cur_out_h = dh;
+        D.cur_q = q;
+        D.cur_pr = pr;
         D.reset = 1;
         rt_log("vk_dlss: DLSS 4.5 Super Resolution active: %ux%u -> %ux%u (preset %u, perf quality %d)",
                (unsigned)cw, (unsigned)ch, dw, dh, pr, q);
     }
 
-    if (D.src_view) vkDestroyImageView(c->device, D.src_view, NULL);
-    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = src,
-                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt,
-                                .components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
-                                               VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_ONE},
-                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-    if (vkCreateImageView(c->device, &vi, NULL, &D.src_view) != VK_SUCCESS) {
-        return vk_fsr_record(cb, slot, src, fmt, sw, sh, crop, dst, out);
+    static VkImage s_last_src = VK_NULL_HANDLE;
+    static VkFormat s_last_fmt = VK_FORMAT_UNDEFINED;
+    if (!D.src_view || s_last_src != src || s_last_fmt != fmt) {
+        if (D.src_view) vkDestroyImageView(c->device, D.src_view, NULL);
+        s_last_src = src;
+        s_last_fmt = fmt;
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = src,
+                                    .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt,
+                                    .components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                                                   VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_ONE},
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        if (vkCreateImageView(c->device, &vi, NULL, &D.src_view) != VK_SUCCESS) {
+            D.src_view = VK_NULL_HANDLE;
+            return 0;
+        }
     }
 
     dlss_barrier(cb, src, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
@@ -768,9 +778,11 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
     VkFormat depth_fmt = VK_FORMAT_UNDEFINED;
     uint32_t sdw = 0, sdh = 0;
     int have_depth = vk_ao_get_depth(&scene_depth, &depth_fmt, &sdw, &sdh);
+    int mv_ok = 0;
 
-    if (have_depth && scene_depth) {
-        if (depth_fmt == VK_FORMAT_D32_SFLOAT) {
+    if (have_depth && scene_depth && depth_fmt == VK_FORMAT_D32_SFLOAT) {
+        mv_ok = vk_dlaa_record_mv(cb, D.mv_img, D.mv_view, scene_depth, (uint32_t)cw, (uint32_t)ch);
+        if (mv_ok) {
             uint32_t copy_w = sdw < (uint32_t)cw ? sdw : (uint32_t)cw;
             uint32_t copy_h = sdh < (uint32_t)ch ? sdh : (uint32_t)ch;
             if (copy_w > 0 && copy_h > 0) {
@@ -799,11 +811,6 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
         }
     }
 
-    // Generate genuine camera motion vectors via VP reprojection
-    int mv_ok = 0;
-    if (have_depth && scene_depth) {
-        mv_ok = vk_dlaa_record_mv(cb, D.mv_img, D.mv_view, scene_depth, (uint32_t)cw, (uint32_t)ch);
-    }
     if (!mv_ok) {
         static int mv_cleared = 0;
         if (!mv_cleared || D.reset) {

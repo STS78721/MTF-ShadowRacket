@@ -452,7 +452,9 @@ static void fg_apply_locked(void) {
     const char *mode = cfg_value("DKB_FG_MODE");
     const char *preset = cfg_value("DKB_FG_PRESET");
     const char *mult_s = cfg_value("DKB_FG_MULT");
-    if (!strcmp(mode, "off")) {
+    const char *fg_en = cfg_value("DKB_FRAME_GEN");
+    if (!fg_en || !*fg_en) fg_en = cfg_value("TOTK_FRAME_GEN");
+    if ((fg_en && (!strcmp(fg_en, "0") || !strcmp(fg_en, "off"))) || !strcmp(mode, "off")) {
         __atomic_store_n(&g_fg_mult, 1, __ATOMIC_RELAXED);
         g_fg_hist_valid = 0;
         if (strcmp(g_fg_logged, "off")) {
@@ -899,6 +901,11 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
+    // DLSS / XeSS / FSR 3.1 / FSR 1 / Bilinear upscaler:
+    const char *cfg_upscaler = cfg_value("DKB_UPSCALER");
+    if (!cfg_upscaler || !*cfg_upscaler) cfg_upscaler = cfg_value("TOTK_UPSCALER");
+    int dlss_active = (cfg_upscaler && !strcmp(cfg_upscaler, "dlss"));
+
     // 1. Colour adjustment (DKB_COLOR_*, vk_color.c): an adjusted copy of the crop takes the game image's place below
     VkImage graded = general ? vk_color_record(cb, slot, src, fmt, rect) : VK_NULL_HANDLE;
     const int grect[4] = {0, 0, cw, ch};
@@ -909,7 +916,8 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     int smaa_h = graded ? ch : h;
 
     // 2. Subpixel Morphological Anti-Aliasing (DKB_SMAA, vk_smaa.c):
-    VkImage smaa_img = general ? vk_smaa_record(cb, slot, smaa_src, smaa_fmt, smaa_w, smaa_h, smaa_rect) : VK_NULL_HANDLE;
+    // Automatically bypassed when DLSS is active (DLSS performs built-in temporal anti-aliasing / DLAA)
+    VkImage smaa_img = (general && !dlss_active) ? vk_smaa_record(cb, slot, smaa_src, smaa_fmt, smaa_w, smaa_h, smaa_rect) : VK_NULL_HANDLE;
 
     int intermediate = (graded || smaa_img);
     VkImage psrc = smaa_img ? smaa_img : smaa_src;
@@ -918,10 +926,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     int pw = intermediate ? cw : w;
     int ph = intermediate ? ch : h;
 
-    // DLSS / XeSS / FSR 3.1 / FSR 1 / Bilinear upscaler:
     int upscaler_done = 0;
-    const char *cfg_upscaler = cfg_value("DKB_UPSCALER");
-    if (!cfg_upscaler || !*cfg_upscaler) cfg_upscaler = cfg_value("TOTK_UPSCALER");
 
     if (general && !strcmp(cfg_upscaler, "dlss")) {
         upscaler_done = vk_dlss_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);

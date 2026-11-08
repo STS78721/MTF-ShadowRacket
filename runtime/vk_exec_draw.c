@@ -859,7 +859,9 @@ static const uint8_t *native_gs_control(const uint8_t *ctl, const uint8_t *code,
     static size_t count, capacity;
     GfxShaderIo io[32];
     const uint32_t fs_in = gfx_shader_inputs(native_gs_fs, io), vs_out = gfx_shader_outputs(native_gs_vs, io);
-    const uint32_t mask = fs_in & vs_out;
+    uint32_t mask = fs_in & vs_out;
+    if (vk_caps.amd_sc && nvn2_origin(code) == UINT64_C(0x3dbaaf649cb5f927))
+        mask |= (UINT32_C(1) << 0) | (UINT32_C(1) << 19);
     for (size_t i = 0; i < count; i++)
         if (made[i].ctl == ctl && made[i].mask == mask) return made[i].copy;
     uint32_t skip[8];
@@ -2524,6 +2526,13 @@ static int geometry_draw(VkExec *ex, uint32_t prim) {
                 warn_once(W_GEOMETRY, "native GS: a stage outside the passthrough subset keeps the vertex and fragment path");
                 return 0;
             }
+            // Metal has no geometry stage (MoltenVK): skip before the pipeline and the lowered GS are built. The vertex
+            // and fragment stages alone would draw black, so the draw is dropped and counted in draws skipped.
+            if (!vk_geometry_supported()) {
+                warn_once(W_GEOMETRY, "native GS: the device has no geometryShader: draws that need one are skipped");
+                __atomic_fetch_add(&gfx_counters.draws_skipped, 1, __ATOMIC_RELAXED);
+                return -1;
+            }
             geometry_input = GFX_GEOMETRY_TRIANGLES;
             return 1;
         }
@@ -2734,7 +2743,6 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, &s, p, info);
     vk_exec_oq_draw(ex);
-    vk_dlaa_draw(ex);
     return 1;
 }
 
