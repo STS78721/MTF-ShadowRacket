@@ -805,16 +805,19 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
         mv_ok = vk_dlaa_record_mv(cb, D.mv_img, D.mv_view, scene_depth, (uint32_t)cw, (uint32_t)ch);
     }
     if (!mv_ok) {
-        dlss_barrier(cb, D.mv_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        VkClearColorValue cv = {{0.0f, 0.0f, 0.0f, 0.0f}};
-        VkImageSubresourceRange srr = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCmdClearColorImage(cb, D.mv_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &srr);
-        dlss_barrier(cb, D.mv_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        D.reset = 1;
+        static int mv_cleared = 0;
+        if (!mv_cleared || D.reset) {
+            mv_cleared = 1;
+            dlss_barrier(cb, D.mv_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            VkClearColorValue cv = {{0.0f, 0.0f, 0.0f, 0.0f}};
+            VkImageSubresourceRange srr = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(cb, D.mv_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &srr);
+            dlss_barrier(cb, D.mv_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        }
     }
 
     NgxResourceVK rc = res_image(D.src_view, src, fmt, (uint32_t)cw, (uint32_t)ch, VK_IMAGE_ASPECT_COLOR_BIT, 0);

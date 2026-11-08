@@ -111,12 +111,18 @@ static int p_getp(const NgxParam *p, const char *n, void **v) { return NGX_OK(((
 #define DLSS_MODEL "libnvidia-ngx-dlss.so.<version>"
 #endif
 
+static void update_dl_active(void);
+
 // NGX is brought up only when dlaa is on at start: its device extensions can only be asked for at device creation, and
 // loading the driver's NGX core on every NVIDIA machine would cost start time and change the device with DLAA off. So
 // dlaa applies after a restart; switched off, nothing else of DLAA runs.
 int vk_dlaa_wanted(void) {
     static int wanted = -1;
-    if (wanted < 0) wanted = cfg_bool("TOTK_DLAA") || !strcmp(cfg_value("TOTK_UPSCALER"), "dlss");
+    if (wanted < 0) {
+        const char *up = cfg_value("DKB_UPSCALER");
+        if (!up || !*up) up = cfg_value("TOTK_UPSCALER");
+        wanted = (up && !strcmp(up, "dlss"));
+    }
     return wanted;
 }
 
@@ -267,6 +273,7 @@ void vk_dlaa_init(void) {
         p_geti(caps, "SuperSampling.NeedsUpdatedDriver", &driver);
     }
     N.available = avail != 0;
+    update_dl_active();
     rt_log("dlaa: NGX up; DLSS %s%s", avail ? "available" : "NOT available (is " DLSS_MODEL " next to the executable?)",
            driver ? "; the driver needs an update" : "");
 }
@@ -356,11 +363,17 @@ static struct {
 const VkTexImage *vk_dlaa_swap_img;
 VkImageView vk_dlaa_swap_view;
 
+static int dl_active_cached = 0;
+
 static int dl_active(void) {
+    return dl_active_cached;
+}
+
+static void update_dl_active(void) {
     const char *cfg_up = cfg_value("DKB_UPSCALER");
     if (!cfg_up || !*cfg_up) cfg_up = cfg_value("TOTK_UPSCALER");
-    int dlaa = cfg_bool("DKB_DLAA") || cfg_bool("TOTK_DLAA");
-    return (dlaa || (cfg_up && !strcmp(cfg_up, "dlss"))) && !D.failed;
+    int dlss_selected = (cfg_up && !strcmp(cfg_up, "dlss"));
+    dl_active_cached = dlss_selected && N.available && !D.failed;
 }
 
 static void dl_fail(const char *what, NgxResult r) {
@@ -906,8 +919,7 @@ static const void *get_buf_bytes(uint64_t addr, uint64_t size) {
     if (!addr || !size) return NULL;
     const uint8_t *b = vk_usnap_bytes(addr, size);
     if (b) return b;
-    VkMemSpan sp;
-    if (vk_mem_resolve(addr, size, &sp) && !sp.alloc) {
+    if (addr >= 0x100000 && addr <= 0x7fffffffff) {
         return (const void *)(uintptr_t)addr;
     }
     return NULL;
@@ -935,8 +947,11 @@ static int check_vp_matrix(const float *f, double out_vp[16]) {
                 m[r * 4 + c] = (double)f[c * 4 + r];
     }
 
-    if (fabs(m[0]) < 0.15 || fabs(m[0]) > 20.0) return 0;
-    if (fabs(m[5]) < 0.15 || fabs(m[5]) > 20.0) return 0;
+    // A real 3D perspective projection has m[15] == 0 (w' = +/- z); reject 2D orthographic/affine quads
+    if (fabs(m[15]) > 0.05) return 0;
+
+    if (fabs(m[0]) < 0.2 || fabs(m[0]) > 10.0) return 0;
+    if (fabs(m[5]) < 0.2 || fabs(m[5]) > 10.0) return 0;
 
     if (!inv4(m, inv)) return 0;
 
@@ -945,15 +960,10 @@ static int check_vp_matrix(const float *f, double out_vp[16]) {
 }
 
 void vk_dlaa_draw(VkExec *ex) {
-    if (!ex || D.cam_cur_ok) return;   // Only lock once per frame; avoid repeated draw scans
+    if (!dl_active() || !ex || D.cam_cur_ok) return;   // Only lock once per frame; avoid repeated draw scans
     const VkExecTarget *z = &ex->depth;
-    if (!z->image || z->width < DLAA_SCENE_MIN_W) return;
+    if (!z->image || z->width < DLAA_SCENE_MIN_W || z->height < 360) return;
     if (!ex->pipe.ds.dt && !ex->pipe.ds.dw) return;
-
-    // Filter to the active scene depth target if known
-    VkImage scene_dep = VK_NULL_HANDLE;
-    vk_ao_get_depth(&scene_dep, NULL, NULL, NULL);
-    if (scene_dep && z->image != scene_dep) return;
 
     // In Nintendo NVN, Scene Camera is always in bank c4 (ex->ubo[0][1])
     const p_bind_buf *b = &ex->ubo[0][1];
@@ -1239,6 +1249,13 @@ static void preset_check(void) {
 }
 
 void vk_dlaa_frame(void) {
+    update_dl_active();
+    if (!dl_active()) {
+        D.cam_cur_ok = 0;
+        D.cam_prev_ok = 0;
+        vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
+        return;
+    }
     if (D.cam_cur_ok) {
         memcpy(D.cam_prev, D.cam_cur, sizeof(D.cam_cur));
         D.cam_prev_ok = 1;
@@ -1249,7 +1266,9 @@ void vk_dlaa_frame(void) {
     vk_dlaa_swap_img = NULL, vk_dlaa_swap_view = VK_NULL_HANDLE;
     dlss_mode();
     preset_check();
-    int on = N.available && (cfg_bool("TOTK_DLAA") || !strcmp(cfg_value("TOTK_UPSCALER"), "dlss"));
+    const char *cfg_up = cfg_value("DKB_UPSCALER");
+    if (!cfg_up || !*cfg_up) cfg_up = cfg_value("TOTK_UPSCALER");
+    int on = N.available && cfg_up && !strcmp(cfg_up, "dlss");
     if (on != D.on) {
         rt_log("dlaa: %s", on ? "on" : "off");
         D.on = on;
@@ -1258,7 +1277,6 @@ void vk_dlaa_frame(void) {
         D.hold = 0;
         return;
     }
-    if (!dl_active()) return;
     if (!D.done) D.frames_missed++;
     if (D.jit_used && !D.done) D.hold = 60, D.holds++;   // jittered but not resolved: that frame shook
     else if (D.hold) D.hold--;
