@@ -945,40 +945,39 @@ static int check_vp_matrix(const float *f, double out_vp[16]) {
 }
 
 void vk_dlaa_draw(VkExec *ex) {
-    if (!ex) return;
+    if (!ex || D.cam_cur_ok) return;   // Only lock once per frame; avoid repeated draw scans
     const VkExecTarget *z = &ex->depth;
     if (!z->image || z->width < DLAA_SCENE_MIN_W) return;
     if (!ex->pipe.ds.dt && !ex->pipe.ds.dw) return;
 
-    for (int k = 0; k < 8; k++) {
-        const p_bind_buf *b = &ex->ubo[0][k];
-        if (!b->addr || b->size < 64) continue;
+    // Filter to the active scene depth target if known
+    VkImage scene_dep = VK_NULL_HANDLE;
+    vk_ao_get_depth(&scene_dep, NULL, NULL, NULL);
+    if (scene_dep && z->image != scene_dep) return;
 
-        const uint8_t *bytes = (const uint8_t *)get_buf_bytes(b->addr, b->size < 1024 ? b->size : 1024);
-        if (!bytes) continue;
+    // In Nintendo NVN, Scene Camera is always in bank c4 (ex->ubo[0][1])
+    const p_bind_buf *b = &ex->ubo[0][1];
+    if (!b->addr || b->size < 112) return;
 
-        static const uint32_t cand_offsets[] = {48, 0, 64, 112, 128, 32, 16, 96, 160};
-        uint32_t num_cands = sizeof(cand_offsets) / sizeof(cand_offsets[0]);
+    const uint8_t *bytes = (const uint8_t *)get_buf_bytes(b->addr, b->size < 512 ? b->size : 512);
+    if (!bytes) return;
 
-        for (uint32_t ci = 0; ci < num_cands; ci++) {
-            uint32_t off = cand_offsets[ci];
-            if (off + 64 > b->size) continue;
+    // Candidate offsets in c4: 48 (0x30 standard NVN VP), 0, 64
+    static const uint32_t cand_offsets[] = {48, 0, 64};
+    for (int i = 0; i < 3; i++) {
+        uint32_t off = cand_offsets[i];
+        if (off + 64 > b->size) continue;
 
-            const float *f = (const float *)(bytes + off);
-            if (check_vp_matrix(f, D.cam_cur)) {
-                D.cam_cur_ok = 1;
-                static uint64_t last_lock_frame = 0;
-                static int last_bank = -1, last_off = -1;
-                uint64_t cur_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
-                if (cur_frame - last_lock_frame >= 600 || last_bank != k || last_off != (int)off) {
-                    last_lock_frame = cur_frame;
-                    last_bank = k;
-                    last_off = (int)off;
-                    rt_log("vk_dlaa: locked camera VP in vertex bank c%d off 0x%x (fx=%.2f, fy=%.2f)",
-                           k + 3, off, (float)D.cam_cur[0], (float)D.cam_cur[5]);
-                }
-                return;
+        const float *f = (const float *)(bytes + off);
+        if (check_vp_matrix(f, D.cam_cur)) {
+            D.cam_cur_ok = 1;
+            static int logged = 0;
+            if (!logged) {
+                logged = 1;
+                rt_log("vk_dlaa: locked scene camera VP in c4 off 0x%x (fx=%.2f, fy=%.2f)",
+                       off, (float)D.cam_cur[0], (float)D.cam_cur[5]);
             }
+            return;
         }
     }
 }

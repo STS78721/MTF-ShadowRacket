@@ -722,7 +722,7 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
         p_setu(D.params, "OutWidth", dw);
         p_setu(D.params, "OutHeight", dh);
         p_seti(D.params, "PerfQualityValue", q);
-        p_seti(D.params, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 6));
+        p_seti(D.params, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 3) | (1 << 6));
         p_seti(D.params, "DLSS.Enable.Output.Subrects", 0);
         p_setu(D.params, "DLSS.Hint.Render.Preset.DLAA", pr);
         p_setu(D.params, "DLSS.Hint.Render.Preset.UltraQuality", pr);
@@ -770,28 +770,32 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
     int have_depth = vk_ao_get_depth(&scene_depth, &depth_fmt, &sdw, &sdh);
 
     if (have_depth && scene_depth) {
-        if (depth_fmt == VK_FORMAT_D32_SFLOAT && sdw == (uint32_t)cw && sdh == (uint32_t)ch) {
-            dlss_barrier_aspect(cb, scene_depth, VK_IMAGE_ASPECT_DEPTH_BIT,
-                                VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
-                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-            dlss_barrier_aspect(cb, D.depth_img, VK_IMAGE_ASPECT_DEPTH_BIT,
-                                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-            VkImageCopy ic = {.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
-                              .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
-                              .extent = {(uint32_t)cw, (uint32_t)ch, 1}};
-            vkCmdCopyImage(cb, scene_depth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           D.depth_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
-            dlss_barrier_aspect(cb, scene_depth, VK_IMAGE_ASPECT_DEPTH_BIT,
-                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-                                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT);
-            dlss_barrier_aspect(cb, D.depth_img, VK_IMAGE_ASPECT_DEPTH_BIT,
-                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        if (depth_fmt == VK_FORMAT_D32_SFLOAT) {
+            uint32_t copy_w = sdw < (uint32_t)cw ? sdw : (uint32_t)cw;
+            uint32_t copy_h = sdh < (uint32_t)ch ? sdh : (uint32_t)ch;
+            if (copy_w > 0 && copy_h > 0) {
+                dlss_barrier_aspect(cb, scene_depth, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                    VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+                dlss_barrier_aspect(cb, D.depth_img, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                VkImageCopy ic = {.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                                  .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                                  .extent = {copy_w, copy_h, 1}};
+                vkCmdCopyImage(cb, scene_depth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               D.depth_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+                dlss_barrier_aspect(cb, scene_depth, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT);
+                dlss_barrier_aspect(cb, D.depth_img, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            }
         }
     }
 
