@@ -648,15 +648,11 @@ static unsigned dlss_hint_preset(void) {
 
 static int dlss_perf_quality(uint32_t w, uint32_t ow) {
     if (w >= ow) return 5; // DLAA 1:1
-    const char *p = cfg_value("DKB_UPSCALER_PRESET");
-    if (!p || !*p) p = cfg_value("TOTK_UPSCALER_PRESET");
-    if (p && !strcmp(p, "native")) return 5;
-    if (p && !strcmp(p, "quality")) return 2;
-    if (p && !strcmp(p, "balanced")) return 1;
-    if (p && !strcmp(p, "performance")) return 0;
-    if (p && !strcmp(p, "ultra_performance")) return 3;
     double k = (double)w / ow;
-    return k >= 0.66 ? 2 : k >= 0.57 ? 1 : k >= 0.49 ? 0 : 3;
+    if (k >= 0.62) return 2; // Quality
+    if (k >= 0.54) return 1; // Balanced
+    if (k >= 0.40) return 0; // Performance
+    return 3; // Ultra Performance
 }
 
 static void dlss_barrier_aspect(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect,
@@ -827,20 +823,16 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
     }
 
     if (!mv_ok) {
-        if (!D.mv_cleared || D.reset) {
-            D.mv_cleared = 1;
-            dlss_barrier(cb, D.mv_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-            VkClearColorValue cv = {{0.0f, 0.0f, 0.0f, 0.0f}};
-            VkImageSubresourceRange srr = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-            vkCmdClearColorImage(cb, D.mv_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &srr);
-            dlss_barrier(cb, D.mv_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        }
-    } else {
-        D.mv_cleared = 0;
+        dlss_barrier(cb, D.mv_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkClearColorValue cv = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        VkImageSubresourceRange srr = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cb, D.mv_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &srr);
+        dlss_barrier(cb, D.mv_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        D.reset = 1;
     }
 
     NgxResourceVK rc = res_image(D.src_view, src, fmt, (uint32_t)cw, (uint32_t)ch, VK_IMAGE_ASPECT_COLOR_BIT, 0);

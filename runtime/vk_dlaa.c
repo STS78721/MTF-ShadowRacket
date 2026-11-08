@@ -950,8 +950,16 @@ static int check_vp_matrix(const float *f, double out_vp[16]) {
     // A real 3D perspective projection has m[15] == 0 (w' = +/- z); reject 2D orthographic/affine quads
     if (fabs(m[15]) > 0.05) return 0;
 
-    if (fabs(m[0]) < 0.2 || fabs(m[0]) > 10.0) return 0;
-    if (fabs(m[5]) < 0.2 || fabs(m[5]) > 10.0) return 0;
+    // Reject 2D quads: focal lengths must be strictly positive and realistic
+    // For any 3D camera orientation in world space, length of 3D row 0 is fx, length of 3D row 1 is fy
+    double fx = sqrt(m[0]*m[0] + m[1]*m[1] + m[2]*m[2]);
+    double fy = sqrt(m[4]*m[4] + m[5]*m[5] + m[6]*m[6]);
+    if (fx < 0.3 || fx > 10.0) return 0;
+    if (fy < 0.3 || fy > 10.0) return 0;
+
+    // Aspect ratio must match widescreen display (typically ~1.78, valid range 1.2 to 3.6)
+    double aspect = fy / fx;
+    if (aspect < 1.2 || aspect > 3.6) return 0;
 
     if (!inv4(m, inv)) return 0;
 
@@ -965,27 +973,26 @@ void vk_dlaa_draw(VkExec *ex) {
     if (!z->image || z->width < DLAA_SCENE_MIN_W || z->height < 360) return;
     if (!ex->pipe.ds.dt && !ex->pipe.ds.dw) return;
 
-    // In Nintendo NVN, Scene Camera is in bank c4 (ex->ubo[0][1]) or c8 (ex->ubo[0][2])
-    static const uint32_t cand_offsets[] = {48, 0, 64, 16};
-    for (int bank = 1; bank <= 2; bank++) {
+    // In Nintendo NVN, Scene Camera is in bank c4 (ex->ubo[0][1]), c8 (ex->ubo[0][2]), or c12 (ex->ubo[0][3])
+    for (int bank = 1; bank <= 3; bank++) {
         const p_bind_buf *b = &ex->ubo[0][bank];
-        if (!b->addr || b->size < 112) continue;
+        if (!b->addr || b->size < 64) continue;
 
-        const uint8_t *bytes = (const uint8_t *)get_buf_bytes(b->addr, b->size < 512 ? b->size : 512);
+        uint32_t scan_size = b->size < 512 ? (uint32_t)b->size : 512;
+        const uint8_t *bytes = (const uint8_t *)get_buf_bytes(b->addr, scan_size);
         if (!bytes) continue;
 
-        for (size_t i = 0; i < sizeof cand_offsets / sizeof cand_offsets[0]; i++) {
-            uint32_t off = cand_offsets[i];
-            if (off + 64 > b->size) continue;
-
+        for (uint32_t off = 0; off + 64 <= scan_size; off += 16) {
             const float *f = (const float *)(bytes + off);
             if (check_vp_matrix(f, D.cam_cur)) {
                 D.cam_cur_ok = 1;
                 static int logged = 0;
                 if (!logged) {
                     logged = 1;
-                    rt_log("vk_dlaa: locked scene camera VP in c%d off 0x%x (fx=%.2f, fy=%.2f)",
-                           bank * 4, off, (float)D.cam_cur[0], (float)D.cam_cur[5]);
+                    double fx = sqrt(D.cam_cur[0]*D.cam_cur[0] + D.cam_cur[1]*D.cam_cur[1] + D.cam_cur[2]*D.cam_cur[2]);
+                    double fy = sqrt(D.cam_cur[4]*D.cam_cur[4] + D.cam_cur[5]*D.cam_cur[5] + D.cam_cur[6]*D.cam_cur[6]);
+                    rt_log("vk_dlaa: locked true 3D camera VP in c%d off 0x%x (fx=%.2f, fy=%.2f, aspect=%.2f)",
+                           bank * 4, off, (float)fx, (float)fy, (float)(fy / fx));
                 }
                 return;
             }
@@ -1402,8 +1409,8 @@ int vk_dlaa_record_mv(VkCommandBuffer cb, VkImage dst_mv, VkImageView dst_mv_vie
     memset(blk, 0, 2 * CAM_BYTES);
     for (int r = 0; r < 4; r++) {
         for (int k = 0; k < 4; k++) {
-            blk[12 + r * 4 + k] = r == k ? 1.0f : 0.0f;
-            blk[64 + 12 + r * 4 + k] = (float)m[r * 4 + k];
+            blk[12 + r * 4 + k] = (float)D.cam_cur[r * 4 + k];
+            blk[64 + 12 + r * 4 + k] = (float)D.cam_prev[r * 4 + k];
         }
     }
     vmaFlushAllocation(c->vma, D.mvm_mem, (VkDeviceSize)ms * 2 * CAM_BYTES, 2 * CAM_BYTES);
