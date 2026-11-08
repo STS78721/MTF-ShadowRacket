@@ -147,6 +147,7 @@ static int pick_device(void) {
     int want = e && *e ? atoi(e) : -1;
     const char *name = cfg_get("TOTK_GPU_NAME");
     int best = -1, best_score = -1;
+    VkPhysicalDeviceProperties best_p = {0};
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
@@ -166,7 +167,15 @@ static int pick_device(void) {
         if (fam == UINT32_MAX) { rt_log("vk: gpu %u skipped: no graphics+compute+present queue family", i); continue; }
         int score = (int)i == want ? 100 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3
                   : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
-        if (score > best_score) { best_score = score; best = (int)i; }
+        // The loader lists the same GPU twice when an old driver's ICD json is left behind, and the old driver can come
+        // first. On a tie in score between entries with the same vendor and device ID, the newer driverVersion wins.
+        // Follows ocarina-recomp runtime/vk_device.c (Hookshot, ef4c2b0), at 14566bd, GPL-3.0.
+        int dup = best >= 0 && score == best_score && p.vendorID == best_p.vendorID && p.deviceID == best_p.deviceID;
+        if (dup) rt_log("vk: gpu %u and gpu %d are the same GPU (leftover driver); keeping the newer driver",
+                        i, best);
+        if (score > best_score || (dup && p.driverVersion > best_p.driverVersion)) {
+            best_score = score; best = (int)i; best_p = p;
+        }
     }
     if (best < 0) {
         if (want >= 0) rt_log("vk: TOTK_GPU_INDEX=%d is not usable (see above)", want);
@@ -357,8 +366,11 @@ static int create_device(void) {
     {
         const char *e = cfg_get("TOTK_FEEDBACK");
         int layout_ok = has_fbl && has_lr && c->fbl.attachmentFeedbackLoopLayout && c->lr.dynamicRenderingLocalRead;
+        // Under RADV the feedback layout is not the default: an RX 6600 hung (ring gfx timeout, no page fault) on the
+        // first frame that used it; TOTK_FEEDBACK=layout opts back in.
+        int layout_wanted = e && !strcmp(e, "layout") ? 1 : !vk_caps.radv;
         g_vk.feedback = e && !strcmp(e, "0") ? VK_FEEDBACK_OFF
-                      : layout_ok && !(e && !strcmp(e, "restart")) ? VK_FEEDBACK_LAYOUT : VK_FEEDBACK_RESTART;
+                      : layout_ok && layout_wanted && !(e && !strcmp(e, "restart")) ? VK_FEEDBACK_LAYOUT : VK_FEEDBACK_RESTART;
         rt_log("vk: feedback loops: %s (attachmentFeedbackLoopLayout %d, dynamicRenderingLocalRead %d)",
                g_vk.feedback == VK_FEEDBACK_LAYOUT ? "feedback layout + by-region barrier"
                : g_vk.feedback == VK_FEEDBACK_RESTART ? "pass restart + full barrier" : "off (TOTK_FEEDBACK=0)",

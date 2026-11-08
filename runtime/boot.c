@@ -18,6 +18,7 @@
 #include "fs.h"
 #include "gfx.h"
 #include "nvn_api.h"
+#include "ov.h"
 #include "platform/platform.h"
 #include "vk.h"
 
@@ -100,6 +101,7 @@ static void cb_module_inits(Cpu *c) {
             rt_fatal("boot: %s has %llu init_array entries, this game version has %llu", m->name, (unsigned long long)entries,
                      (unsigned long long)want);
     }
+    ov_system_on_inits_done();
     plat_xchg32(&inits_done, 1);
 }
 
@@ -361,6 +363,7 @@ void rt_boot(void) {
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
     cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);
     cb_addr[2] = hostfn_register("<rtld module_finis>", cb_module_finis);
+    ov_system_post_load();
     hostfn_seal();
     uint64_t held = plat_now_ms();
     if (warm) plat_thread_join(warm);

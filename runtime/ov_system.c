@@ -19,7 +19,9 @@
 #include <string.h>
 #include <time.h>
 
+#include "aoc_romfs.h"
 #include "cfg.h"
+#include "dispatch.h"
 #include "fs.h"
 #include "host.h"
 #include "ov.h"
@@ -298,13 +300,18 @@ static void ov_show_error(Cpu *c) {
 
 // ==== SDK-internal initialisation (services.c)
 static void ov_diag_startup(Cpu *c) { (void)c; rt_log("diag: host diagnostics"); }
-static void ov_aoc_initialize(Cpu *c) { (void)c; rt_log("aoc: no add-on content"); }
-// 1.4.3's main lists add-on content (MNG services.c host_aoc_list): there is none.
-// int ListAddOnContent(AddOnContentIndex *out, int offset, int count)
+static void ov_aoc_initialize(Cpu *c) { (void)c; rt_log("aoc: %u add-on content(s)", aoc_count()); }
+static void ov_aoc_count(Cpu *c) { ret_x(c, aoc_count()); }
+// int ListAddOnContent(int *out, int offset, int count): the add-on content indices this machine has, paged.
 static void ov_aoc_list(Cpu *c) {
-    int offset = (int)arg_x(c, 1), count = (int)arg_x(c, 2);
+    int32_t *out = arg_p(c, 0);
+    int offset = (int32_t)arg_x(c, 1), count = (int32_t)arg_x(c, 2);
     if (offset < 0 || count < 0) rt_fatal("aoc: ListAddOnContent range %d+%d", offset, count);
-    ret_x(c, 0);
+    uint32_t ids[AOC_MAX];
+    uint32_t n = aoc_list(ids, offset, count < AOC_MAX ? count : AOC_MAX);
+    if (n && !(out && plat_mem_readable((uintptr_t)out, n * sizeof *out))) n = 0;   // nothing written, nothing reported
+    for (uint32_t i = 0; i < n; i++) out[i] = (int32_t)ids[i];
+    ret_x(c, n);
 }
 static void ov_err_context(Cpu *c) { (void)c; rt_log("err: error contexts stay local"); }
 static void ov_pctl_initialize(Cpu *c) { (void)c; rt_log("pctl: no parental controls"); }
@@ -470,6 +477,45 @@ static void ov_nickname(Cpu *c) {
         memset(out, 0, 33);
         memcpy(out, "Local", 5);
     }
+    ret_x(c, ok ? 0 : ACCOUNT_R_INVALID);
+}
+
+static void ov_user_count(Cpu *c) {
+    int32_t *out = arg_p(c, 0);
+    if (out) *out = 1;
+    ret_x(c, 0);
+}
+
+static void ov_list_all_users(Cpu *c) {
+    int32_t *out = arg_p(c, 0);
+    Uid *uids = arg_p(c, 1);
+    int32_t max = (int32_t)arg_x(c, 2);
+    plat_mutex_lock(&account_lock);
+    load_uid();
+    if (out) *out = 1;
+    if (uids && max >= 1) {
+        uids[0] = local;
+    }
+    plat_mutex_unlock(&account_lock);
+    ret_x(c, 0);
+}
+
+static void ov_open_user_by_uid(Cpu *c) {
+    UserHandle *out = arg_p(c, 0);
+    const Uid *u = arg_p(c, 1);
+    if (!out) rt_fatal("nn::account::OpenUser: null handle");
+    plat_mutex_lock(&account_lock);
+    load_uid();
+    int ok = 0;
+    if (!u || same_uid(u)) {
+        for (int i = 0; i < 64 && !ok; i++)
+            if (!tokens[i]) {
+                tokens[i] = next_token++;
+                *out = (UserHandle){local, tokens[i]};
+                ok = 1;
+            }
+    }
+    plat_mutex_unlock(&account_lock);
     ret_x(c, ok ? 0 : ACCOUNT_R_INVALID);
 }
 
@@ -935,6 +981,7 @@ HOST_OVERRIDE("_ZN2nn3err9ShowErrorENS_6ResultE", ov_show_error);
 
 HOST_OVERRIDE("nndiagStartup", ov_diag_startup);
 HOST_OVERRIDE("_ZN2nn3aoc10InitializeEv", ov_aoc_initialize);
+HOST_OVERRIDE("_ZN2nn3aoc17CountAddOnContentEv", ov_aoc_count);
 HOST_OVERRIDE("_ZN2nn3aoc16ListAddOnContentEPiii", ov_aoc_list);
 HOST_OVERRIDE("_ZN2nn3err26InitializeContextWriterApiEv", ov_err_context);
 HOST_OVERRIDE("_ZN2nn4pctl10InitializeEv", ov_pctl_initialize);
@@ -954,6 +1001,12 @@ HOST_OVERRIDE("_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE", ov_user_
 HOST_OVERRIDE("_ZN2nn7account17GetLastOpenedUserEPNS0_3UidE", ov_last_opened_user);
 HOST_OVERRIDE("_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE", ov_user_existence);
 HOST_OVERRIDE("_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE", ov_nickname);
+HOST_OVERRIDE("_ZN2nn7account12GetUserCountEPi", ov_user_count);
+HOST_OVERRIDE("_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi", ov_list_all_users);
+HOST_OVERRIDE("_ZN2nn7account13ListOpenUsersEPiPNS0_3UidEi", ov_list_all_users);
+HOST_OVERRIDE("_ZN2nn7account18ListQualifiedUsersEPiPNS0_3UidEi", ov_list_all_users);
+HOST_OVERRIDE("_ZN2nn7account8OpenUserEPNS0_10UserHandleERKNS0_3UidE", ov_open_user_by_uid);
+HOST_OVERRIDE("_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE", ov_open_user);
 
 HOST_OVERRIDE("_ZN2nn4time10InitializeEv", ov_time_initialize);
 HOST_OVERRIDE("_ZN2nn4time8FinalizeEv", ov_time_finalize);
@@ -1064,3 +1117,141 @@ HOST_OVERRIDE("_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_
 HOST_OVERRIDE("_ZN2nn7account44EnsureNetworkServiceAccountIdTokenCacheAsyncEPNS0_12AsyncContextERKNS0_10UserHandleE", ov_account_offline);
 HOST_OVERRIDE("_ZN2nn7account12AsyncContext14GetSystemEventEPNS_2os11SystemEventE", ov_async_event);
 HOST_OVERRIDE("_ZN2nn7account12AsyncContext9GetResultEv", ov_account_offline);
+
+static void ov_nsa_available(Cpu *c) {
+    uint8_t *out = arg_p(c, 0);
+    if (out) *out = 0;
+    ret_x(c, 0);
+}
+HOST_OVERRIDE("_ZN2nn7account32IsNetworkServiceAccountAvailableEPbRKNS0_10UserHandleE", ov_nsa_available);
+
+static void ov_account_async_ctor(Cpu *c) {
+    uint64_t *ctx = arg_p(c, 0);
+    if (ctx) memset(ctx, 0, 16);
+    ret_x(c, (uint64_t)(uintptr_t)ctx);
+}
+HOST_OVERRIDE("_ZN2nn7account12AsyncContextC1Ev", ov_account_async_ctor);
+HOST_OVERRIDE("_ZN2nn7account12AsyncContextD1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn7account12AsyncContext6CancelEv", ov_noop);
+
+static void ov_account_async_done(Cpu *c) {
+    uint8_t *out = arg_p(c, 1);
+    if (out) *out = 1;
+    ret_x(c, 0);
+}
+HOST_OVERRIDE("_ZN2nn7account12AsyncContext7HasDoneEPb", ov_account_async_done);
+
+static void ov_account_async_move_assign(Cpu *c) {
+    uint64_t *dst = arg_p(c, 0);
+    uint64_t *src = arg_p(c, 1);
+    if (dst && src) memcpy(dst, src, 16);
+    ret_x(c, (uint64_t)(uintptr_t)dst);
+}
+HOST_OVERRIDE("_ZN2nn7account12AsyncContextaSEOS1_", ov_account_async_move_assign);
+
+static void ov_mem_debug_break(Cpu *c) {
+    rt_log("mem: nnmem_nlib_debug_break ignored (x0=%#llx x1=%#llx lr=%#llx)",
+           (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[30]);
+}
+HOST_OVERRIDE("nnmem_nlib_debug_break", ov_mem_debug_break);
+HOST_OVERRIDE("_ZN2nn7nlibsdk4heap18NotNMallocPtrErrorEPKv", ov_mem_debug_break);
+
+static PlatMutex s_fallback_lock;
+static uint64_t g_heap_fallback_bump = 0;
+static uint64_t g_heap_fallback_end = 0;
+static uint64_t s_expheap_hook_addr = 0;
+
+extern void __real_f_70003f24c0(Cpu *c) __attribute__((weak));
+
+void __wrap_f_70003f24c0(Cpu *c) {
+    uint64_t heap = c->x[0];
+    uint64_t size = c->x[1];
+    uint64_t align = c->x[2];
+    uint64_t lr = c->x[30];
+
+    // Try original guest ExpHeap::alloc first
+    if (__real_f_70003f24c0) {
+        __real_f_70003f24c0(c);
+    } else {
+        static GuestFn s_orig_expheap_alloc = NULL;
+        if (!s_orig_expheap_alloc) {
+            s_orig_expheap_alloc = rt_dispatch_lookup(0x70003f24c0ull);
+        }
+        if (s_orig_expheap_alloc) {
+            s_orig_expheap_alloc(c);
+        } else {
+            c->x[0] = 0;
+        }
+    }
+
+    if (c->x[0] != 0) {
+        return; // Normal guest allocation succeeded
+    }
+
+    // Allocation failed - provide fallback allocation
+    plat_mutex_lock(&s_fallback_lock);
+
+    const RtGuestLayout *L = mem_layout();
+    if (!g_heap_fallback_bump) {
+        // Start fallback region inside the committed heap at 1152 MiB offset (well within 1500 MiB)
+        g_heap_fallback_bump = L->heap.base + 0x48000000ull;
+        g_heap_fallback_end = L->heap.base + 0x58000000ull;
+    }
+
+    if (size == 0) size = 16;
+    if (align < 8) align = 8;
+
+    // Align user_ptr with 0x20 bytes reserved before it for the ExpHeap MemBlock header
+    uint64_t user_ptr = (g_heap_fallback_bump + 0x20ull + align - 1) & ~(align - 1);
+    uint64_t block_hdr = user_ptr - 0x20ull;
+    uint64_t alloc_sz = (size + 15ull) & ~15ull;
+    uint64_t next_bump = user_ptr + alloc_sz;
+
+    if (next_bump > g_heap_fallback_end) {
+        size_t commit_sz = 64ull << 20;
+        plat_mem_commit(g_heap_fallback_end, commit_sz);
+        g_heap_fallback_end += commit_sz;
+    }
+
+    // Populate ExpHeap MemBlock header
+    *(uint16_t *)(uintptr_t)(block_hdr + 0x10) = 0;
+    *(uint16_t *)(uintptr_t)(block_hdr + 0x12) = 0x20;
+    *(uint32_t *)(uintptr_t)(block_hdr + 0x14) = 0;
+    *(uint64_t *)(uintptr_t)(block_hdr + 0x18) = size;
+    memset((void *)(uintptr_t)user_ptr, 0, (size_t)size);
+
+    g_heap_fallback_bump = next_bump;
+
+    plat_mutex_unlock(&s_fallback_lock);
+
+    rt_log("heap: fallback alloc for heap %#llx size %#llx align %#llx -> %#llx (lr %#llx)",
+           (unsigned long long)heap, (unsigned long long)size, (unsigned long long)align,
+           (unsigned long long)user_ptr, (unsigned long long)lr);
+
+    c->x[0] = user_ptr;
+}
+
+static void ov_expheap_alloc_hook(Cpu *c) {
+    __wrap_f_70003f24c0(c);
+}
+
+void ov_system_post_load(void) {
+    if (rt_application_id == 0x0400C3F00006E000ull) {
+        s_expheap_hook_addr = hostfn_register("sead__ExpHeap__alloc", ov_expheap_alloc_hook);
+        uint64_t *vtable1 = (uint64_t *)(uintptr_t)0x700363a330ull;
+        uint64_t *vtable2 = (uint64_t *)(uintptr_t)0x70036e1e18ull;
+        rt_log("heap: patching ExpHeap::alloc vtable at %p (%#llx -> %#llx)",
+               vtable1, (unsigned long long)*vtable1, (unsigned long long)s_expheap_hook_addr);
+        *vtable1 = s_expheap_hook_addr;
+        rt_log("heap: patching ExpHeap derived vtable at %p (%#llx -> %#llx)",
+               vtable2, (unsigned long long)*vtable2, (unsigned long long)s_expheap_hook_addr);
+        *vtable2 = s_expheap_hook_addr;
+    }
+}
+
+void ov_system_on_inits_done(void) {
+    if (rt_application_id == 0x0400C3F00006E000ull && s_expheap_hook_addr) {
+        *(uint64_t *)(uintptr_t)0x700363a330ull = s_expheap_hook_addr;
+        *(uint64_t *)(uintptr_t)0x70036e1e18ull = s_expheap_hook_addr;
+    }
+}

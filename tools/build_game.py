@@ -333,6 +333,9 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     # A compiler cache (sccache) may front clang: every lift rewrites the generated chunks with the same contents, so
     # the cached objects save the compile step on the next build.
     cache = f'{cmd_arg(os.environ["SCCACHE"])} ' if os.environ.get('SCCACHE') else ''
+    ldflags = list(LINK_FLAGS)
+    if 'mkw' in str(out).lower() or 'mkw' in str(gen).lower():
+        ldflags.append('-Wl,--wrap,f_70003f24c0')
     lines = [
         '# Written by tools/build_game.py; do not edit.',
         'ninja_required_version = 1.10',
@@ -340,7 +343,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         f'cc = {cache}{cmd_arg(CLANG.as_posix())}',
         f'genflags = {" ".join(GEN_FLAGS)} {inc}',
         f'rtflags = {" ".join(RT_FLAGS)} {rt_inc}',
-        f'ldflags = {" ".join(LINK_FLAGS)}',
+        f'ldflags = {" ".join(ldflags)}',
         f'libs = {" ".join(libs)}',
         '',
         'pool gen',

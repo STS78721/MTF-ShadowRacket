@@ -246,6 +246,11 @@ void opt_group(UiTextId title) {
     ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", menu_text(title));
 }
 
+void opt_group_text(const char *title) {
+    ImGui::Dummy(ImVec2(0, 6 * g_scale));
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", title);
+}
+
 void opt_text(UiTextId text, bool warn) {
     ImGui::PushTextWrapPos(0);
     if (warn) ImGui::TextColored(ImVec4(0.95f, 0.66f, 0.40f, 1), "%s", menu_text(text));

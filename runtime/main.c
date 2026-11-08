@@ -162,6 +162,15 @@ void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) {
 
 void rt_udf(Cpu *c, uint64_t pc) {
     char at[128], lr[128];
+    rt_log("rt_udf: pc=%s, lr=%s, x0=%#llx, x1=%#llx", ldr_describe(pc, at, sizeof at),
+           ldr_describe(c->x[30], lr, sizeof lr), (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
+    uint64_t fp = c->x[29];
+    for (int i = 0; i < 20 && fp >= 0x1000 && fp < 0x8000000000ULL; i++) {
+        uint64_t ret = *(uint64_t *)(uintptr_t)(fp + 8);
+        char frame[128];
+        rt_log("  frame %d: fp=%#llx, ret=%s", i, (unsigned long long)fp, ldr_describe(ret, frame, sizeof frame));
+        fp = *(uint64_t *)(uintptr_t)fp;
+    }
     rt_fatal("undefined instruction at %s (lr %s)", ldr_describe(pc, at, sizeof at),
              ldr_describe(c->x[30], lr, sizeof lr));
 }
