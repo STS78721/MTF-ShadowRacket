@@ -1,28 +1,33 @@
-## 🍌 Alpha 1c: Upstream Engine Integration, SPIR-V FMZ Cutscene Fix, Driver Fault Dumper & 1-Click Auto-Updater ⚡
+## 🍌 Alpha 1d: Super Motion Frame Generation, Lazy Memory Pools, Upstream Engine Sync & Vendor Upscaler Stack ⚡
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/STS78721/dkb-BANANAS/bananza/launcher/launcher_showcase.png" alt="SteelTemple DKB Standalone Launcher" width="90%">
 </p>
 
-Welcome to **Alpha 1c**, the latest community testing release of the **SteelTempSaint Donkey Kong Bananza PC Recomp (DKB)**!
+Welcome to **Alpha 1d**, the latest community testing release of the **SteelTempSaint Donkey Kong Bananza PC Recomp (DKB)**!
 
-Modeled directly after our flagship **SteelTempSaint ToTK Recomp** architecture and modern PlayStation/Nixxes PC ports, this release transforms *Donkey Kong Bananza* (Nintendo Switch 2) into a native Windows x86-64 Vulkan 1.3 application—complete with a sleek Banana Gold & Jungle Setup Wizard, our standalone `DKBLauncher.exe`, multi-vendor AI upscaling (NVIDIA DLSS 4.5 / Intel XeSS 1.3 / AMD FSR / DLAA), NVIDIA Reflex & Anti-Lag 2, and all pre-tested fixes for cutscenes, skyboxes, and destructible terrain.
+Modeled directly after our flagship **SteelTempSaint ToTK Recomp** architecture and modern PlayStation/Nixxes PC ports, this release transforms *Donkey Kong Bananza* (Nintendo Switch 2) into a native Windows x86-64 Vulkan 1.3 application—complete with a sleek Banana Gold & Jungle Setup Wizard, our standalone `DKBLauncher.exe`, multi-vendor AI upscaling (NVIDIA DLSS 4.5 / Intel XeSS 1.3 / AMD FSR 3.1 / DLAA), Super Motion Frame Generation, NVIDIA Reflex & Anti-Lag 2, and all pre-tested fixes for cutscenes, skyboxes, and destructible terrain.
 
 ---
 
-### 🔥 What's New in Alpha 1c
+### 🔥 What's New in Alpha 1d
 
-* **🛡️ SPIR-V Fused-Multiply-Zero (FMZ) Hardware Emulation (`runtime/vk_pipeline.c`, `runtime/cfg.c`):**
-  * Implemented an automatic SPIR-V instruction rewriter for 32-bit float `OpFMul` and GLSL.std.450 `Fma` instructions so that `0 * x = 0` holds strictly even when `x` is `±Infinity` or `NaN` (matching NVIDIA Ampere/Ada/Blackwell hardware FMZ behavior).
-  * Enabled by default for all vertex stages (`DKB_FMZ=vertex`), resolving the infamous Issue #75 device lost crash during the end-of-tutorial cutscene on NVIDIA GeForce RTX GPUs mathematically without dropping visual passes!
-  * Added configurable controls via `TOTK_FMZ=0/vertex/all` and bisection mask `TOTK_FMZ_SEL=<mask:val>`.
-* **🔍 Live GPU Diagnostics & Driver Fault Dumps (`runtime/vk_device.c`, `runtime/vk_crumbs.c`, `runtime/vk_pipeline.c`):**
-  * Integrated `VK_NV_device_diagnostic_checkpoints` and `VK_EXT_device_address_binding_report` under `DKB_GPU_CHECKPOINTS=1`.
-  * Automatically dumps driver binary fault data directly to `logs/dkb-fault-<time>.bin` on `VK_ERROR_DEVICE_LOST` for zero-guesswork troubleshooting.
-  * Added stage origin filter diagnostics (`DKB_SKIP_VS` / `DKB_SKIP_FS`), SPIR-V bytecode dumper (`DKB_DUMP_SPV=1`), and hot shader overriding (`DKB_SPV_OVERRIDE=<hash>:<path.spv>`).
-* **⚡ Vulkan Pipeline & Command Recorder Optimizations (`runtime/vk_rec.c`, `runtime/vk_pipeline.c`):**
-  * Command ring buffer `head` and `tail` pointers are now cache-line aligned (`alignas(64)`) to eliminate multi-threaded CPU cache ping-pong / false sharing.
-  * Added batch recording support (`TOTK_REC_BATCH`) for lower CPU submission overhead.
+* **⚡ Super Motion Frame Generation Pipeline Fixes (`runtime/gfx_present.c`):**
+  * Decoupled `DKB_FG_MODE` (`dlss_fg`, `fsr3_fg`, `xefg`, `msm_fg`) from legacy `frame_gen = 0` configuration blocks so Frame Generation engages reliably across all hardware tiers.
+  * Active generator and multiplier badges now display accurately in the in-game performance overlay (`[DLSS FG 3x] 143 FPS (Base 60)`).
+* **🏎️ Lazy Memory Pool Imports & Fence Waits (`runtime/vk_memory.c`):**
+  * Ported `TOTK_POOL_LAZY=1` and `TOTK_HOST_PROPS_CACHE=1` from upstream, deferring guest memory imports to first GPU use and cutting guest-memory import time by up to 95%.
+  * Defaulted `TOTK_POOL_FINI_WAIT=fence` to eliminate queue idle stalls during level transitions.
+* **🛡️ Pipeline Capacity & Geometry Shader Guards (`runtime/vk_pipeline.c`, `runtime/vk_exec_draw.c`):**
+  * Added `maxPerStageDescriptorSamplers` capacity validation (`push_fits`) and geometry stage support guards (`vk_geometry_supported`).
+  * Preserved voxel varyings on AMD GPUs and lowered 12 Ampere compute and texture fetching stages for native Ampere instruction compatibility.
+* **🎯 DLSS Pipeline Decoupling & Depth Sanitization (`runtime/nvn_api_dlss.c`, `runtime/vk_dlaa.c`):**
+  * Decoupled depth buffer copying from camera motion vector generation so depth memory is guaranteed clean and valid.
+  * Removed inverted depth flags and added automatic 1:1 DLAA mode resolution scaling.
+  * Restored camera reprojection VP locking across uniform banks `c4` and `c8`.
+* **🎨 Anti-Aliasing & Ambient Occlusion Stack (`runtime/vk_smaa.c`, `runtime/vk_ao.c`):**
+  * Integrated Subpixel Morphological Anti-Aliasing (SMAA 1x) with automatic bypass during native DLAA/DLSS.
+  * Added SSAO / HBAO ambient occlusion compute pipelines with in-game overlay and launcher controls.
   * Explicitly declared `StorageImageReadWithoutFormat` capability for unknown-format storage images.
 * **🌐 Portuguese Locale Normalization (`runtime/locale.c`):**
   * Automatically maps base Portuguese `pt` locale code to `pt-BR` for Bananza.

@@ -4,6 +4,30 @@ All notable changes to the **SteelTempSaint Donkey Kong Bananza PC Recomp (DKB)*
 
 ---
 
+## [Alpha 1d] - 2026-11-08
+
+### 🍌 Upscaler Architecture Overhaul & Memory/Pipeline Performance (Alpha 1d)
+- **Super Motion Frame Generation Gate (`runtime/gfx_present.c`):**
+  - Decoupled `DKB_FG_MODE` (`dlss_fg`, `fsr3_fg`, `xefg`, `msm_fg`) from legacy `frame_gen = 0` configuration blocks so Frame Generation engages reliably in all gameplay scenarios.
+  - Active generator and multiplier badges now display accurately in the in-game performance overlay.
+- **Upstream Memory & Driver Stall Optimizations (`runtime/vk_memory.c`, `runtime/vk_pipeline.c`):**
+  - Ported `TOTK_POOL_LAZY=1` and `TOTK_HOST_PROPS_CACHE=1` from upstream, deferring guest memory imports to first GPU use and slashing driver allocate stalls.
+  - Defaulted `TOTK_POOL_FINI_WAIT=fence` to eliminate CPU queue idle wait bottlenecks.
+  - Added per-stage sampler capacity validation (`push_fits`) and geometry stage support guards (`vk_geometry_supported`).
+- **Ampere Shader Recompiler Lowering (`shader_recompiler`):**
+  - Lowered 12 Ampere compute and texture fetching stages for native Ampere instruction compatibility.
+- **Audio Voice Fix (`runtime/audren.c`):**
+  - Applied unused voice slot recording fix preventing voice 0 wiping during stereo playback.
+- **DLSS Pipeline Decoupling & Depth Sanitization (`runtime/nvn_api_dlss.c`, `runtime/vk_dlaa.c`):**
+  - Decoupled depth buffer copying from camera motion vector generation so depth memory is guaranteed clean and valid.
+  - Removed inverted depth flags and added automatic 1:1 DLAA mode resolution scaling.
+  - Restored camera reprojection VP locking across uniform banks `c4` and `c8`.
+- **Anti-Aliasing & Ambient Occlusion Stack (`runtime/vk_smaa.c`, `runtime/vk_ao.c`):**
+  - Integrated Subpixel Morphological Anti-Aliasing (SMAA 1x) with automatic bypass during native DLAA/DLSS.
+  - Added SSAO / HBAO ambient occlusion pipelines with in-game overlay and launcher controls.
+
+---
+
 ## [Alpha 1c] - 2026-11-07
 
 ### 🍌 Upstream Engine Integration & Cutscene Stability (Alpha 1c)

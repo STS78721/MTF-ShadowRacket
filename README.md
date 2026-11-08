@@ -60,11 +60,11 @@ Our goal is to **elevate *Donkey Kong Bananza* into a native, flagship PC experi
 
 ## 📥 Quick Start & Downloads
 
-Grab the latest prebuilt packages from our **[Latest Release (Alpha 1c)](https://github.com/STS78721/dkb-BANANAS/releases/tag/Alpha-1c)**:
+Grab the latest prebuilt packages from our **[Latest Release (Alpha 1d)](https://github.com/STS78721/dkb-BANANAS/releases/tag/Alpha-1d)**:
 
 ### 🛠️ 1. All-In-One Setup Wizard (Recommended for New Players)
-👉 **Download: [`SteelTemple-DKB-Alpha1c-Full-Setup-Wizard.exe`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1c/SteelTemple-DKB-Alpha1c-Full-Setup-Wizard.exe)** *(or [`DKB-Setup.zip`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1c/DKB-Setup.zip))*
-1. Run the setup executable (**DKB PC Recomp - Setup (Alpha 1c)**).
+👉 **Download: [`SteelTemple-DKB-Alpha1d-Full-Setup-Wizard.exe`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1d/SteelTemple-DKB-Alpha1d-Full-Setup-Wizard.exe)** *(or [`DKB-Setup.zip`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1d/DKB-Setup.zip))*
+1. Run the setup executable (**DKB PC Recomp - Setup (Alpha 1d)**).
 2. Select your legally dumped **Donkey Kong Bananza v1.0.0** source:
    - **`.nup` container** (unpacked natively with zero external tools or keys required),
    - **Unpacked dump folder** containing `exefs/` and `romfs/` (or `base/exefs` and `base/romfs`), or
@@ -74,14 +74,14 @@ Grab the latest prebuilt packages from our **[Latest Release (Alpha 1c)](https:/
 ---
 
 ### 🎮 2. Portable Standalone Package (Zero-Install Zip)
-👉 **Download: [`SteelTemple-DKB-Alpha1c-Portable-StandAlone.zip`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1c/SteelTemple-DKB-Alpha1c-Portable-StandAlone.zip)**
+👉 **Download: [`SteelTemple-DKB-Alpha1d-Portable-StandAlone.zip`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1d/SteelTemple-DKB-Alpha1d-Portable-StandAlone.zip)**
 1. Extract the archive into your chosen game folder (e.g. `C:\Games\DKB PC`).
    - *Includes `DKBLauncher.exe`, `dkb.exe`, `SDL3.dll`, pre-warmed shader/pipeline caches, and vendor upscalers (DLSS 4.5, XeSS 1.3, Reflex).*
 2. Copy **both** your dumped **`exefs`** and **`romfs`** folders (from your legally owned Base v1.0.0 dump) directly into this folder:
    ```text
    C:\Games\DKB PC\
    ├── dkb.exe                <-- Recompiled Native x86-64 Game Engine
-   ├── DKBLauncher.exe        <-- Standalone PC Launcher (Alpha 1c)
+   ├── DKBLauncher.exe        <-- Standalone PC Launcher (Alpha 1d)
    ├── dkb.ini                <-- Synchronized Game & Graphics Configuration
    ├── SDL3.dll, nvngx_dlss.dll, libxess.dll, etc.
    ├── exefs/                 <-- Contains main, sdk, main.npdm (from your v1.0.0 dump)
