@@ -47,6 +47,6 @@ Modeled directly after our flagship **SteelTempSaint ToTK Recomp** architecture 
 
 ### 📥 Downloads & Installation
 
-- **`SteelTemple-DKB-Alpha1c-Update.zip`** (`~98 MB`): Lightweight 1-click drop-in update package. If you already have Alpha 1 or 1b installed, simply click **Check for Updates** in `DKBLauncher.exe` to auto-update in 1 click, or extract this archive over your game directory!
-- **`SteelTemple-DKB-Alpha1c-Portable-StandAlone.zip`** (`~403 MB`): Full standalone zero-install PC package. Extract to `C:\Games\DKB PC` (or any directory), copy your legally dumped `exefs/` and `romfs/` files, and launch `DKBLauncher.exe`!
-- **`SteelTemple-DKB-Alpha1c-Full-Setup-Wizard.exe`** (`~435 MB`) / **`DKB-Setup.zip`**: All-in-one graphical installer with `.nup` container unpacking, loose RomFS indexing, desktop shortcut creation, and controller prompt selection.
+- **`SteelTemple-DKB-Alpha1d-Update.zip`** (`~100 MB`): Lightweight 1-click drop-in update package. If you already have Alpha 1, 1b, or 1c installed, simply click **Check for Updates** in `DKBLauncher.exe` to auto-update in 1 click, or extract this archive over your game directory!
+- **`SteelTemple-DKB-Alpha1d-Portable-StandAlone.zip`** (`~522 MB`): Full standalone zero-install PC package. Extract to `C:\Games\DKB PC` (or any directory), copy your legally dumped `exefs/` and `romfs/` files, and launch `DKBLauncher.exe`!
+- **`SteelTemple-DKB-Alpha1d-Full-Setup-Wizard.exe`** (`~463 MB`) / **`DKB-Setup.zip`**: All-in-one graphical installer with `.nup` container unpacking, loose RomFS indexing, desktop shortcut creation, and controller prompt selection.
