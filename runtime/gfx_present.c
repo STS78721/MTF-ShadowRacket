@@ -924,6 +924,8 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
 
     if (general && !strcmp(cfg_upscaler, "dlss")) {
         upscaler_done = vk_dlss_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
+    } else if (general && !strcmp(cfg_upscaler, "xess")) {
+        upscaler_done = vk_xess_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
     } else if (general && (!strcmp(cfg_upscaler, "fsr3") || !strcmp(cfg_upscaler, "fsr3.1"))) {
         upscaler_done = vk_fsr3_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
         if (!upscaler_done) {

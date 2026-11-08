@@ -160,7 +160,16 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
                   VkImage dst, const int out[4]) {
     int cw = crop[2], ch = crop[3];
     uint32_t dw = (uint32_t)out[2], dh = (uint32_t)out[3];
-    if (strcmp(cfg_value("TOTK_UPSCALER"), "fsr") || (dw <= (uint32_t)cw && dh <= (uint32_t)ch) || !fmt) return 0;
+    if (!fmt || cw <= 0 || ch <= 0 || dw <= 0 || dh <= 0) return 0;
+
+    int sharp = cfg_int("DKB_SHARPNESS");
+    if (!sharp && cfg_is_set("TOTK_SHARPNESS")) sharp = cfg_int("TOTK_SHARPNESS");
+    if (sharp < 0) sharp = 0;
+    if (sharp > 100) sharp = 100;
+
+    // When output is same size as input, run FSR EASU/RCAS if sharpening is active, else plain blit
+    if (dw <= (uint32_t)cw && dh <= (uint32_t)ch && sharp <= 0) return 0;
+
     VkCtx *c = vk_ctx();
     if (!F.tried) init(c);
     if (!F.ok || !ensure_images(c, dw, dh)) return 0;
@@ -175,9 +184,6 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
         F.src_view[slot] = VK_NULL_HANDLE;
         return 0;
     }
-    int sharp = cfg_int("TOTK_SHARPNESS");
-    if (sharp < 0) sharp = 0;
-    if (sharp > 100) sharp = 100;
     if (!F.logged) {
         F.logged = 1;
         rt_log("vk: FSR upscales %dx%d to %ux%u (sharpness %d)", cw, ch, dw, dh, sharp);

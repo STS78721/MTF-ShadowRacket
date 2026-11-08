@@ -39,8 +39,10 @@ VENDOR_SDK_FILES = [
 def find_local_sdk_cache(dll_name: str) -> Optional[str]:
     """Finds vendor SDK DLL in system caches or prior installations."""
     candidates = [
+        os.path.join(r"C:\Users\debee\Desktop\Emulators\Eden PGO", dll_name),
         os.path.join(r"C:\DK-Bananza-Instalador\jogo\build\dkb100", dll_name),
         os.path.join(r"C:\Games\Tears of the Kingdom PC\GAME", dll_name),
+        os.path.join(r"C:\Games\Bloodborne PC\engine\fsr_sdk", dll_name),
         os.path.join(r"C:\Games\Bloodborne PC\engine\out", dll_name),
         os.path.join(r"C:\Games\CTR Nitro Fueled PC\bin", dll_name),
         os.path.join(os.path.dirname(__file__), "assets", dll_name),

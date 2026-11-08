@@ -160,7 +160,6 @@ void vk_fsr3_release(void) {
 int vk_fsr3_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh, const int crop[4],
                    VkImage dst, const int out[4]) {
     if (!vk_fsr3_wanted()) return 0;
-    (void)cb; (void)slot; (void)src; (void)fmt; (void)sw; (void)sh; (void)crop; (void)dst; (void)out;
 
     if (g_fsr3.available && g_fsr3.ffxDispatch && g_fsr3.context) {
         g_fsr3.dispatches++;
@@ -168,6 +167,6 @@ int vk_fsr3_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
         return 1;
     }
 
-    // Fall back to FSR pipeline in present_image
-    return 0;
+    // High-fidelity FSR compute pipeline fallback
+    return vk_fsr_record(cb, slot, src, fmt, sw, sh, crop, dst, out);
 }

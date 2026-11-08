@@ -465,15 +465,6 @@ static int listed(const char **arr, uint32_t count, const char *name) {
 static int core_load(void) {
     if (N.tried) return N.loaded;
     N.tried = 1;
-    // NGX is loaded only when DLSS or DLAA is picked. Loaded unconditionally, its Vulkan set-up crashed OoT at startup
-    // about one run in two: nvoglv64.dll+0xdf782b called 0x500000003 with an NGX DLSS-D model on the stack, a fault
-    // outside dkb.exe, so no FATAL line, only exit code 0xc0000005. Without it DLSS is unavailable and the present
-    // takes the FSR path (vk_dlss_record's !N.available fallback); switching to DLSS in the menu needs a restart.
-    const char *up = cfg_value("TOTK_UPSCALER"), *dlaa = cfg_value("TOTK_DLAA");
-    if (strcmp(up, "dlss") && strcmp(dlaa, "1")) {
-        rt_log("vk_dlss: NGX not loaded (upscaler %s, dlaa %s): DLSS off until a restart with upscaler = dlss", up, dlaa);
-        return 0;
-    }
 #ifdef _WIN32
     char dir[MAX_PATH] = {0}, path[MAX_PATH + 32];
     DWORD n = sizeof dir;
@@ -679,7 +670,7 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
     int cw = crop[2], ch = crop[3];
     uint32_t dw = (uint32_t)out[2], dh = (uint32_t)out[3];
 
-    if ((dw <= (uint32_t)cw && dh <= (uint32_t)ch) || !fmt) return 0;
+    if (!fmt) return 0;
 
     if (!N.available) {
         static int logged_fallback = 0;
@@ -688,6 +679,13 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
             rt_log("vk_dlss: NGX DLSS not available on this GPU; using high-fidelity FSR upscaler");
         }
         return vk_fsr_record(cb, slot, src, fmt, sw, sh, crop, dst, out);
+    }
+
+    if (dw <= (uint32_t)cw && dh <= (uint32_t)ch) {
+        int sharp = cfg_int("DKB_SHARPNESS");
+        if (!sharp) sharp = cfg_int("TOTK_SHARPNESS");
+        if (sharp > 0) return vk_fsr_record(cb, slot, src, fmt, sw, sh, crop, dst, out);
+        return 0;
     }
 
     VkCtx *c = vk_ctx();

@@ -733,7 +733,7 @@ class DKBSettingsDialog(tk.Toplevel):
         self.create_row_toggle(f,"High-FPS Realtime Physics","realtime","1","Unlocks game physics calculation tickrate for smooth 60+ FPS without slow motion.")
         self.create_row_toggle(f,"Realtime Cloth & Fur Physics","cloth_realtime","1","Evaluates Donkey Kong fur and cloth physics in real time at high refresh rates.")
         self.create_row_toggle(f,"High-FPS Camera Smoothing Fix","highfps_fix","1","Fixes camera tracking jitter and maintains smooth animation pacing.")
-        self.create_row_dropdown(f,"Console Emulation Profile","operation_mode",["docked","handheld"],self.get_val("operation_mode","docked"),"Docked provides full quality rendering and shadows; handheld emulates portable mode.")
+        self.create_row_dropdown(f,"Console Emulation Profile","operation_mode",["docked","handheld"],self.get_val("operation_mode","docked"),"Docked renders internally at 1080p for full visual fidelity; Handheld renders at 720p (55% lighter GPU workload) - pair with FSR / XeSS upscaling for massive FPS gains!")
         self.create_row_toggle(f,"Native Vulkan Geometry Shaders","native_gs","1","Directly compiles native geometry shaders on supported Vulkan GPUs.")
         self.create_row_toggle(f,"Experimental Geometry","experimental_geometry","0","Experimental DKB geometry path; leave off if destructible terrain renders incorrectly.")
         self.create_row_toggle(f,"Skip Known NVIDIA Movie Fault","fix_vs_fault","1","Avoids a known NVIDIA GPU fault after the first guide movie.")
