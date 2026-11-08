@@ -13,7 +13,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageDraw, ImageTk
 
-CURRENT_VERSION = "Alpha 1d"
+CURRENT_VERSION = "Alpha 1f"
 APP_TITLE = f"Donkey Kong Bananza PC Recomp · {CURRENT_VERSION}"
 VERSION_STRING = f"{CURRENT_VERSION} · DKB"
 GITHUB_URL = "https://github.com/STS78721/dkb-BANANAS"
@@ -217,13 +217,24 @@ def config_text_value(value):
     return value
 
 def save_ini_settings(path, updates):
-    path=Path(path); lines=path.read_text(encoding="utf-8",errors="ignore").splitlines(keepends=True) if path.exists() else []
+    path=Path(path); raw_lines=path.read_text(encoding="utf-8",errors="ignore").splitlines(keepends=True) if path.exists() else []
+    obsolete={"dlss","dlaa","dlss_preset","xess_preset","antilag2","smaa","ao","ao_intensity"}
+    lines=[]
+    for line in raw_lines:
+        stripped=line.strip()
+        if "=" in stripped and not stripped.startswith(("#",";")):
+            k=stripped.split("=",1)[0].strip().casefold()
+            if k in obsolete:
+                continue
+        lines.append(line)
     for key,value in updates.items():
+        if key.casefold() in obsolete:
+            continue
         found=False
         active_section=""
         target_section=next((section for section, keys in {
             "frame rate":{"fps_limit","fps60","realtime","cloth_realtime","highfps_fix"},
-            "display":{"fullscreen","window_size","vk_present","output_res","render_scale","upscaler","upscaler_preset","dlss","dlss_preset","reflex","sharpness","aspect","fov","color_preset","color_brightness","color_contrast","color_saturation","color_gamma","device_profile","assume_focus","dlaa","low_latency","frame_gen","fg_mode","fg_mult","fg_flow","fg_type","xess_preset","perf_overlay","gpu_index","antilag2","smaa","fxaa","ao","ao_intensity"},
+            "display":{"fullscreen","window_size","vk_present","output_res","render_scale","upscaler","upscaler_preset","reflex","sharpness","aspect","fov","color_preset","color_brightness","color_contrast","color_saturation","color_gamma","device_profile","assume_focus","low_latency","frame_gen","fg_mode","fg_mult","fg_type","fg_preset","fg_still","fg_flow","perf_overlay","gpu_index","fxaa"},
             "language":{"locale","lang","menu_lang","operation_mode"},
             "audio":{"volume","audio_channels"},
             "input":{"motion","rumble_strength","rumble_curve","rumble_triggers","pad_layout","stick_deadzone","mouse_sens"},
@@ -688,33 +699,40 @@ class DKBSettingsDialog(tk.Toplevel):
         messagebox.showinfo("Display Profile","Applied DKB's fit aspect mode and a wider camera view. This setting does not rewrite RomFS or HUD files.",parent=self)
     def build_upscale_tab(self):
         f=self.tab_upscale
-        self.create_row_dropdown(f,"Upscaler Technology","upscaler",["dlss","xess","fsr3","fsr","bilinear"],"dlss","Upscaler: NVIDIA DLSS 4.5 (RTX GPUs), Intel XeSS 1.3 / XeLL, AMD FSR 3.1, AMD FSR 1.0, or Bilinear.")
-        self.create_row_dropdown(f,"DLSS / Upscaler Preset","upscaler_preset",["native","quality","balanced","performance","ultra_performance"],"quality","Preset: Native / DLAA (100%), Quality (67%), Balanced (58%), Performance (50%), Ultra Performance (33%).")
-        self.create_row_dropdown(f,"DLSS Model Generation","dlss_preset",["preset_k","preset_j","preset_m","preset_l","default"],"preset_k","Model: DLSS 4 (Preset K/J), DLSS 4.5 Perf (Preset M), DLSS 4.5 UltraPerf (Preset L).")
-        self.create_row_dropdown(f,"Low-Latency Mode","reflex",["boost","on","off"],"boost","Low Latency: NVIDIA Reflex (Boost/On), AMD Anti-Lag 2, Intel XeLL.")
-        self.create_row_toggle(f,"AI Frame Generation","frame_gen","0","Enables Frame Generation interpolation (DLSS-G / XeSS FG) for maximum fluidity.")
-        self.create_row_dropdown(f,"Render Scale (Internal)","render_scale",["game","33","50","58","67","75","100","125","150","200"],"game","Resolution scale: lower values boost FPS; 100% enables native DLAA.")
-        self.create_row_slider(f,"Upscaler Sharpness","sharpness",0,100,80,"%","Adjust the sharpness of the reconstructed image.")
-        self.create_row_dropdown(f,"Device Profile","device_profile",["auto","desktop","deck"],"auto","Use the runtime's automatic desktop profile or select a preset profile.")
+        self.create_row_dropdown(f,"Super Resolution Technology","upscaler",["smrs","fsr","bilinear","off"],"smrs","Upscaler: Nodix Super Motion SMRS (Recommended), AMD FSR 1.0 (Native), Bilinear, or Off.")
+        self.create_row_dropdown(f,"SMRS / Upscaler Preset","upscaler_preset",["native","ultra_quality","quality","balanced","performance","ultra_performance"],"quality","Preset: Native / DLAA (Docked 1620p), Ultra Quality (75%), Quality (Docked 1620p), Balanced (Handheld 1080p), Performance (Handheld 1080p), Ultra Performance (33%).")
+        self.create_row_dropdown(f,"Frame Generation Mode","fg_mode",["msm_fg","dlss_fg","fsr3_fg","xefg","off"],"msm_fg","Frame Generation: Nodix Super Motion (SMFG 1.3), DLSS MFG (RTX), AMD FSR 3.1 FG, XeSS MFG, or Off.")
+        self.create_row_dropdown(f,"Frame Multiplier","fg_mult",["2x","3x","4x","6x"],"2x","Multiplier: 2x (Double FPS), 3x (Triple FPS), 4x (Quadruple FPS), 6x.")
+        self.create_row_dropdown(f,"Multiplier Pacing","fg_type",["fixed","adaptive"],"fixed","Pacing: Fixed Multiplier or Adaptive Frame Pacing.")
+        self.create_row_dropdown(f,"Render Scale (Internal)","render_scale",["game","33","50","58","67","75","100","125","150","200"],"67","Internal resolution scale: lower scales boost base FPS for Frame Generation.")
+        self.create_row_slider(f,"Super Motion Sharpness","sharpness",0,100,80,"%","Nodix SMRS spatial reconstruction and edge enhancement filter.")
+        self.create_row_dropdown(f,"Low-Latency Mode","reflex",["boost","on","off"],"boost","NVIDIA Reflex / Low Latency Boost reduces input latency.")
+        self.create_row_dropdown(f,"Device Profile","device_profile",["auto","desktop","deck"],"auto","Runtime profile for thread priority and system hints.")
         self.create_row_dropdown(f,"Shader Pipeline Policy","pipe_wait",["default","draw"],"default","Default waits only when needed; Draw prioritizes avoiding pipeline stalls.")
         self.create_row_toggle(f,"Prebuild Vulkan Pipelines","pipe_prebuild","1","Build reusable Vulkan pipelines before play when supported.")
-        self._section_note(f,"NVIDIA DLSS 4.5, Intel XeSS 1.3 / XeLL, AMD FSR 3.1, NVIDIA Reflex, and AI Frame Generation are fully wired into DKB.")
+        self._section_note(f,"Nodix Super Motion SMRS Upscaler and Multi-Frame Generation are fully integrated directly into Donkey Kong Bananza.")
 
         def on_preset_changed(_e=None):
             p = self.vars["upscaler_preset"].get()
-            scale_map = {"native": "100", "quality": "67", "balanced": "58", "performance": "50", "ultra_performance": "33"}
-            model_map = {"performance": "preset_m", "ultra_performance": "preset_l", "quality": "preset_k", "balanced": "preset_k", "native": "preset_k"}
+            scale_map = {"native": "100", "ultra_quality": "75", "quality": "67", "balanced": "58", "performance": "50", "ultra_performance": "33"}
             if p in scale_map and "render_scale" in self.vars:
                 self.vars["render_scale"].set(scale_map[p])
-            if p in model_map and "dlss_preset" in self.vars:
-                self.vars["dlss_preset"].set(model_map[p])
+            if "operation_mode" in self.vars:
+                if p in ("native", "quality", "ultra_quality"):
+                    self.vars["operation_mode"].set("docked")
+                else:
+                    self.vars["operation_mode"].set("handheld")
 
         def on_scale_changed(_e=None):
             s = self.vars["render_scale"].get()
-            rev_map = {"100": "native", "67": "quality", "58": "balanced", "50": "performance", "33": "ultra_performance"}
+            rev_map = {"100": "native", "75": "ultra_quality", "67": "quality", "58": "balanced", "50": "performance", "33": "ultra_performance"}
             if s in rev_map and "upscaler_preset" in self.vars:
                 self.vars["upscaler_preset"].set(rev_map[s])
-                on_preset_changed()
+            if "operation_mode" in self.vars:
+                if s in ("100", "125", "150", "200", "75", "67", "game"):
+                    self.vars["operation_mode"].set("docked")
+                else:
+                    self.vars["operation_mode"].set("handheld")
 
         if hasattr(self, "combos"):
             if "upscaler_preset" in self.combos:
@@ -728,12 +746,11 @@ class DKBSettingsDialog(tk.Toplevel):
         self.create_row_slider(f,"Color Contrast","color_contrast",70,150,100,"%","Display contrast adjustment.")
         self.create_row_slider(f,"Color Saturation","color_saturation",50,200,100,"%","Display saturation adjustment.")
         self.create_row_dropdown(f,"Color Gamma","color_gamma",["0.8","0.9","1.0","1.1","1.2"],"1.0","Gamma adjustment.")
-        self.create_row_toggle(f,"SMAA 1x Anti-Aliasing","smaa","0","Subpixel Morphological Anti-Aliasing: High-quality morphological edge smoothing with zero blur or ghosting.")
-        self.create_row_toggle(f,"FXAA Anti-Aliasing","fxaa","1","Game's built-in FXAA edge smoothing. Can be disabled when using SMAA 1x or DLAA.")
+        self.create_row_toggle(f,"FXAA Anti-Aliasing","fxaa","1","Game's built-in FXAA edge smoothing.")
         self.create_row_toggle(f,"High-FPS Realtime Physics","realtime","1","Unlocks game physics calculation tickrate for smooth 60+ FPS without slow motion.")
         self.create_row_toggle(f,"Realtime Cloth & Fur Physics","cloth_realtime","1","Evaluates Donkey Kong fur and cloth physics in real time at high refresh rates.")
         self.create_row_toggle(f,"High-FPS Camera Smoothing Fix","highfps_fix","1","Fixes camera tracking jitter and maintains smooth animation pacing.")
-        self.create_row_dropdown(f,"Console Emulation Profile","operation_mode",["docked","handheld"],self.get_val("operation_mode","docked"),"Docked renders internally at 1080p for full visual fidelity; Handheld renders at 720p (55% lighter GPU workload) - pair with FSR / XeSS upscaling for massive FPS gains!")
+        self.create_row_dropdown(f,"Console Emulation Profile","operation_mode",["docked","handheld"],self.get_val("operation_mode","docked"),"Docked renders internally at 2880x1620 for full fidelity; Handheld renders at 1920x1080 (56% lighter GPU workload) - pair with Super Motion SMRS for massive FPS gains!")
         self.create_row_toggle(f,"Native Vulkan Geometry Shaders","native_gs","1","Directly compiles native geometry shaders on supported Vulkan GPUs.")
         self.create_row_toggle(f,"Experimental Geometry","experimental_geometry","0","Experimental DKB geometry path; leave off if destructible terrain renders incorrectly.")
         self.create_row_toggle(f,"Skip Known NVIDIA Movie Fault","fix_vs_fault","1","Avoids a known NVIDIA GPU fault after the first guide movie.")
@@ -785,38 +802,13 @@ class DKBSettingsDialog(tk.Toplevel):
         tk.Checkbutton(row,text="Launcher Sound Effects",variable=self.sound_effects_var,font=("Segoe UI",10,"bold"),fg=COLOR_WHITE,bg=COLOR_BG_DARK,activebackground=COLOR_BG_DARK,activeforeground=COLOR_GOLD,selectcolor=COLOR_CARD,bd=0,highlightthickness=0).pack(side=tk.LEFT)
     def save_and_close(self):
         if not GAME_DIR:messagebox.showerror("Settings","Choose the DKB game folder first.",parent=self); return
-        updates={k:(f"{v.get()/10:.1f}" if k in {"rumble_curve","ao_intensity"} else str(v.get())) for k,v in self.vars.items()}
-        preset_scale_map = {"native": "100", "quality": "67", "balanced": "58", "performance": "50", "ultra_performance": "33"}
-        u = updates.get("upscaler", "dlss")
-        p = updates.get("upscaler_preset", "quality")
-        rs = updates.get("render_scale", "67")
-        if p in preset_scale_map:
-            updates["render_scale"] = preset_scale_map[p]
-        if u == "dlss":
-            updates["dlaa"] = "1" if (p == "native" or rs == "100") else "0"
-            updates["dlss"] = "dlaa" if updates["dlaa"] == "1" else p
-            if p == "performance": updates["dlss_preset"] = "preset_m"
-            elif p == "ultra_performance": updates["dlss_preset"] = "preset_l"
-        else:
-            updates["dlaa"] = "0"
-            updates["dlss"] = "off"
+        updates={k:(f"{v.get()/10:.1f}" if k in {"rumble_curve"} else str(v.get())) for k,v in self.vars.items()}
         if "locale" in updates:
             updates["lang"] = updates["locale"]
         updates["reflex"] = updates.get("reflex", "boost")
         updates["low_latency"] = updates.get("reflex", "boost")
-        fg = updates.get("frame_gen", "0")
-        updates["frame_gen"] = fg
-        if fg == "1":
-            if u == "fsr3":
-                updates["fg_mode"] = "fsr3_fg"
-            elif u == "xess":
-                updates["fg_mode"] = "xefg"
-            elif u == "dlss":
-                updates["fg_mode"] = "dlss_fg"
-            else:
-                updates["fg_mode"] = "msm_fg"
-        else:
-            updates["fg_mode"] = "off"
+        fg_m = updates.get("fg_mode", "msm_fg")
+        updates["frame_gen"] = "0" if fg_m == "off" else "1"
         try:
             save_ini_settings(INI_PATH,updates)
             self.parent_app.launcher_cfg["target_display"]=self.target_monitor["device"]
@@ -827,9 +819,9 @@ class DKBSettingsDialog(tk.Toplevel):
     def restore_defaults(self):
         if not messagebox.askyesno("Restore Defaults","Reset this page to the DKB launcher defaults?",parent=self):return
         defaults={"fullscreen":"0","window_size":self.display_resolution,"output_res":self.display_resolution,"fps_limit":"60","vk_present":"mailbox","aspect":"fit","fov":"100",
-            "upscaler":"fsr","render_scale":"game","sharpness":"80","device_profile":"auto","pipe_wait":"default","pipe_prebuild":"1",
+            "upscaler":"smrs","upscaler_preset":"quality","fg_mode":"msm_fg","fg_mult":"2x","fg_type":"fixed","render_scale":"67","sharpness":"80","device_profile":"auto","pipe_wait":"default","pipe_prebuild":"1",
             "color_preset":"default","color_brightness":"0","color_contrast":"100","color_saturation":"100","color_gamma":"1.0",
-            "smaa":"0","fxaa":"1","ao":"off","ao_intensity":"10",
+            "fxaa":"1",
             "experimental_geometry":"0","fix_vs_fault":"1","fix_zero":"1","lod_guard":"1","fix_indirect_reset":"1","lib_prebuild":"1",
             "pad_layout":"auto","motion":"1","rumble_strength":"130","rumble_curve":"0.6","rumble_triggers":"0","stick_deadzone":"8",
             "mouse_sens":"1","volume":"100","locale":"en-US","menu_lang":"en","assume_focus":"1"}

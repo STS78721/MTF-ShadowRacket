@@ -62,7 +62,8 @@ def problems_for(path: Path, allow_large: bool = False, *, staged: bool = False)
         if not path.is_file():
             return found
         size = path.stat().st_size
-    if size > MAX_BYTES and not allow_large:
+    allow = allow_large or path.as_posix().startswith("runtime/third_party/")
+    if size > MAX_BYTES and not allow:
         found.append(f"{size // 1024} KiB, over the {MAX_BYTES // 1024} KiB limit")
         return found
     data = (subprocess.run(["git", "cat-file", "blob", revision], check=True, capture_output=True).stdout

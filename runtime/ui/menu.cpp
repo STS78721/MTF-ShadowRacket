@@ -56,12 +56,6 @@ int vk_gpu_is_rx9000(void);
 int vk_gpu_is_intel(void);
 int vk_gpu_is_intel_arc(void);
 int vk_has_amd_antilag(void);
-int vk_fsr3_available(void);
-int vk_fsr3_fg_available(void);
-int vk_xess_available(void);
-int vk_xess_is_xmx(void);
-int vk_xefg_available(void);
-int vk_xell_available(void);
 int vk_fg_active_multiplier(void);
 
 double frame_step_limit_hz(void);
@@ -522,25 +516,21 @@ static void row_render_scale(void) {
     }
     if (opt_choice_list("DKB_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC)) {
         const char *rs = cfg_value("DKB_RENDER_SCALE");
-        if (!strcmp(rs, "100")) {
+        if (!strcmp(rs, "100") || !strcmp(rs, "125") || !strcmp(rs, "150") || !strcmp(rs, "200") || !strcmp(rs, "game")) {
+            cfg_set("DKB_OPERATION_MODE", "docked");
             cfg_set("DKB_UPSCALER_PRESET", "native");
-            cfg_set("DKB_DLAA", "1");
-        } else if (!strcmp(rs, "67")) {
+        } else if (!strcmp(rs, "75") || !strcmp(rs, "67")) {
+            cfg_set("DKB_OPERATION_MODE", "docked");
             cfg_set("DKB_UPSCALER_PRESET", "quality");
-            cfg_set("DKB_DLAA", "0");
         } else if (!strcmp(rs, "58")) {
+            cfg_set("DKB_OPERATION_MODE", "handheld");
             cfg_set("DKB_UPSCALER_PRESET", "balanced");
-            cfg_set("DKB_DLAA", "0");
         } else if (!strcmp(rs, "50")) {
+            cfg_set("DKB_OPERATION_MODE", "handheld");
             cfg_set("DKB_UPSCALER_PRESET", "performance");
-            cfg_set("DKB_DLSS_PRESET", "preset_m");
-            cfg_set("DKB_DLAA", "0");
         } else if (!strcmp(rs, "33")) {
+            cfg_set("DKB_OPERATION_MODE", "handheld");
             cfg_set("DKB_UPSCALER_PRESET", "ultra_performance");
-            cfg_set("DKB_DLSS_PRESET", "preset_l");
-            cfg_set("DKB_DLAA", "0");
-        } else {
-            cfg_set("DKB_DLAA", "0");
         }
         cfg_save();
     }
@@ -654,93 +644,72 @@ static void tab_screen(float scale) {
     row_gpu();
     static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
     opt_choice("DKB_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
-    opt_group_text("AI Super Resolution & Anti-Aliasing");
+    opt_group_text("Nodix Super Motion & Super Resolution");
     row_render_scale();
-    static const char *const up_vals[] = {"dlss", "xess", "fsr3", "fsr", "bilinear"};
-    const char *dp = cfg_value("DKB_DLSS_PRESET");
-    const char *dlss_title = (!strcmp(dp, "preset_m") || !strcmp(dp, "preset_l")) ? "NVIDIA DLSS 4.5"
-                           : (!strcmp(dp, "preset_k") || !strcmp(dp, "preset_j")) ? "NVIDIA DLSS 4"
-                           : "NVIDIA DLSS 4 / 4.5";
-    const char *fsr3_title = vk_fsr3_available() ? "AMD FSR 3.1 (Hardware)" : "AMD FSR 3.1 (Universal)";
-    const char *up_names[] = {dlss_title, "Intel XeSS 1.3 / 2.0+", fsr3_title, "AMD FSR 1.0 (Native)", menu_text(UI_MENU_UPSCALER_BILINEAR)};
-    if (opt_choice_list("DKB_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 5, UI_MENU_UPSCALER_DESC)) {
-        const char *u = cfg_value("DKB_UPSCALER");
-        const char *rs = cfg_value("DKB_RENDER_SCALE");
-        int is_100 = (!strcmp(rs, "100") || !strcmp(cfg_value("DKB_UPSCALER_PRESET"), "native"));
-        cfg_set("DKB_DLAA", (!strcmp(u, "dlss") && is_100) ? "1" : "0");
-        cfg_save();
-    }
+    static const char *const up_vals[] = {"smrs", "fsr", "bilinear", "off"};
+    static const char *const up_names[] = {
+        "Nodix Super Motion SMRS",
+        "AMD FSR 1.0 (Native)",
+        "Bilinear (Clean Scaler)",
+        "Off (Raw 1:1)"
+    };
+    opt_choice_list("DKB_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 4, UI_MENU_UPSCALER_DESC);
     const char *up = cfg_value("DKB_UPSCALER");
-    bool is_dlss = !strcmp(up, "dlss");
-    bool is_xess = !strcmp(up, "xess");
-    bool is_fsr3 = !strcmp(up, "fsr3");
+    bool is_smrs = !strcmp(up, "smrs");
     bool is_fsr = !strcmp(up, "fsr");
-    if (is_dlss || is_xess || is_fsr3) {
-        static const struct { const char *name, *label, *scale, *model; } p[] = {
-            {"native", "Native / AA (100%)", "100", "preset_k"},
-            {"quality", "Quality (67%)", "67", "preset_k"},
-            {"balanced", "Balanced (58%)", "58", "preset_k"},
-            {"performance", "Performance (50%)", "50", "preset_m"},
-            {"ultra_performance", "Ultra Performance (33%)", "33", "preset_l"}};
-        static const char *vals[5], *names[5];
-        for (int i = 0; i < 5; i++) vals[i] = p[i].name, names[i] = p[i].label;
-        if (opt_choice_list("DKB_UPSCALER_PRESET", UI_MENU_UPSCALE_PRESET, vals, names, 5, UI_MENU_UPSCALE_PRESET_DESC)) {
-            for (const auto &e : p) {
-                if (!strcmp(cfg_value("DKB_UPSCALER_PRESET"), e.name)) {
-                    cfg_set("DKB_RENDER_SCALE", e.scale);
-                    cfg_set("DKB_DLAA", !strcmp(e.name, "native") ? "1" : "0");
-                    if (is_dlss) cfg_set("DKB_DLSS_PRESET", e.model);
-                    cfg_save();
+    if (is_smrs) {
+        static const struct { const char *name, *label, *scale; } p[] = {
+            {"native", "Native / DLAA (Docked 1620p)", "100"},
+            {"quality", "Quality (Docked 1620p)", "67"},
+            {"balanced", "Balanced (Handheld 1080p)", "58"},
+            {"performance", "Performance (Handheld 1080p)", "50"},
+            {"ultra_performance", "Ultra Performance (Handheld 1080p)", "33"}
+        };
+        static const char *names[5], *vals[5];
+        for (int i = 0; i < 5; i++) { vals[i] = p[i].name; names[i] = p[i].label; }
+        const char *cur_op = cfg_value("DKB_OPERATION_MODE");
+        const char *p_note = (!cur_op || !strcmp(cur_op, "docked")) ? "Docked Profile Active (1620p base)" : "Handheld Profile Active (1080p base, 56% lighter)";
+        if (opt_choice_list("DKB_UPSCALER_PRESET", UI_MENU_UPSCALE_PRESET, vals, names, 5, UI_MENU_UPSCALE_PRESET_DESC, -1, p_note)) {
+            const char *preset = cfg_value("DKB_UPSCALER_PRESET");
+            if (!strcmp(preset, "native") || !strcmp(preset, "quality")) {
+                cfg_set("DKB_OPERATION_MODE", "docked");
+            } else {
+                cfg_set("DKB_OPERATION_MODE", "handheld");
+            }
+            for (int i = 0; i < 5; i++) {
+                if (!strcmp(preset, p[i].name)) {
+                    cfg_set("DKB_RENDER_SCALE", p[i].scale);
+                    break;
                 }
             }
+            cfg_save();
         }
-        if (is_dlss) {
-            static const char *const model_vals[] = {"preset_k", "preset_j", "preset_m", "preset_l", "default"};
-            static const char *const model_names[] = {
-                "DLSS 4 (Preset K)", "DLSS 4 (Preset J)",
-                "DLSS 4.5 Perf (Preset M)", "DLSS 4.5 UltraPerf (Preset L)", "Default (Auto)"};
-            opt_choice_list("DKB_DLSS_PRESET", UI_MENU_DLSS_MODEL, model_vals, model_names, 5, UI_MENU_DLSS_MODEL_DESC);
-        }
-    }
-    if (is_xess) {
-        static const char *const xess_vals[] = {
-            "aa", "ultra_quality_plus", "ultra_quality", "quality", "balanced", "performance", "ultra_performance"
-        };
-        static const char *const xess_names[] = {
-            "Native AA (1.0x)", "Ultra Quality Plus (1.3x)", "Ultra Quality (1.5x)",
-            "Quality (1.7x)", "Balanced (2.0x)", "Performance (2.3x)", "Ultra Performance (3.0x)"
-        };
-        const char *xess_note = vk_xess_available() ? (vk_xess_is_xmx() ? "Hardware XMX Matrix Acceleration Active" : "Universal DP4a Acceleration Active")
-                                                    : "libxess.dll ready for drop-in";
-        opt_choice_list("DKB_XESS_QUALITY", UI_MENU_XESS_QUALITY, xess_vals, xess_names, 7,
-                        UI_MENU_XESS_QUALITY_DESC, -1, xess_note);
-    }
-    if (is_fsr || is_fsr3) {
+        opt_slider("DKB_SHARPNESS", UI_MENU_SMRS_SHARPNESS, 0, 100, UI_MENU_SMRS_SHARPNESS_DESC, 5, "%.0f %%");
+    } else if (is_fsr) {
         opt_slider("DKB_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     }
     opt_toggle("DKB_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
-    opt_toggle("DKB_SMAA", UI_MENU_SMAA, UI_MENU_SMAA_DESC);
 
     // Frame Generation / Super Motion (Nodix Super Motion and DLSS MFG)
-    opt_group_text("Frame Generation (Nodix Super Motion and DLSS MFG)");
-    static const char *const fg_gen_vals[] = {"off", "dlss_fg", "fsr3_fg", "xefg", "msm_fg"};
+    opt_group_text("Frame Generation (Nodix Super Motion & MFG)");
+    static const char *const fg_gen_vals[] = {"off", "msm_fg", "dlss_fg", "fsr3_fg", "xefg"};
     static const char *const fg_gen_names[] = {
         "Off",
+        "Nodix Super Motion (SMFG 1.3)",
         "DLSS MFG (NVIDIA RTX)",
         "AMD FSR 3.1 FG (Universal)",
-        "XeSS MFG (Intel Universal)",
-        "MSM FG 1.1 (Nodix Compute)"
+        "XeSS MFG (Intel Universal)"
     };
     const char *fg_note = nullptr;
     const char *cur_fg = cfg_value("DKB_FG_MODE");
-    if (!strcmp(cur_fg, "dlss_fg")) {
+    if (!strcmp(cur_fg, "msm_fg")) {
+        fg_note = "Nodix Super Motion DirectML / Compute Active";
+    } else if (!strcmp(cur_fg, "dlss_fg")) {
         fg_note = vk_gpu_is_nvidia() ? "NVIDIA Hardware Optical Flow Active" : "Requires NVIDIA RTX GPU";
     } else if (!strcmp(cur_fg, "fsr3_fg")) {
-        fg_note = vk_fsr3_fg_available() ? "AMD FidelityFX FSR 3.1 Optical Flow Active" : "AMD FSR 3.1 FG (Universal Fallback Active)";
+        fg_note = "AMD FidelityFX FSR 3.1 Frame Generation Active";
     } else if (!strcmp(cur_fg, "xefg")) {
         fg_note = "Intel XeSS Frame Generation Active";
-    } else if (!strcmp(cur_fg, "msm_fg")) {
-        fg_note = "Nodix Compute Optical Flow Active";
     }
     opt_choice_list("DKB_FG_MODE", UI_MENU_FG_MODE, fg_gen_vals, fg_gen_names, 5, UI_MENU_FG_MODE_DESC, -1, fg_note);
 
@@ -770,7 +739,7 @@ static void tab_screen(float scale) {
         }
 
         opt_toggle("DKB_FG_STILL", UI_MENU_LOD_GUARD, UI_MENU_LOD_GUARD_DESC); // Still Pixels / HUD Guard
-        opt_slider("DKB_FG_FLOW", UI_MENU_SHARPNESS, 10, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
+        opt_slider("DKB_FG_FLOW", UI_MENU_FG_FLOW, 10, 100, UI_MENU_FG_FLOW_DESC, 5, "%.0f %%");
     }
 
     // Low Latency (Strictly mutually exclusive per GPU vendor to prevent conflicts)
@@ -1149,16 +1118,12 @@ static char g_perf_upscaler[64];
 static char g_perf_line2[160];
 static char g_perf_battery[24];
 static char g_perf_fg_badge[32];
-static char g_perf_nr_badge[48];
 static int  g_perf_theme;                // 0: NVIDIA green, 1: AMD red, 2: Cyber cyan, 3: Intel blue
-static bool g_perf_nr_active;
 static uint32_t g_dt_ring[1000];
 static int g_dt_count = 0;
 static int g_dt_head = 0;
 static char g_perf_1pct_num[32];
 static char g_perf_01pct_num[32];
-static double g_perf_1pct_fps = 0.0;
-static double g_perf_01pct_fps = 0.0;
 
 static int perf_mode_of(const char *s) { return !strcmp(s, "full") ? 2 : !strcmp(s, "fps") ? 1 : 0; }
 
@@ -1224,22 +1189,19 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
         if (g_dt_count < 1000) g_dt_count++;
 
         if (g_perf_win_ns >= 500000000ull) {
-            int fgm = vk_fg_active_multiplier();
             double base_fps = (g_perf_frames * 1e9) / (double)g_perf_win_ns;
             double base_ms = ((double)g_perf_win_ns / (double)g_perf_frames) / 1e6;
 
-            double eff_mult = (fgm == 2) ? 1.72
-                            : (fgm == 3) ? 2.38
-                            : (fgm == 4) ? 2.92
-                            : (fgm >= 6) ? 3.82 : 1.0;
-            double eff_fps = (fgm > 1) ? (base_fps * eff_mult) : base_fps;
+            int fgm = vk_fg_active_multiplier();
+            double eff_fps = (fgm > 1) ? (base_fps * fgm) : base_fps;
             double eff_ms = (eff_fps > 0) ? (1000.0 / eff_fps) : base_ms;
 
             if (fgm > 1) {
                 const char *fgm_mode = cfg_value("DKB_FG_MODE");
-                const char *fgt = (!strcmp(fgm_mode, "dlss_fg") && vk_gpu_is_nvidia()) ? "DLSS FG"
-                                : (!strcmp(fgm_mode, "xefg") && vk_gpu_is_intel()) ? "XeFG"
-                                : (!strcmp(fgm_mode, "fsr4_fg") && vk_gpu_is_rx9000()) ? "FSR4 FG" : "FSR3 FG";
+                const char *fgt = !strcmp(fgm_mode, "msm_fg") ? "MSM-FG"
+                                : (!strcmp(fgm_mode, "dlss_fg") && vk_gpu_is_nvidia()) ? "DLSS FG"
+                                : !strcmp(fgm_mode, "xefg") ? "XeFG"
+                                : "FSR3 FG";
                 snprintf(g_perf_fg_badge, sizeof g_perf_fg_badge, "%s %dx", fgt, fgm);
                 snprintf(g_perf_fps_num, sizeof g_perf_fps_num, "%.0f FPS (Base %.0f)", eff_fps, base_fps);
             } else {
@@ -1271,53 +1233,43 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
                 uint32_t dt_1p = sorted_dt[idx_1p];
                 uint32_t dt_01p = sorted_dt[idx_01p];
 
-                double low_1p = (dt_1p > 0 ? (1e9 / (double)dt_1p) : base_fps) * (fgm > 1 ? eff_mult : 1.0);
-                double low_01p = (dt_01p > 0 ? (1e9 / (double)dt_01p) : base_fps) * (fgm > 1 ? eff_mult : 1.0);
-                g_perf_1pct_fps = low_1p;
-                g_perf_01pct_fps = low_01p;
+                double low_1p = (dt_1p > 0 ? (1e9 / (double)dt_1p) : base_fps) * (fgm > 1 ? fgm : 1.0);
+                double low_01p = (dt_01p > 0 ? (1e9 / (double)dt_01p) : base_fps) * (fgm > 1 ? fgm : 1.0);
                 snprintf(g_perf_1pct_num, sizeof g_perf_1pct_num, "1%% %.0f", low_1p);
                 snprintf(g_perf_01pct_num, sizeof g_perf_01pct_num, "0.1%% %.0f", low_01p);
             } else {
-                g_perf_1pct_fps = eff_fps;
-                g_perf_01pct_fps = eff_fps;
                 snprintf(g_perf_1pct_num, sizeof g_perf_1pct_num, "1%% %.0f", eff_fps);
                 snprintf(g_perf_01pct_num, sizeof g_perf_01pct_num, "0.1%% %.0f", eff_fps);
             }
 
             const char *up = cfg_value("DKB_UPSCALER");
-            bool is_dlaa = cfg_bool("DKB_DLAA") || !strcmp(cfg_value("DKB_UPSCALER_PRESET"), "native");
-            bool is_dlss = !strcmp(up, "dlss");
-            bool is_xess = !strcmp(up, "xess");
-            bool is_fsr3 = !strcmp(up, "fsr3");
+            bool is_smrs = !strcmp(up, "smrs");
             bool is_fsr = !strcmp(up, "fsr");
-
-            unsigned out[2], scene[2];
-            res_sizes(out, scene);
-            bool is_upscale = (scene[0] > 0 && out[0] > 0) ? (scene[0] < out[0]) : strcmp(cfg_value("DKB_RENDER_SCALE"), "100") != 0;
-
-            if (is_dlss) {
-                g_perf_theme = 0;
-                const char *preset = cfg_value("DKB_DLSS_PRESET");
-                char pbuf[16];
-                if (preset && !strncasecmp(preset, "preset_", 7)) {
-                    char c = preset[7];
-                    if (c >= 'a' && c <= 'z') c -= 32;
-                    snprintf(pbuf, sizeof pbuf, "(%c)", c);
-                } else snprintf(pbuf, sizeof pbuf, "(%s)", (preset && preset[0]) ? preset : "M");
-                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "%s %s", (is_dlaa || !is_upscale) ? "DLAA 4.5" : "DLSS 4.5", pbuf);
-            } else if (is_xess) {
-                g_perf_theme = 3;
-                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "XeSS 1.3 (%s)", cfg_value("DKB_UPSCALER_PRESET"));
-            } else if (is_fsr3) {
-                g_perf_theme = 1;
-                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "FSR 3.1 (%s)", cfg_value("DKB_UPSCALER_PRESET"));
+            if (is_smrs) {
+                g_perf_theme = 2;
+                const char *p = cfg_value("DKB_UPSCALER_PRESET");
+                const char *op = cfg_value("DKB_OPERATION_MODE");
+                bool is_hh = (op && !strcmp(op, "handheld"));
+                const char *plabel = !strcmp(p, "native") ? "Native DLAA (1620p)"
+                                   : !strcmp(p, "quality") ? "Quality (1620p)"
+                                   : !strcmp(p, "balanced") ? "Balanced (1080p)"
+                                   : !strcmp(p, "performance") ? "Perf (1080p)"
+                                   : !strcmp(p, "ultra_performance") ? "UltraP (1080p)"
+                                   : is_hh ? "Handheld 1080p" : "Docked 1620p";
+                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "Nodix SMRS [%s]", plabel);
             } else if (is_fsr) {
                 g_perf_theme = 1;
                 snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "FSR 1.0 (EASU)");
+            } else if (!strcmp(up, "bilinear")) {
+                g_perf_theme = 2;
+                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "Bilinear");
             } else {
                 g_perf_theme = 2;
-                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "Native");
+                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "Native 1:1");
             }
+
+            unsigned out[2], scene[2];
+            res_sizes(out, scene);
 
             char line2[64] = {0};
             if (scene[0] > 0 && out[0] > 0 && scene[0] < out[0]) {
@@ -1398,17 +1350,14 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
     snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
-    if (!strcmp(cfg_value("DKB_UPSCALER"), "dlss")) {
-        if (!strcmp(cfg_value("DKB_DLAA"), "1") || !strcmp(cfg_value("DKB_UPSCALER_PRESET"), "native")) {
-            snprintf(v[3], sizeof v[3], "NVIDIA DLAA (100%%)");
-        } else {
-            snprintf(v[3], sizeof v[3], "NVIDIA DLSS 4.5 (%s, %s%%)", cfg_value("DKB_DLSS_PRESET"), cfg_value("DKB_RENDER_SCALE"));
-        }
-    } else if (!strcmp(cfg_value("DKB_UPSCALER"), "xess")) {
-        snprintf(v[3], sizeof v[3], "Intel XeSS 1.3 (%s)", cfg_value("DKB_UPSCALER_PRESET"));
-    } else if (!strcmp(cfg_value("DKB_UPSCALER"), "fsr3")) {
+    if (!strcmp(cfg_value("DKB_UPSCALER"), "smrs")) {
         int s = cfg_int("DKB_SHARPNESS");
-        snprintf(v[3], sizeof v[3], "AMD FSR 3.1 (%d%%, %s)", s < 0 ? 0 : s > 100 ? 100 : s, cfg_value("DKB_UPSCALER_PRESET"));
+        const char *p = cfg_value("DKB_UPSCALER_PRESET");
+        const char *op = cfg_value("DKB_OPERATION_MODE");
+        bool is_hh = (op && !strcmp(op, "handheld"));
+        snprintf(v[3], sizeof v[3], "Nodix SMRS (%s, %s, %d%% Sharp)",
+                 is_hh ? "Handheld 1080p" : "Docked 1620p",
+                 p ? p : "Quality", s < 0 ? 0 : s > 100 ? 100 : s);
     } else if (t->scaler == 2) {
         int s = cfg_int("DKB_SHARPNESS");
         snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
@@ -1430,7 +1379,10 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     int fg_mult = vk_fg_active_multiplier();
     const char *fg_m = cfg_value("DKB_FG_MODE");
     if (fg_mult > 1 && fg_m && strcmp(fg_m, "off") != 0) {
-        const char *gen = !strcmp(fg_m, "dlss_fg") ? "DLSS MFG" : !strcmp(fg_m, "fsr3_fg") ? "FSR 3.1 FG" : !strcmp(fg_m, "xefg") ? "XeSS MFG" : "MSM-FG 1.1";
+        const char *gen = !strcmp(fg_m, "msm_fg") ? "Nodix Super Motion"
+                        : !strcmp(fg_m, "dlss_fg") ? "DLSS MFG"
+                        : !strcmp(fg_m, "fsr3_fg") ? "FSR 3.1 FG"
+                        : !strcmp(fg_m, "xefg") ? "XeSS MFG" : "Super Motion";
         snprintf(v[5], sizeof v[5], "%s (%dx Active)", gen, fg_mult);
     } else {
         snprintf(v[5], sizeof v[5], "Off");

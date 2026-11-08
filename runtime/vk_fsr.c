@@ -167,8 +167,8 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
     if (sharp < 0) sharp = 0;
     if (sharp > 100) sharp = 100;
 
-    // When output is same size as or smaller than input, bypass FSR (bilinear blit is superior and 0 ms)
-    if (dw <= (uint32_t)cw && dh <= (uint32_t)ch) return 0;
+    // When output is strictly smaller than input (downsampling), or 1:1 with sharpness off, bypass FSR
+    if (dw < (uint32_t)cw || dh < (uint32_t)ch || (dw == (uint32_t)cw && dh == (uint32_t)ch && sharp <= 0)) return 0;
 
     VkCtx *c = vk_ctx();
     if (!F.tried) init(c);

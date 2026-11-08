@@ -23,11 +23,6 @@
 #include "gfx.h"
 #include "gfx_wsys.h"
 #include "nvn_api.h"
-#include "nvn_api_dlss.h"
-#include "vk_dlaa.h"
-#include "vk_xess.h"
-#include "vk_fsr3.h"
-#include "vk_smaa.h"
 #include "ui/menu.h"
 #include "vk.h"
 #include "platform/platform.h"
@@ -405,46 +400,9 @@ void vk_antilag_sleep(void) {
     g_antilag_update(c->device, &ad);
 }
 
-// ---- Hardware-Aware Frame Generation (DLSS FG Presets A/B/C + MFG 2x/4x/6x, FSR 3.1 FG, FSR 4 AI FG)
+// ---- Hardware-Aware Frame Generation (Nodix Super Motion MSM-FG, DLSS MFG, FSR 3.1 FG, XeSS FG)
 static int g_fg_mult = 1;
 static char g_fg_logged[160];
-static VkImage g_fg_hist;
-static VmaAllocation g_fg_hist_alloc;
-static VkFormat g_fg_hist_fmt;
-static uint32_t g_fg_hist_w, g_fg_hist_h;
-static int g_fg_hist_valid __attribute__((unused));
-
-static void free_fg_history(void) {
-    VkCtx *c = vk_ctx();
-    if (g_fg_hist && c) vmaDestroyImage(c->vma, g_fg_hist, g_fg_hist_alloc);
-    g_fg_hist = VK_NULL_HANDLE;
-    g_fg_hist_alloc = VK_NULL_HANDLE;
-    g_fg_hist_w = g_fg_hist_h = 0;
-    g_fg_hist_valid = 0;
-}
-
-static int __attribute__((unused)) ensure_fg_history(uint32_t w, uint32_t h, VkFormat fmt) {
-    VkCtx *c = vk_ctx();
-    if (!c || !w || !h) return 0;
-    if (g_fg_hist && g_fg_hist_w == w && g_fg_hist_h == h && g_fg_hist_fmt == fmt) return 1;
-    free_fg_history();
-    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = fmt,
-                            .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
-                            .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                     VK_IMAGE_USAGE_SAMPLED_BIT,
-                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (vmaCreateImage(c->vma, &ci, &ai, &g_fg_hist, &g_fg_hist_alloc, NULL) != VK_SUCCESS) {
-        g_fg_hist = VK_NULL_HANDLE;
-        return 0;
-    }
-    g_fg_hist_w = w;
-    g_fg_hist_h = h;
-    g_fg_hist_fmt = fmt;
-    g_fg_hist_valid = 0;
-    return 1;
-}
 
 static void fg_apply_locked(void) {
     VkCtx *c = vk_ctx();
@@ -456,10 +414,9 @@ static void fg_apply_locked(void) {
         const char *fg_en = cfg_value("DKB_FRAME_GEN");
         if (!fg_en || !*fg_en) fg_en = cfg_value("TOTK_FRAME_GEN");
         if (fg_en && (!strcmp(fg_en, "1") || !strcmp(fg_en, "on"))) {
-            mode = c->gpu_is_nvidia ? "dlss_fg" : "fsr3_fg";
+            mode = "msm_fg";
         } else {
             __atomic_store_n(&g_fg_mult, 1, __ATOMIC_RELAXED);
-            g_fg_hist_valid = 0;
             if (strcmp(g_fg_logged, "off")) {
                 snprintf(g_fg_logged, sizeof g_fg_logged, "off");
                 vk_upscaler_log("SUPER MOTION: OFF");
@@ -471,12 +428,7 @@ static void fg_apply_locked(void) {
     const char *hw_gate = "OK";
     if (!strcmp(mode, "dlss_fg") && !c->gpu_is_nvidia) {
         eff_mode = "msm_fg";
-        hw_gate = "FALLBACK (DLSS MFG requires NVIDIA RTX GPU -> running Nodix MSM-FG)";
-    } else if (!strcmp(mode, "fsr3_fg")) {
-        if (!vk_fsr3_fg_available()) {
-            eff_mode = "msm_fg";
-            hw_gate = "FALLBACK (AMD FSR 3.1 FG DLL not found -> running universal Nodix MSM-FG 1.1 Compute)";
-        }
+        hw_gate = "FALLBACK (DLSS MFG requires NVIDIA RTX GPU -> running Nodix Super Motion)";
     }
     int mult = !strcmp(mult_s, "6x") ? 6 : !strcmp(mult_s, "4x") ? 4 : !strcmp(mult_s, "3x") ? 3 : 2;
     if (mult > 2 && !strcmp(eff_mode, "dlss_fg") && !c->gpu_is_rtx50) {
@@ -488,22 +440,16 @@ static void fg_apply_locked(void) {
     snprintf(sig, sizeof sig, "%s|%s|%d|%s", eff_mode, preset, mult, hw_gate);
     if (strcmp(sig, g_fg_logged)) {
         snprintf(g_fg_logged, sizeof g_fg_logged, "%s", sig);
-        const char *mname = !strcmp(eff_mode, "dlss_fg") ? (c->gpu_is_rtx50 && mult > 2 ? "NVIDIA DLSS 4.5 Multi-Frame Gen"
-                                                                                        : "NVIDIA DLSS Frame Generation")
+        const char *mname = !strcmp(eff_mode, "dlss_fg") ? (c->gpu_is_rtx50 && mult > 2 ? "NVIDIA DLSS 4.5 Multi-Frame Gen" : "NVIDIA DLSS Frame Generation")
                           : !strcmp(eff_mode, "xefg") ? "Intel XeSS Frame Generation"
                           : !strcmp(eff_mode, "fsr3_fg") ? "AMD FidelityFX FSR 3.1 Frame Generation"
-                          : !strcmp(eff_mode, "msm_fg") ? "Nodix Super Motion (MSM-FG 1.1 Compute)"
-                          : "FSR Frame Generation";
+                          : "Nodix Super Motion (SMFG 1.3 Compute)";
         const char *pname = !strcmp(preset, "preset_c") ? "Performance · Preset C"
                           : !strcmp(preset, "preset_b") ? "Quality · Preset B (Optical Flow)"
                           : !strcmp(preset, "preset_a") ? "Balanced · Preset A (Transformer)"
                           : "Driver's choice";
-        vk_upscaler_log("SUPER MOTION: ENGAGED -> %s | Profile='%s' | Multiplier=%dx (%d generated frame(s) per render) | "
-                        "HardwareCheck='%s' | LowLatency='%s' | GPU='%s'",
-                        mname, pname, mult, mult - 1, hw_gate,
-                        !strcmp(eff_mode, "dlss_fg") ? "NVIDIA Reflex (VK_NV_low_latency2)"
-                                                     : "Low Latency Reflex / Anti-Lag",
-                        c->props.deviceName);
+        vk_upscaler_log("SUPER MOTION: ENGAGED -> %s | Profile='%s' | Multiplier=%dx (%d generated frame(s) per render) | HardwareCheck='%s' | GPU='%s'",
+                        mname, pname, mult, mult - 1, hw_gate, c->props.deviceName);
     }
 }
 
@@ -905,48 +851,19 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
-    // DLSS / XeSS / FSR 3.1 / FSR 1 / Bilinear upscaler:
-    const char *cfg_upscaler = cfg_value("DKB_UPSCALER");
-    if (!cfg_upscaler || !*cfg_upscaler) cfg_upscaler = cfg_value("TOTK_UPSCALER");
-    int dlss_active = (cfg_upscaler && !strcmp(cfg_upscaler, "dlss"));
-
-    // 1. Colour adjustment (DKB_COLOR_*, vk_color.c): an adjusted copy of the crop takes the game image's place below
+    // Colour adjustment (DKB_COLOR_*, vk_color.c): an adjusted copy of the crop takes the game image's place below
     VkImage graded = general ? vk_color_record(cb, slot, src, fmt, rect) : VK_NULL_HANDLE;
     const int grect[4] = {0, 0, cw, ch};
-    VkImage smaa_src = graded ? graded : src;
-    VkFormat smaa_fmt = graded ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
-    const int *smaa_rect = graded ? grect : rect;
-    int smaa_w = graded ? cw : w;
-    int smaa_h = graded ? ch : h;
-
-    // 2. Subpixel Morphological Anti-Aliasing (DKB_SMAA, vk_smaa.c):
-    // Automatically bypassed when DLSS is active (DLSS performs built-in temporal anti-aliasing / DLAA)
-    VkImage smaa_img = (general && !dlss_active) ? vk_smaa_record(cb, slot, smaa_src, smaa_fmt, smaa_w, smaa_h, smaa_rect) : VK_NULL_HANDLE;
-
-    int intermediate = (graded || smaa_img);
-    VkImage psrc = smaa_img ? smaa_img : smaa_src;
-    VkFormat pfmt = intermediate ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
-    const int *prect = intermediate ? grect : rect;
-    int pw = intermediate ? cw : w;
-    int ph = intermediate ? ch : h;
-
+    VkImage psrc = graded ? graded : src;
+    VkFormat pfmt = graded ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
+    const int *prect = graded ? grect : rect;
+    // SMRS / FSR (DKB_UPSCALER) when the picture's rectangle is larger than the crop; else the bilinear blit
+    const char *cfg_upscaler = cfg_value("DKB_UPSCALER");
     int upscaler_done = 0;
-
-    if (general && !strcmp(cfg_upscaler, "dlss")) {
-        upscaler_done = vk_dlss_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
-    } else if (general && !strcmp(cfg_upscaler, "xess")) {
-        upscaler_done = vk_xess_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
-    } else if (general && (!strcmp(cfg_upscaler, "fsr3") || !strcmp(cfg_upscaler, "fsr3.1"))) {
-        upscaler_done = vk_fsr3_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
-        if (!upscaler_done) {
-            // Enhanced FSR fallback
-            upscaler_done = vk_fsr_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
-        }
-    } else if (general && (!strcmp(cfg_upscaler, "fsr") || !strcmp(cfg_upscaler, "fsr1"))) {
-        upscaler_done = vk_fsr_record(cb, slot, psrc, pfmt, pw, ph, prect, dst, to);
+    if (general && (!strcmp(cfg_upscaler, "smrs") || !strcmp(cfg_upscaler, "fsr"))) {
+        upscaler_done = vk_fsr_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, dst, to);
     }
-
-    g_scaler = (!strcmp(cfg_upscaler, "dlss") && upscaler_done) ? 3 : upscaler_done ? 2 : (cw != to[2] || ch != to[3]);
+    g_scaler = upscaler_done ? 2 : cw != to[2] || ch != to[3];
     if (!upscaler_done) {
         if (general)   // a GENERAL source (vk_texture.c images): earlier submissions' writes become visible to the blit here
             sync_barrier(cb, psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -1021,23 +938,10 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         g_flip_on = 1;
         g_flip_idx = idx;
         if (!defer) flip_locked();
-        static uint64_t fg_log_frame = 0;
-        uint64_t fnum = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
-        if (fnum - fg_log_frame >= 600) {
-            fg_log_frame = fnum;
-            int mult = vk_fg_active_multiplier();
-            const char *mode = cfg_value("DKB_FG_MODE");
-            if (mult > 1 && mode && strcmp(mode, "off") != 0) {
-                rt_log("super_motion: active generator=%s, multiplier=%dx, presents=%llu",
-                       !strcmp(mode, "dlss_fg") ? "NVIDIA DLSS MFG" : !strcmp(mode, "xefg") ? "Intel XeSS MFG" : "Nodix MSM-FG 1.1",
-                       mult, (unsigned long long)fnum);
-            }
-        }
     } else {
         vk_device_fault_report(r);
         rt_log("gfx: present submit failed (%d)", (int)r);
     }
-    vk_dlaa_frame();
     g_frame++;
     if (cap) {
         vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull);
@@ -1084,9 +988,6 @@ void gfx_window_release_vk(void) {
         g_flip_on = 0;   // its blit is done (device idle); the swapchain goes away unpresented
         menu_vk_release();
         vk_fsr_release();
-        vk_fsr3_release();
-        vk_xess_release();
-        vk_smaa_release();
         vk_color_release();
         free_capture();
         free_thumbs();
@@ -1103,9 +1004,8 @@ void gfx_window_release_vk(void) {
         if (g_sc) vkDestroySwapchainKHR(c->device, g_sc, NULL);
         if (g_surface) vkDestroySurfaceKHR(c->instance, g_surface, NULL);
         if (g_reflex_sem) vkDestroySemaphore(c->device, g_reflex_sem, NULL);
-    free_fg_history();
-    g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_reflex_sem = VK_NULL_HANDLE; g_sc_n = 0;
-    g_reflex_mode = -1;
+        g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_reflex_sem = VK_NULL_HANDLE; g_sc_n = 0;
+        g_reflex_mode = -1;
         g_started = 0;     // the window and its thread stay; the next gfx_window_start makes a new surface
     }
     plat_rmutex_unlock(&g_pl);

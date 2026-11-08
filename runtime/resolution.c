@@ -55,21 +55,17 @@ static struct {
 static void decide(void) {
     static char last_out[64] = {0};
     static char last_scale[64] = {0};
-    static char last_preset[64] = {0};
 
     const char *o = cfg_value("TOTK_OUTPUT_RES");
     const char *s = cfg_value("TOTK_RENDER_SCALE");
-    const char *p = cfg_value("TOTK_UPSCALER_PRESET");
     if (!o) o = "1920x1080";
     if (!s) s = "game";
-    if (!p) p = "native";
 
-    if (R.decided && !strcmp(o, last_out) && !strcmp(s, last_scale) && !strcmp(p, last_preset))
+    if (R.decided && !strcmp(o, last_out) && !strcmp(s, last_scale))
         return;
     R.decided = 1;
     snprintf(last_out, sizeof last_out, "%s", o);
     snprintf(last_scale, sizeof last_scale, "%s", s);
-    snprintf(last_preset, sizeof last_preset, "%s", p);
 
     R.ow = BASE_W;
     R.oh = BASE_H;
@@ -82,25 +78,7 @@ static void decide(void) {
         rt_log("resolution: TOTK_OUTPUT_RES=%s is not <width>x<height> in 1280x720..7680x4320; 1920x1080", o);
     }
 
-    double k = 1.0;
-    if (!strcmp(p, "ultra_performance")) {
-        k = 0.3333333333333333;
-        R.scene_set = 1;
-    } else if (!strcmp(p, "performance")) {
-        k = 0.50;
-        R.scene_set = 1;
-    } else if (!strcmp(p, "balanced")) {
-        k = 0.58;
-        R.scene_set = 1;
-    } else if (!strcmp(p, "quality")) {
-        k = 0.6666666666666666;
-        R.scene_set = 1;
-    } else if (!strcmp(p, "native")) {
-        k = 1.0;
-    } else {
-        k = 5.0 / 6.0;
-    }
-
+    double k = 5.0 / 6.0;
     if (strcmp(s, "game")) {
         char *end;
         double pct = strtod(s, &end);
@@ -108,7 +86,7 @@ static void decide(void) {
             k = pct / 100.0;
             R.scene_set = 1;
         } else {
-            rt_log("resolution: TOTK_RENDER_SCALE=%s is not game or a percentage 25..400; using preset", s);
+            rt_log("resolution: TOTK_RENDER_SCALE=%s is not game or a percentage 25..400; using game", s);
         }
     }
     double sw = R.ow * k, sh = R.oh * k;

@@ -10,10 +10,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "vk.h"
-#include "vk_xess.h"
-#include "vk_fsr3.h"
 #include "platform/platform.h"
-#include "nvn_api_dlss.h"
 
 static VkCtx g_vk;
 static int g_ready;
@@ -83,7 +80,6 @@ static int create_instance(void) {
     }
     if (utils) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     g_vk.debug_utils = utils;
-    vk_dlss_instance_exts(ext, &n_ext, 24);
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "TotK Recomp",
                              .pEngineName = "TotK Recomp", .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
@@ -321,7 +317,6 @@ static int create_device(void) {
         gpl_link = tail;
         CHAIN(gpl, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT);
     }
-    vk_dlss_device_exts(ep, ne, ext, &n_ext, 48);
     free(ep);
 
     // The driver fills the chain with what it supports; the same chain then enables all of it (robustBufferAccess
@@ -416,7 +411,7 @@ static int create_device(void) {
 static long g_errors_total;     // outlives the device so the probe can print it after vk_shutdown
 
 static void destroy_all(void) {
-    vk_fsr3_release(); vk_xess_release(); gfx_window_release_vk();
+    gfx_window_release_vk();
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
     if (g_vk.device) vk_clear_shutdown(g_vk.device);
     if (g_vk.device) vk_astc_release();
@@ -441,7 +436,7 @@ int vk_init(void) {
     plat_mutex_lock(&g_lock);
     if (!g_ready) {
         memset(&g_vk, 0, sizeof g_vk);
-        if (create_instance() && pick_device() && create_device()) { g_ready = 1; vk_headroom_start(); vk_dlss_init(); vk_xess_init(); vk_fsr3_init(); }
+        if (create_instance() && pick_device() && create_device()) { g_ready = 1; vk_headroom_start(); }
         else destroy_all();
     }
     int ok = g_ready;

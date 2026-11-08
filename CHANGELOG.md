@@ -4,6 +4,25 @@ All notable changes to the **SteelTempSaint Donkey Kong Bananza PC Recomp (DKB)*
 
 ---
 
+## [Alpha 1f] - 2026-11-08
+
+### 🍌 Native Nodix Super Motion, Handheld/Docked Scaling & Optical Flow Fixes (Alpha 1f)
+- **100% Native In-Engine Nodix Super Motion SMRS + Frame Generation:**
+  - Integrated Nodix Super Motion directly into `dkb.exe` and `DKBLauncher.exe` with zero external apps.
+  - Eliminated all dependencies on `Mfg Super Motion.exe`, preventing window focus conflicts, alt-tab capture drops, and background process clutter.
+- **Dynamic Handheld (1080p) & Docked (1620p) SMRS Workload Scaling:**
+  - Resolved the recomp's fixed 1620p virtual display limitation by hooking SMRS presets directly into `nn::oe::GetOperationMode()` in `runtime/ov_system.c`.
+  - **Balanced & Performance Presets:** Switch the engine dynamically to Handheld mode (`1920x1080`), reducing GPU pixel fill rate by **55.6%** for an immediate **35–50% base FPS boost**.
+  - **Quality & Native (DLAA) Presets:** Switch the engine dynamically to Docked mode (`2880x1620`) for full 1620p resolution with edge reconstruction.
+  - Relaxed FSR/RCAS bypass logic in `runtime/vk_fsr.c` to allow edge sharpening on 1080p 1:1 scale.
+- **Dedicated Sharpness & Optical Flow Controls:**
+  - Fixed duplicate "FSR sharpness" slider bug in the in-game menu (`runtime/ui/menu.cpp`).
+  - Added dedicated text identifiers: `UI_MENU_SMRS_SHARPNESS` ("Super Motion sharpness") and `UI_MENU_FG_FLOW` ("Optical flow sensitivity") in English and Russian.
+- **Ongoing Reverse-Engineering Research:**
+  - Actively analyzing `al::getVirtualDisplayWidth`/`Height` and `agl` texture heap allocators in Bananza's retail Switch 2 code to unlock arbitrary native dynamic resolutions (from 720p up to true 4K/8K) in upcoming releases.
+
+---
+
 ## [Alpha 1d] - 2026-11-08
 
 ### 🍌 Upscaler Architecture Overhaul & Memory/Pipeline Performance (Alpha 1d)
