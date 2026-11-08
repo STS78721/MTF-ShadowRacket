@@ -29,6 +29,7 @@
 #include "nvn_indirect_reset.h"
 #include "vk.h"
 #include "vk_exec.h"
+#include "vk_dlaa.h"
 #include "platform/platform.h"
 
 #define MAX_BINDINGS 128
@@ -2733,6 +2734,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, &s, p, info);
     vk_exec_oq_draw(ex);
+    vk_dlaa_draw(ex);
     return 1;
 }
 

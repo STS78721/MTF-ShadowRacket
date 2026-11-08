@@ -16,6 +16,8 @@
 #include "nvn_obj.h"
 #include "platform/platform.h"
 #include "vk.h"
+#include "vk_ao.h"
+#include "vk_dlaa.h"
 
 // Forward declaration of FSR fallback
 extern int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh,
@@ -603,7 +605,7 @@ static int ensure_dlss_images(VkCtx *c, uint32_t ow, uint32_t oh, uint32_t iw, u
     VkImageCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
                              .format = VK_FORMAT_D32_SFLOAT, .extent = {iw, ih, 1}, .mipLevels = 1,
                              .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                             .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+                             .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
     if (vmaCreateImage(c->vma, &dci, &ai, &D.depth_img, &D.depth_alloc, NULL) != VK_SUCCESS) return 0;
     VkImageViewCreateInfo dvi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = D.depth_img,
                                  .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_D32_SFLOAT,
@@ -614,7 +616,7 @@ static int ensure_dlss_images(VkCtx *c, uint32_t ow, uint32_t oh, uint32_t iw, u
     VkImageCreateInfo mci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
                              .format = VK_FORMAT_R16G16_SFLOAT, .extent = {iw, ih, 1}, .mipLevels = 1,
                              .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                             .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+                             .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
     if (vmaCreateImage(c->vma, &mci, &ai, &D.mv_img, &D.mv_alloc, NULL) != VK_SUCCESS) return 0;
     VkImageViewCreateInfo mvi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = D.mv_img,
                                  .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R16G16_SFLOAT,
@@ -650,9 +652,10 @@ static int dlss_perf_quality(void) {
     return 2;
 }
 
-static void dlss_barrier(VkCommandBuffer cb, VkImage img, VkImageLayout old_layout, VkImageLayout new_layout,
-                         VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
-                         VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+static void dlss_barrier_aspect(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect,
+                                VkImageLayout old_layout, VkImageLayout new_layout,
+                                VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                                VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
     VkImageMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                .srcStageMask = src_stage, .srcAccessMask = src_access,
                                .dstStageMask = dst_stage, .dstAccessMask = dst_access,
@@ -660,9 +663,15 @@ static void dlss_barrier(VkCommandBuffer cb, VkImage img, VkImageLayout old_layo
                                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                .image = img,
-                               .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+                               .subresourceRange = {aspect, 0, 1, 0, 1}};
     VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b};
     vkCmdPipelineBarrier2(cb, &dep);
+}
+
+static void dlss_barrier(VkCommandBuffer cb, VkImage img, VkImageLayout old_layout, VkImageLayout new_layout,
+                         VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                         VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    dlss_barrier_aspect(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, old_layout, new_layout, src_stage, src_access, dst_stage, dst_access);
 }
 
 int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int sw, int sh,
@@ -753,6 +762,56 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
     dlss_barrier(cb, D.out_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+
+    // Fetch active scene depth from live 3D passes
+    VkImage scene_depth = VK_NULL_HANDLE;
+    VkFormat depth_fmt = VK_FORMAT_UNDEFINED;
+    uint32_t sdw = 0, sdh = 0;
+    int have_depth = vk_ao_get_depth(&scene_depth, &depth_fmt, &sdw, &sdh);
+
+    if (have_depth && scene_depth) {
+        if (depth_fmt == VK_FORMAT_D32_SFLOAT && sdw == (uint32_t)cw && sdh == (uint32_t)ch) {
+            dlss_barrier_aspect(cb, scene_depth, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+            dlss_barrier_aspect(cb, D.depth_img, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            VkImageCopy ic = {.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                              .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                              .extent = {(uint32_t)cw, (uint32_t)ch, 1}};
+            vkCmdCopyImage(cb, scene_depth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           D.depth_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+            dlss_barrier_aspect(cb, scene_depth, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT);
+            dlss_barrier_aspect(cb, D.depth_img, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        }
+    }
+
+    // Generate genuine camera motion vectors via VP reprojection
+    int mv_ok = 0;
+    if (have_depth && scene_depth) {
+        mv_ok = vk_dlaa_record_mv(cb, D.mv_img, D.mv_view, scene_depth, (uint32_t)cw, (uint32_t)ch);
+    }
+    if (!mv_ok) {
+        dlss_barrier(cb, D.mv_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkClearColorValue cv = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        VkImageSubresourceRange srr = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cb, D.mv_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &srr);
+        dlss_barrier(cb, D.mv_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        D.reset = 1;
+    }
 
     NgxResourceVK rc = res_image(D.src_view, src, fmt, (uint32_t)cw, (uint32_t)ch, VK_IMAGE_ASPECT_COLOR_BIT, 0);
     NgxResourceVK ro = res_image(D.out_view, D.out_img, VK_FORMAT_R16G16B16A16_SFLOAT, dw, dh, VK_IMAGE_ASPECT_COLOR_BIT, 1);

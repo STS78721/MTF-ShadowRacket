@@ -24,6 +24,7 @@
 #include "gfx_wsys.h"
 #include "nvn_api.h"
 #include "nvn_api_dlss.h"
+#include "vk_dlaa.h"
 #include "vk_xess.h"
 #include "vk_fsr3.h"
 #include "vk_smaa.h"
@@ -1027,6 +1028,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         vk_device_fault_report(r);
         rt_log("gfx: present submit failed (%d)", (int)r);
     }
+    vk_dlaa_frame();
     g_frame++;
     if (cap) {
         vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull);

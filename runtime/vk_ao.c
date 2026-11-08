@@ -77,6 +77,16 @@ void vk_ao_note_depth(VkImage depth, VkFormat fmt, uint32_t w, uint32_t h) {
     A.last_depth_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
 }
 
+int vk_ao_get_depth(VkImage *out_depth, VkFormat *out_fmt, uint32_t *out_w, uint32_t *out_h) {
+    uint64_t cur = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (!A.last_depth || cur > A.last_depth_frame + 2) return 0;
+    if (out_depth) *out_depth = A.last_depth;
+    if (out_fmt) *out_fmt = A.last_depth_fmt;
+    if (out_w) *out_w = A.last_depth_w;
+    if (out_h) *out_h = A.last_depth_h;
+    return 1;
+}
+
 static void free_dynamic_images(VkCtx *c) {
     if (A.raw_ao_view) vkDestroyImageView(c->device, A.raw_ao_view, NULL);
     if (A.raw_ao_img) vmaDestroyImage(c->vma, A.raw_ao_img, A.raw_ao_alloc);
