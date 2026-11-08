@@ -412,7 +412,7 @@ static VkImage g_fg_hist;
 static VmaAllocation g_fg_hist_alloc;
 static VkFormat g_fg_hist_fmt;
 static uint32_t g_fg_hist_w, g_fg_hist_h;
-static int g_fg_hist_valid;
+static int g_fg_hist_valid __attribute__((unused));
 
 static void free_fg_history(void) {
     VkCtx *c = vk_ctx();
@@ -423,7 +423,7 @@ static void free_fg_history(void) {
     g_fg_hist_valid = 0;
 }
 
-static int ensure_fg_history(uint32_t w, uint32_t h, VkFormat fmt) {
+static int __attribute__((unused)) ensure_fg_history(uint32_t w, uint32_t h, VkFormat fmt) {
     VkCtx *c = vk_ctx();
     if (!c || !w || !h) return 0;
     if (g_fg_hist && g_fg_hist_w == w && g_fg_hist_h == h && g_fg_hist_fmt == fmt) return 1;
@@ -452,16 +452,20 @@ static void fg_apply_locked(void) {
     const char *mode = cfg_value("DKB_FG_MODE");
     const char *preset = cfg_value("DKB_FG_PRESET");
     const char *mult_s = cfg_value("DKB_FG_MULT");
-    const char *fg_en = cfg_value("DKB_FRAME_GEN");
-    if (!fg_en || !*fg_en) fg_en = cfg_value("TOTK_FRAME_GEN");
-    if ((fg_en && (!strcmp(fg_en, "0") || !strcmp(fg_en, "off"))) || !strcmp(mode, "off")) {
-        __atomic_store_n(&g_fg_mult, 1, __ATOMIC_RELAXED);
-        g_fg_hist_valid = 0;
-        if (strcmp(g_fg_logged, "off")) {
-            snprintf(g_fg_logged, sizeof g_fg_logged, "off");
-            vk_upscaler_log("SUPER MOTION: OFF");
+    if (!mode || !*mode || !strcmp(mode, "off")) {
+        const char *fg_en = cfg_value("DKB_FRAME_GEN");
+        if (!fg_en || !*fg_en) fg_en = cfg_value("TOTK_FRAME_GEN");
+        if (fg_en && (!strcmp(fg_en, "1") || !strcmp(fg_en, "on"))) {
+            mode = c->gpu_is_nvidia ? "dlss_fg" : "fsr3_fg";
+        } else {
+            __atomic_store_n(&g_fg_mult, 1, __ATOMIC_RELAXED);
+            g_fg_hist_valid = 0;
+            if (strcmp(g_fg_logged, "off")) {
+                snprintf(g_fg_logged, sizeof g_fg_logged, "off");
+                vk_upscaler_log("SUPER MOTION: OFF");
+            }
+            return;
         }
-        return;
     }
     const char *eff_mode = mode;
     const char *hw_gate = "OK";

@@ -571,6 +571,7 @@ static struct {
     VkImageView src_view;
     uint32_t buf_w, buf_h;
     uint32_t buf_in_w, buf_in_h;
+    int mv_cleared;
 } D;
 
 static void free_dlss_images(VkCtx *c) {
@@ -582,6 +583,7 @@ static void free_dlss_images(VkCtx *c) {
     if (D.mv_view) { vkDestroyImageView(c->device, D.mv_view, NULL); D.mv_view = VK_NULL_HANDLE; }
     if (D.mv_img) { vmaDestroyImage(c->vma, D.mv_img, D.mv_alloc); D.mv_img = VK_NULL_HANDLE; }
     D.buf_w = D.buf_h = D.buf_in_w = D.buf_in_h = 0;
+    D.mv_cleared = 0;
 }
 
 static int ensure_dlss_images(VkCtx *c, uint32_t ow, uint32_t oh, uint32_t iw, uint32_t ih) {
@@ -644,14 +646,17 @@ static unsigned dlss_hint_preset(void) {
     return 13;
 }
 
-static int dlss_perf_quality(void) {
-    const char *p = cfg_value("TOTK_UPSCALER_PRESET");
-    if (!p || !strcmp(p, "native")) return 5;
-    if (!strcmp(p, "quality")) return 2;
-    if (!strcmp(p, "balanced")) return 1;
-    if (!strcmp(p, "performance")) return 0;
-    if (!strcmp(p, "ultra_performance")) return 3;
-    return 2;
+static int dlss_perf_quality(uint32_t w, uint32_t ow) {
+    if (w >= ow) return 5; // DLAA 1:1
+    const char *p = cfg_value("DKB_UPSCALER_PRESET");
+    if (!p || !*p) p = cfg_value("TOTK_UPSCALER_PRESET");
+    if (p && !strcmp(p, "native")) return 5;
+    if (p && !strcmp(p, "quality")) return 2;
+    if (p && !strcmp(p, "balanced")) return 1;
+    if (p && !strcmp(p, "performance")) return 0;
+    if (p && !strcmp(p, "ultra_performance")) return 3;
+    double k = (double)w / ow;
+    return k >= 0.66 ? 2 : k >= 0.57 ? 1 : k >= 0.49 ? 0 : 3;
 }
 
 static void dlss_barrier_aspect(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect,
@@ -692,8 +697,8 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
         return vk_fsr_record(cb, slot, src, fmt, sw, sh, crop, dst, out);
     }
 
-    if (dw <= (uint32_t)cw && dh <= (uint32_t)ch) {
-        // When output is <= source, Vulkan hardware blit handles with 0 ms overhead and pristine supersampled sharpness
+    if (dw < (uint32_t)cw || dh < (uint32_t)ch) {
+        // When output is strictly smaller than source, Vulkan hardware blit handles downsampling with 0 ms overhead
         return 0;
     }
 
@@ -703,7 +708,7 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
     }
 
     unsigned pr = dlss_hint_preset();
-    int q = dlss_perf_quality();
+    int q = dlss_perf_quality((uint32_t)cw, dw);
 
     if (!D.feat || D.cur_in_w != (uint32_t)cw || D.cur_in_h != (uint32_t)ch ||
         D.cur_out_w != dw || D.cur_out_h != dh || D.cur_q != q || D.cur_pr != pr) {
@@ -723,7 +728,7 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
         p_setu(D.params, "OutWidth", dw);
         p_setu(D.params, "OutHeight", dh);
         p_seti(D.params, "PerfQualityValue", q);
-        p_seti(D.params, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 3) | (1 << 6));
+        p_seti(D.params, "DLSS.Feature.Create.Flags", (1 << 0) | (1 << 1) | (1 << 6));
         p_seti(D.params, "DLSS.Enable.Output.Subrects", 0);
         p_setu(D.params, "DLSS.Hint.Render.Preset.DLAA", pr);
         p_setu(D.params, "DLSS.Hint.Render.Preset.UltraQuality", pr);
@@ -781,40 +786,49 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
     int mv_ok = 0;
 
     if (have_depth && scene_depth && depth_fmt == VK_FORMAT_D32_SFLOAT) {
-        mv_ok = vk_dlaa_record_mv(cb, D.mv_img, D.mv_view, scene_depth, (uint32_t)cw, (uint32_t)ch);
-        if (mv_ok) {
-            uint32_t copy_w = sdw < (uint32_t)cw ? sdw : (uint32_t)cw;
-            uint32_t copy_h = sdh < (uint32_t)ch ? sdh : (uint32_t)ch;
-            if (copy_w > 0 && copy_h > 0) {
-                dlss_barrier_aspect(cb, scene_depth, VK_IMAGE_ASPECT_DEPTH_BIT,
-                                    VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
-                                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-                dlss_barrier_aspect(cb, D.depth_img, VK_IMAGE_ASPECT_DEPTH_BIT,
-                                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
-                                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-                VkImageCopy ic = {.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
-                                  .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
-                                  .extent = {copy_w, copy_h, 1}};
-                vkCmdCopyImage(cb, scene_depth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               D.depth_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
-                dlss_barrier_aspect(cb, scene_depth, VK_IMAGE_ASPECT_DEPTH_BIT,
-                                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-                                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT);
-                dlss_barrier_aspect(cb, D.depth_img, VK_IMAGE_ASPECT_DEPTH_BIT,
-                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-            }
+        uint32_t copy_w = sdw < (uint32_t)cw ? sdw : (uint32_t)cw;
+        uint32_t copy_h = sdh < (uint32_t)ch ? sdh : (uint32_t)ch;
+        if (copy_w > 0 && copy_h > 0) {
+            dlss_barrier_aspect(cb, scene_depth, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+            dlss_barrier_aspect(cb, D.depth_img, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            VkImageCopy ic = {.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                              .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                              .extent = {copy_w, copy_h, 1}};
+            vkCmdCopyImage(cb, scene_depth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           D.depth_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+            dlss_barrier_aspect(cb, scene_depth, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT);
+            dlss_barrier_aspect(cb, D.depth_img, VK_IMAGE_ASPECT_DEPTH_BIT,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         }
+        mv_ok = vk_dlaa_record_mv(cb, D.mv_img, D.mv_view, scene_depth, (uint32_t)cw, (uint32_t)ch);
+    } else {
+        dlss_barrier_aspect(cb, D.depth_img, VK_IMAGE_ASPECT_DEPTH_BIT,
+                            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+                            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkClearDepthStencilValue cd = {.depth = 1.0f, .stencil = 0};
+        VkImageSubresourceRange srr = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        vkCmdClearDepthStencilImage(cb, D.depth_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cd, 1, &srr);
+        dlss_barrier_aspect(cb, D.depth_img, VK_IMAGE_ASPECT_DEPTH_BIT,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     }
 
     if (!mv_ok) {
-        static int mv_cleared = 0;
-        if (!mv_cleared || D.reset) {
-            mv_cleared = 1;
+        if (!D.mv_cleared || D.reset) {
+            D.mv_cleared = 1;
             dlss_barrier(cb, D.mv_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
                          VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -825,6 +839,8 @@ int vk_dlss_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt,
                          VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         }
+    } else {
+        D.mv_cleared = 0;
     }
 
     NgxResourceVK rc = res_image(D.src_view, src, fmt, (uint32_t)cw, (uint32_t)ch, VK_IMAGE_ASPECT_COLOR_BIT, 0);
