@@ -217,7 +217,7 @@ void rt_write_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h)
     free(raw);
 }
 
-static void save_shot(const tex_t *t, const char *path) {
+static void save_shot(const tex_t *t, const int crop[4], const char *path) {
     int fmt = t->d.format;
     int bgra = fmt == NVN_FORMAT_BGRA8 || fmt == NVN_FORMAT_BGRA8_SRGB;
     if (!bgra && fmt != NVN_FORMAT_RGBA8 && fmt != NVN_FORMAT_RGBA8_SRGB)
@@ -236,16 +236,26 @@ static void save_shot(const tex_t *t, const char *path) {
             px[i] = px[i + 2];
             px[i + 2] = x;
         }
-    if (w == 3840 && h == 2160) {
-        int active_w = 1706, active_h = 960;
-        uint8_t *crop_px = malloc(4ull * active_w * active_h);
+    int cx = 0, cy = 0, cw = (int)w, ch = (int)h;
+    if (crop && crop[2] > 0 && crop[3] > 0) {
+        cx = crop[0] < 0 ? 0 : crop[0];
+        cy = crop[1] < 0 ? 0 : crop[1];
+        cw = crop[2] > (int)w - cx ? (int)w - cx : crop[2];
+        ch = crop[3] > (int)h - cy ? (int)h - cy : crop[3];
+    } else if (w == 3840 && h == 2160) {
+        cw = 1706;
+        ch = 960;
+    }
+    if (cw > 0 && ch > 0 && (cx != 0 || cy != 0 || cw != (int)w || ch != (int)h)) {
+        uint8_t *crop_px = malloc(4ull * (uint32_t)cw * (uint32_t)ch);
         if (crop_px) {
-            for (int y = 0; y < active_h; y++)
-                memcpy(crop_px + 4ull * y * active_w, px + 4ull * y * w, 4ull * active_w);
-            rt_write_png(path, crop_px, active_w, active_h);
+            for (int y = 0; y < ch; y++)
+                memcpy(crop_px + 4ull * (uint32_t)y * (uint32_t)cw,
+                       px + 4ull * ((uint32_t)(cy + y) * w + (uint32_t)cx), 4ull * (uint32_t)cw);
+            rt_write_png(path, crop_px, (uint32_t)cw, (uint32_t)ch);
             free(crop_px);
             free(px);
-            rt_logf("boot: shot %s (%ux%u cropped from %ux%u)\n", path, active_w, active_h, w, h);
+            rt_logf("boot: shot %s (%dx%d cropped from %ux%u)\n", path, cw, ch, w, h);
             return;
         }
     }
@@ -316,12 +326,12 @@ static void series_shot(const tex_t *t, uint64_t n) {
 // A --seconds run ends at the first present after the world clock (game time since the save's first frame,
 // frame_step_world_us) passed S seconds, so a run covers the same game time at any frame rate; any other frame is
 // counted by the back end only.
-void rt_frame_presented(const tex_t *t, uint64_t n) {
+void rt_frame_presented(const tex_t *t, const int crop[4], uint64_t n) {
     const RtConfig *cfg = rt_config();
     series_shot(t, n);
     int64_t w = cfg->seconds ? frame_step_world_us() : -1;
     if (w < 0 || (double)w < cfg->seconds * 1e6) return;
-    if (cfg->shot) save_shot(t, cfg->shot);
+    if (cfg->shot) save_shot(t, crop, cfg->shot);
     GfxStats g = gfx_stats();
     rt_logf("boot: frames %llu presented (nvn calls %llu, distinct %llu, unimplemented %llu, validation errors %llu, "
            "shader failures %llu, draws skipped %llu)\n", (unsigned long long)g.frames,

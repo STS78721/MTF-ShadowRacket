@@ -2171,21 +2171,22 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
             mov_imm(static_cast<u32>(dest) + 1, 0);
             break;
         }
-        case 0x306: case 0xd06: { // I2F.F32.U8, low byte, round-to-nearest (0xd06: uniform source)
+        case 0x306: case 0xd06: { // I2F.F32.U8/S8/U16/S16, round-to-nearest (0xd06: uniform source)
             const u32 source = opcode == 0xd06 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
-            // DKB Recomp: the uniform-source form too (0xd06, words[2] 0x08101000: I2F.U16 Rd, URs.H1).
-            if (insn.words[2] == (opcode == 0xd06 ? 0x08101000U : 0x00101000U) && !(insn.words[1] & 0xcfffff00U) &&
+            // DKB Recomp: the uniform-source form too (0xd06, words[2] 0x08101000: I2F.U16 Rd, URs.H1; bit 74 = signed).
+            if ((insn.words[2] & ~0x400U) == (opcode == 0xd06 ? 0x08101000U : 0x00101000U) && !(insn.words[1] & 0xcfffff00U) &&
                 source != ~0U) {
-                // I2F.U16 Rd, Rs(.H1): Maxwell's 16-bit source format, byte selector 0 or 2.
-                emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{1} << 10) | (u64{source} << 20) |
-                     (u64{insn.Bits(60, 2) * 2} << 41));
+                // I2F.U16/S16 Rd, Rs(.H1): Maxwell's 16-bit source format, byte selector 0 or 2.
+                emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{1} << 10) | (u64{insn.Bits(74, 1)} << 13) |
+                     (u64{source} << 20) | (u64{insn.Bits(60, 2) * 2} << 41));
                 break;
             }
-            // DKB Recomp: any source byte (I2F.U8 R3, R18.B3: selector in bits 60-61, Maxwell's in bits 41-42).
-            if (insn.words[2] != (opcode == 0xd06 ? 0x08001000U : 0x1000U) ||
+            // DKB Recomp: any source byte (I2F.U8/S8 R3, R18.B3: selector in bits 60-61, Maxwell's in bits 41-42).
+            if ((insn.words[2] & ~0x400U) != (opcode == 0xd06 ? 0x08001000U : 0x1000U) ||
                 (insn.words[1] & 0xcfffff00U) || source == ~0U)
                 return fail(index, "native byte-to-float conversion mode");
-            emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{source} << 20) | (u64{insn.Bits(60, 2)} << 41));
+            emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{insn.Bits(74, 1)} << 13) | (u64{source} << 20) |
+                 (u64{insn.Bits(60, 2)} << 41));
             break;
         }
         case 0x245: case 0xa45: case 0xc45: { // I2FP.F32.U32

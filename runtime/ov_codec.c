@@ -402,19 +402,26 @@ static void ov_vp9_ready_event(Cpu *c) {
     ret_x(c, 0);
 }
 
+static void ov_vp9_start(Cpu *c) {
+    uint64_t key = arg_x(c, 0);
+    codec_signal_event(c, event_for(c, key));
+    TRACE("start decoder %#llx (submission-ready event signalled)", (unsigned long long)key);
+    ret_x(c, 0);
+}
+
 // Result SubmitVp9DecoderInputBuffer(u64 *id, Vp9DecoderType *, const void *data, size_t size, TimeSpan pts, bool end):
 // decoded at once into the oldest waiting buffer, else queued for the next one reserved; "not ready" once QUEUED
 // packets wait. After the end of a guide movie the player flushes and starts over with the buffers it still holds,
 // submitting its third packet before it releases one: without the queue that packet was refused, nothing released a
 // buffer again, and the window kept the movie's first picture, a flat yellow card.
 static void ov_vp9_submit(Cpu *c) {
-    uint64_t *id = arg_p(c, 0);
+    uint64_t *id = arg_p(c, 0), key = arg_x(c, 1);
     const uint8_t *data = arg_p(c, 2);
     size_t size = arg_x(c, 3);
     int64_t pts = (int64_t)arg_x(c, 4);
     int end = (int)(arg_x(c, 5) & 1);
     plat_mutex_lock(&lock);
-    Dec *d = dec_of(arg_x(c, 1));
+    Dec *d = dec_of(key);
     Slot *s = d && !d->qn ? oldest_wait(d) : NULL;
     if (!s) {
         int queued = d && d->qn < QUEUED;
@@ -426,7 +433,9 @@ static void ov_vp9_submit(Cpu *c) {
             if (id) *id = d->seq;
         }
         int waiting = d ? d->qn : 0;
+        int can_accept = d && (oldest_wait(d) != NULL || d->qn < QUEUED);
         plat_mutex_unlock(&lock);
+        if (queued && can_accept) codec_signal_event(c, event_for(c, key));
         TRACE("submit %zu bytes pts %lld%s: %s (%d queued)", size, (long long)pts, end ? " end" : "",
               queued ? "queued for the next reserved buffer" : "not ready", waiting);
         ret_x(c, queued ? 0 : R_NOT_READY);
@@ -435,8 +444,10 @@ static void ov_vp9_submit(Cpu *c) {
     uint64_t wake[WAITERS];
     int n = decode_into(d, s, data, size, pts, end, wake);
     if (id) *id = d->seq;
+    int can_accept = d && (oldest_wait(d) != NULL || d->qn < QUEUED);
     plat_mutex_unlock(&lock);
     for (int k = 0; k < n; k++) codec_signal_event(c, wake[k]);
+    if (can_accept) codec_signal_event(c, event_for(c, key));
     ret_x(c, 0);
 }
 
@@ -467,13 +478,14 @@ static void ov_vp9_acquire(Cpu *c) {
             free(q.data);
         }
     }
+    int can_accept = d && (oldest_wait(d) != NULL || d->qn < QUEUED);
     plat_mutex_unlock(&lock);
     if (got < 0) rt_log("codec: AcquireVp9DecoderOutputBuffer with every registered buffer reserved");
     else TRACE("acquire: buffer %d", got);
     for (int k = 0; k < n; k++) codec_signal_event(c, wake[k]);
     // A reserved buffer lets the next packet in: wake a player that waits for the submission-ready event after a not
     // ready submission. Without this, the tutorial's guide movies stopped at their second picture.
-    if (got >= 0) codec_signal_event(c, event_for(c, key));
+    if (got >= 0 && can_accept) codec_signal_event(c, event_for(c, key));
     ret_x(c, got < 0 ? R_NOT_READY : 0);
 }
 
@@ -659,7 +671,7 @@ HOST_OVERRIDE("_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEPvmmttjN
 HOST_OVERRIDE("_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEmmttjNS0_23VideoDecoderInputFormatENS0_"
               "24VideoDecoderOutputFormatE", ov_vp9_init_nowork);
 HOST_OVERRIDE("_ZN2nn5codec18FinalizeVp9DecoderEPNS0_14Vp9DecoderTypeE", ov_vp9_fini);
-HOST_OVERRIDE("_ZN2nn5codec15StartVp9DecoderEPNS0_14Vp9DecoderTypeE", ov_ok);
+HOST_OVERRIDE("_ZN2nn5codec15StartVp9DecoderEPNS0_14Vp9DecoderTypeE", ov_vp9_start);
 HOST_OVERRIDE("_ZN2nn5codec14StopVp9DecoderEPNS0_14Vp9DecoderTypeE", ov_ok);
 HOST_OVERRIDE("_ZN2nn5codec15FlushVp9DecoderEPNS0_14Vp9DecoderTypeE", ov_vp9_flush);
 HOST_OVERRIDE("_ZN2nn5codec24RegisterVp9DecoderBufferEPNS0_14Vp9DecoderTypeEjPNS0_25VideoDecoderImagePoolTypeEj",
@@ -733,7 +745,7 @@ static void ov_unregister(Cpu *c) {
     HOST_OVERRIDE("_ZN2nn5codec34Initialize" K "DecoderByRemoteMemoryEPNS0_14" K "DecoderTypeEmttjNS0_23"            \
                   "VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE", INIT_RM);   \
     HOST_OVERRIDE("_ZN2nn5codec18Finalize" K "DecoderEPNS0_14" K "DecoderTypeE", ov_vp9_fini);                       \
-    HOST_OVERRIDE("_ZN2nn5codec15Start" K "DecoderEPNS0_14" K "DecoderTypeE", ov_ok);                                \
+    HOST_OVERRIDE("_ZN2nn5codec15Start" K "DecoderEPNS0_14" K "DecoderTypeE", ov_vp9_start);                         \
     HOST_OVERRIDE("_ZN2nn5codec14Stop" K "DecoderEPNS0_14" K "DecoderTypeE", ov_ok);                                 \
     HOST_OVERRIDE("_ZN2nn5codec15Flush" K "DecoderEPNS0_14" K "DecoderTypeE", ov_vp9_flush);                         \
     HOST_OVERRIDE("_ZN2nn5codec24Register" K "DecoderBufferEPNS0_14" K "DecoderTypeEjPNS0_25VideoDecoderImagePoolTypeEj", \
@@ -754,7 +766,7 @@ CODEC_SDK20("Vp8", ov_vp8_init_tm, ov_vp8_init_rm);
 HOST_OVERRIDE("_ZN2nn5codec37InitializeH264DecoderByTransferMemoryEPNS0_15H264DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeEPKvm", ov_h264_unsupported);
 HOST_OVERRIDE("_ZN2nn5codec35InitializeH264DecoderByRemoteMemoryEPNS0_15H264DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeEPKvm", ov_h264_unsupported);
 HOST_OVERRIDE("_ZN2nn5codec19FinalizeH264DecoderEPNS0_15H264DecoderTypeE", ov_vp9_fini);
-HOST_OVERRIDE("_ZN2nn5codec16StartH264DecoderEPNS0_15H264DecoderTypeE", ov_ok);
+HOST_OVERRIDE("_ZN2nn5codec16StartH264DecoderEPNS0_15H264DecoderTypeE", ov_vp9_start);
 HOST_OVERRIDE("_ZN2nn5codec15StopH264DecoderEPNS0_15H264DecoderTypeE", ov_ok);
 HOST_OVERRIDE("_ZN2nn5codec16FlushH264DecoderEPNS0_15H264DecoderTypeE", ov_vp9_flush);
 HOST_OVERRIDE("_ZN2nn5codec25RegisterH264DecoderBufferEPNS0_15H264DecoderTypeEjPNS0_25VideoDecoderImagePoolTypeEj", ov_vp9_register);

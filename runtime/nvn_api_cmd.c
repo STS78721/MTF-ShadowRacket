@@ -639,7 +639,11 @@ NVN_API(nvnCommandBufferBindVertexStreamState) {
     hw_fix(o, 4 * (16 + (size_t)n));
 }
 static void bind_vertex_buffers(cmd_t *o, int first, int n, const NVNbufferRange *rg) {
-    if (first < 0 || n < 0 || first + n > 16) { rt_log("nvn: BindVertexBuffers first %d n %d", first, n); return; }
+    if (first < 0 || n < 0 || first + n > 16) {
+        static int logged;
+        if (!logged++) rt_log("nvn: BindVertexBuffers first %d n %d (logged once)", first, n);
+        return;
+    }
     p_bind_vbuf *r = RECN(o, OP_BIND_VBUF, p_bind_vbuf, r, n);
     r->first = first;
     r->n = n;
