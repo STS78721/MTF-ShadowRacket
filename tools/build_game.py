@@ -764,8 +764,11 @@ def main():
     gen = (args.gen or (Path(r"C:\Games\MKW PC\generated\mkw180") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\generated\mkw180").is_dir() else ROOT / 'generated' / args.version)).resolve()
     out = (args.out or (Path(r"C:\Games\MKW PC\build\mkw180") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\build\mkw180").is_dir() else ROOT / 'build' / args.version)).resolve()
     extracted = ROOT / 'build' / 'extracted' / args.version
-    default_exefs = Path(r"C:\Games\MKW PC\exefs") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\exefs").is_dir() else extracted / 'exefs'
-    default_romfs = Path(r"C:\Games\MKW PC\romfs_packed") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\romfs_packed").is_dir() else extracted / 'romfs'
+    default_exefs = (Path(r"C:\Games\MKW PC\exefs") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\exefs").is_dir()
+                     else (ROOT / 'exefs' if (ROOT / 'exefs').is_dir() else extracted / 'exefs'))
+    default_romfs = (Path(r"C:\Games\MKW PC\romfs_packed") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\romfs_packed").is_dir()
+                     else (ROOT / 'romfs_packed' if (ROOT / 'romfs_packed').is_dir()
+                           else (ROOT / 'romfs' if (ROOT / 'romfs').is_dir() else extracted / 'romfs')))
     paths = {'exefs': (args.exefs or default_exefs).resolve(),
              'romfs': (args.romfs or default_romfs).resolve(),
              'profile': (args.profile or ROOT / 'build' / ('profile' if args.version == 'v121'

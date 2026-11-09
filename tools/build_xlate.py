@@ -198,6 +198,10 @@ def main() -> None:
     exe = BUILD / EXE
     shutil.copy2(out / EXE, exe)
     write_identity(exe, defined_float_minmax=a.defined_float_minmax)
+    mkw_exe = BUILD / ("mkw_xlate.exe" if WIN else "mkw_xlate")
+    if mkw_exe != exe:
+        shutil.copy2(exe, mkw_exe)
+        write_identity(mkw_exe, defined_float_minmax=a.defined_float_minmax)
     print(f"built {exe} ({exe.stat().st_size / 1e6:.1f} MB) in {time.time() - started:.0f} s")
 
 

@@ -82,7 +82,7 @@ The toolchain is based on MSYS2 UCRT64 Clang, Ninja, Python 3.10+ and the .NET S
 
 ```powershell
 .venv\Scripts\python tools\build_xlate.py
-.venv\Scripts\python recomp\gen.py --exefs <exefs> --out generated\mkw180 --modules main,sdk
+.venv\Scripts\python recomp\gen.py --exefs <exefs> --out generated\mkw180 --modules main,subsdk0,subsdk1,sdk
 .venv\Scripts\python tools\mkw_expected.py --exefs <exefs> --name mkw180 --display 1.8.0
 .venv\Scripts\python tools\mkw_pack_romfs.py --dir <romfs folder> --out build\extracted\mkw180\romfs
 .venv\Scripts\python tools\build_game.py --version mkw180 --expected tools\data\expected-mkw180.json --exefs <exefs> --romfs build\extracted\mkw180\romfs
