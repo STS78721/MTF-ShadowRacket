@@ -456,6 +456,8 @@ static uint64_t record_all(void) {
     REC(OP_PRIM_RESTART, CALL(nvnCommandBufferSetPrimitiveRestart, U(c), 1, 0xffff));
     REC(OP_DRAW_IDX_IND, CALL(nvnCommandBufferDrawElementsIndirect, U(c), NVN_DRAW_PRIMITIVE_TRIANGLES, NVN_INDEX_TYPE_UNSIGNED_INT,
                               0x8000, 0xc000));
+    REC(OP_DRAW_IDX_IND_COUNT, CALL(nvnCommandBufferMultiDrawElementsIndirectCount, U(c), NVN_DRAW_PRIMITIVE_TRIANGLES,
+                                    NVN_INDEX_TYPE_UNSIGNED_INT, 0x8000, 0xc000, 0xc080, 4, 20));
     REC(OP_DISPATCH_IND, CALL(nvnCommandBufferDispatchComputeIndirect, U(c), 0xc100));
     REC(OP_CLEAR_BUF, CALL(nvnCommandBufferClearBuffer, U(c), 0xc200, 0x40, 0xdeadbeef));
     REC(OP_CLEAR_BUF, CALL(nvnCommandBufferReportValue, U(c), 0x1234, 0xc300));
@@ -684,6 +686,13 @@ static void parse_all(uint64_t h) {
             const p_draw_idx_ind *p = a;
             CHECK(p->prim == NVN_DRAW_PRIMITIVE_TRIANGLES && p->itype == NVN_INDEX_TYPE_UNSIGNED_INT && p->ibuf == 0x8000 && p->ind == 0xc000,
                   "DRAW_IDX_IND payload");
+            break;
+        }
+        case OP_DRAW_IDX_IND_COUNT: {
+            const p_draw_idx_ind_count *p = a;
+            CHECK(p->prim == NVN_DRAW_PRIMITIVE_TRIANGLES && p->itype == NVN_INDEX_TYPE_UNSIGNED_INT && p->ibuf == 0x8000 &&
+                      p->ind == 0xc000 && p->count == 0xc080 && p->max_count == 4 && p->stride == 20,
+                  "DRAW_IDX_IND_COUNT payload");
             break;
         }
         case OP_DISPATCH_IND: CHECK(((const p_dispatch_ind *)a)->ind == 0xc100, "DISPATCH_IND payload"); break;

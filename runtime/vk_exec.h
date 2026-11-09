@@ -179,7 +179,7 @@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16],
 
 // Handler hooks. vk_exec.c defines both WEAK: they stop with rt_fatal naming the op.
 // vk_exec_draw.c: OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BIND_* (program, state, vattr, vstream, vbuf, ubo, ssbo, tex,
-// samp, img), OP_UPDATE_UB, OP_DRAW_IDX_IND, OP_DISPATCH_IND. payload: nvn_op_payload of the record.
+// samp, img), OP_UPDATE_UB, OP_DRAW_IDX_IND, OP_DRAW_IDX_IND_COUNT, OP_DISPATCH_IND. payload: nvn_op_payload of the record.
 void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload);
 // The aspect a sampled view of img reads (vk_exec_draw.c get_view): stencil for a view in STENCIL depth-stencil mode.
 VkImageAspectFlags vk_exec_view_aspect(const VkTexImage *img, const view_t *v, int hv);

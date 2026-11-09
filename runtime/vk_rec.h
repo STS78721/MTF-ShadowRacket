@@ -70,6 +70,8 @@ void rec_write_mask(PFN_vkCmdSetColorWriteMaskEXT fn, VkCommandBuffer cb, uint32
     X(Draw, (VkCommandBuffer cb, uint32_t n, uint32_t i, uint32_t f, uint32_t fi), (cb, n, i, f, fi))                    \
     X(DrawIndexed, (VkCommandBuffer cb, uint32_t n, uint32_t i, uint32_t f, int32_t v, uint32_t fi), (cb, n, i, f, v, fi)) \
     X(DrawIndexedIndirect, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s), (cb, b, o, n, s))   \
+    X(DrawIndexedIndirectCount, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkBuffer cbuf, VkDeviceSize co,         \
+                                 uint32_t max, uint32_t s), (cb, b, o, cbuf, co, max, s))                                 \
     X(EndQuery, (VkCommandBuffer cb, VkQueryPool p, uint32_t q), (cb, p, q))                                             \
     X(EndRendering, (VkCommandBuffer cb), (cb))                                                                          \
     X(FillBuffer, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkDeviceSize n, uint32_t v), (cb, b, o, n, v))        \
@@ -125,6 +127,7 @@ REC_CMDS(REC_DECL)
 #define vkCmdDraw rc_vkCmdDraw
 #define vkCmdDrawIndexed rc_vkCmdDrawIndexed
 #define vkCmdDrawIndexedIndirect rc_vkCmdDrawIndexedIndirect
+#define vkCmdDrawIndexedIndirectCount rc_vkCmdDrawIndexedIndirectCount
 #define vkCmdEndQuery rc_vkCmdEndQuery
 #define vkCmdEndRendering rc_vkCmdEndRendering
 #define vkCmdFillBuffer rc_vkCmdFillBuffer

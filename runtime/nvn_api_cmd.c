@@ -843,6 +843,17 @@ NVN_API(nvnCommandBufferDrawElementsInstanced) {
 NVN_API(nvnCommandBufferDrawElementsIndirect) {
     *REC(cmd_of(c), OP_DRAW_IDX_IND, p_draw_idx_ind) = (p_draw_idx_ind){(int)arg_x(c, 1), (int)arg_x(c, 2), arg_x(c, 3), arg_x(c, 4)};
 }
+// void nvnCommandBufferMultiDrawElementsIndirectCount(cmd, prim, indexType, indices, indirect, count, maxDrawCount, stride)
+// MTF deferred court lighting batches traditional draws through this; one OP_DRAW_IDX_IND_COUNT becomes
+// vkCmdDrawIndexedIndirectCount (Vulkan 1.2 drawIndirectCount).
+NVN_API(nvnCommandBufferMultiDrawElementsIndirectCount) {
+    int32_t max = (int32_t)arg_x(c, 6);
+    int32_t stride = (int32_t)arg_x(c, 7);
+    if (max <= 0) return;
+    if (stride <= 0) stride = (int32_t)(sizeof(uint32_t) * 5);
+    *REC(cmd_of(c), OP_DRAW_IDX_IND_COUNT, p_draw_idx_ind_count) = (p_draw_idx_ind_count){
+        (int)arg_x(c, 1), (int)arg_x(c, 2), max, stride, arg_x(c, 3), arg_x(c, 4), arg_x(c, 5)};
+}
 // void nvnCommandBufferDispatchCompute(NVNcommandBuffer *cmd, int x, int y, int z): caller = the game's return address
 NVN_API(nvnCommandBufferDispatchCompute) {
     *REC(cmd_of(c), OP_DISPATCH, p_dispatch) = (p_dispatch){(int)arg_x(c, 1), (int)arg_x(c, 2), (int)arg_x(c, 3), c->x[30]};
@@ -1131,6 +1142,7 @@ const char *nvn_op_name(uint32_t op) {
         "DRAW_IDX", "DISPATCH", "BARRIER", "SET_TEX_POOL", "SET_SAMP_POOL", "COPY_B2T", "COPY_STRIDE", "BLEND_COLOR",
         "COPY_T2B", "BIND_IMG", "COPY_T2T", "RESET_COUNTER", "CLEAR_TEX", "DEPTH_CLAMP", "RENDER_ENABLE",
         "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF", "PUSH_CONST", "WAIT_SYNC",
+        "DRAW_IDX_IND_COUNT",
     };
     _Static_assert(sizeof names / sizeof *names == OP_COUNT_, "one name per op");
     return op < OP_COUNT_ ? names[op] : "?";
