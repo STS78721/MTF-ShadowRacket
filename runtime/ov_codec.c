@@ -195,9 +195,12 @@ static int decode_into(Dec *d, Slot *s, const uint8_t *data, size_t size, int64_
             dav1d_data_unref(&dd);
         }
     }
+    int vpx_failed = 0;
     if (d->vpx_ok && data && size) {
-        if (vpx_codec_decode(&d->vpx, data, (unsigned)size, NULL, 0) != VPX_CODEC_OK)
+        if (vpx_codec_decode(&d->vpx, data, (unsigned)size, NULL, 0) != VPX_CODEC_OK) {
+            vpx_failed = 1;
             LOG_FIRST("codec: VP9 packet of %zu bytes failed: %s", size, vpx_codec_error_detail(&d->vpx));
+        }
         vpx_codec_iter_t it = NULL;
         while ((f = vpx_codec_get_frame(&d->vpx, &it))) img = f;   // a superframe shows at most one; keep the last
     }
@@ -205,6 +208,9 @@ static int decode_into(Dec *d, Slot *s, const uint8_t *data, size_t size, int64_
     if (have_pic) put_picture_av1(s, &pic), copy_slot(&d->last, s), dav1d_picture_unref(&pic);
     else if (img) put_picture(s, img), copy_slot(&d->last, s);
     else if (end && d->last.nv12) copy_slot(s, &d->last);
+    // A corrupt mid-stream packet used to leave the buffer waiting; the intro then hitch-stalled on its fence.
+    // Hold the previous picture only when decode failed, so intentional no-show packets stay waiting.
+    else if (vpx_failed && d->last.nv12) copy_slot(s, &d->last);
     else if (end) {
         vpx_image_t black = {.d_w = 16, .d_h = 16};
         static uint8_t y[16 * 16], uv[8 * 8];
@@ -248,7 +254,12 @@ static void vp9_init(Cpu *c, uint64_t key, unsigned w, unsigned h, int av1, int 
         ok = dav1d_open(&d->dav, &st) == 0;
         if (!ok) d->dav = NULL;
     } else {
-        vpx_codec_dec_cfg_t cfg = {.threads = 2, .w = w, .h = h};
+        // Mario Tennis Fever's intro is 2560x1440 VP9; two threads cannot keep 60 fps on software decode.
+        unsigned threads = plat_cpu_count();
+        if (threads < 2) threads = 2;
+        if (threads > 16) threads = 16;
+        if (w * h < 1280u * 720u && threads > 4) threads = 4;
+        vpx_codec_dec_cfg_t cfg = {.threads = threads, .w = w, .h = h};
         ok = d->vpx_ok = vpx_codec_dec_init(&d->vpx, vp8 ? vpx_codec_vp8_dx() : vpx_codec_vp9_dx(), &cfg, 0) == VPX_CODEC_OK;
     }
     plat_mutex_unlock(&lock);

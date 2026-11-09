@@ -424,7 +424,16 @@ NVN_API(nvnCommandBufferIsRecording) { ret_x(c, cmd_of(c)->recording != 0); }
 // records and OP_END (flatten_recording checked them), so the records go over as one block; usage grows by the same
 // bytes as record by record.
 static void inline_recording(cmd_t *o, uint64_t handle, const char *what) {
-    if (!handle) rt_fatal("nvn: %s with a null handle", what);
+    // A null handle shows up when a prior EndRecording failed (e.g. a shader that did not lower).
+    // Skip it instead of aborting so the rest of the frame can still present.
+    if (!handle) {
+        static int logged;
+        if (!logged) {
+            logged = 1;
+            rt_log("nvn: %s with a null handle (skipped; further nulls are quiet)", what);
+        }
+        return;
+    }
     uint64_t bytes = copy_touch(handle, __atomic_load_n(&nsubmits, __ATOMIC_RELAXED), what);
     if (bytes <= 16) return;
     size_t body = (size_t)bytes - 16;
@@ -530,6 +539,25 @@ NVN_API(nvnCommandBufferSetViewports) { set_viewports(cmd_of(c), (int)arg_x(c, 1
 NVN_API(nvnCommandBufferSetViewport) {
     float v[4] = {(float)(int)arg_x(c, 1), (float)(int)arg_x(c, 2), (float)(int)arg_x(c, 3), (float)(int)arg_x(c, 4)};
     set_viewports(cmd_of(c), 0, 1, v);
+}
+// void nvnCommandBufferSetViewportSwizzles(NVNcommandBuffer *cmd, int first, int n, const NVNviewportSwizzle *s)
+// Mario Tennis Fever sets these past the user-select screen. Identity (POSITIVE_X/Y/Z/W) is a no-op on Vulkan;
+// non-identity (e.g. NEGATIVE_Y) is logged once until VK_NV_viewport_swizzle replay is wired.
+NVN_API(nvnCommandBufferSetViewportSwizzles) {
+    int first = (int)arg_x(c, 1), n = (int)arg_x(c, 2);
+    const int32_t *s = arg_p(c, 3);
+    if (first < 0 || n < 0 || first + n > 16) rt_fatal("nvn: SetViewportSwizzles first %d n %d", first, n);
+    static const int32_t identity[4] = {0, 2, 4, 6};
+    for (int i = 0; i < n; i++) {
+        const int32_t *row = s ? s + 4 * i : identity;
+        if (memcmp(row, identity, sizeof identity)) {
+            static int once;
+            if (!once++)
+                rt_log("nvn: SetViewportSwizzles non-identity {%d,%d,%d,%d}: drawn without swizzle for now",
+                       row[0], row[1], row[2], row[3]);
+            break;
+        }
+    }
 }
 static void set_scissor(cmd_t *o, int x, int y, int w, int h) { *REC(o, OP_SCISSOR, p_scissor) = (p_scissor){x, y, w, h}; }
 // void nvnCommandBufferSetScissor(NVNcommandBuffer *cmd, int x, int y, int w, int h)
