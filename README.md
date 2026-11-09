@@ -108,26 +108,38 @@ Recomp keep their MIT terms.
 Recomp, and checked by running the game and tests. AI-assisted pull requests are welcome; you are
 responsible for having read and run them.
 
-## Credits and origin
+## Credits, Acknowledgments & Special Thanks
 
-MKW Recomp is built on [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) (*Tears of the Kingdom*, Switch 1)
-by valentderah and contributors, and [DKB Recomp](https://github.com/sagaopc/dkb-pc-recomp) by Lucas-blip-png, sagaopc, sostenesfreitas and contributors. It uses Eglantine's Ampere shader
-lowering (GPL-3.0-or-later, `runtime/third_party/eglantine/`) and Ryujinx's shader translator (MIT, vendored with
-MacNativeGames' patches), plus the other projects in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The whole is
-under [LICENSE](LICENSE).
+**MKW Recomp** stands on the shoulders of giants in the emulation, static recompilation, and graphics research communities. Without their years of groundbreaking work, reverse engineering, and open-source contributions, a native PC recompilation of *Mario Kart World* would not exist.
 
-- [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by valentderah, the base of everything here, and the
-  projects it builds on: [LAS Recomp](https://github.com/peiikai/LASRecomp),
-  [MacNativeGames](https://github.com/ly05010419/MacNativeGames), [nxnative](https://github.com/seedds/nxnative),
-  [SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp), [Ryujinx](https://github.com/Ryujinx/Ryujinx),
-  [deko3d](https://github.com/devkitPro/deko3d), [hactool](https://github.com/SciresM/hactool) and the rest listed in
-  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-- [DKB Recomp](https://github.com/sagaopc/dkb-pc-recomp) for the Switch 2 NVN 2 and Ampere shader foundation.
-- [Eglantine](https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork) (Eden Emulator Project) for the
-  Ampere-to-Maxwell shader lowering and its Switch 2 notes, and [Mesa NAK](https://gitlab.freedesktop.org/mesa/mesa)
-  for the SM70+ encodings both build on.
-- [libvpx](https://chromium.googlesource.com/webm/libvpx) for the movies.
-- [Switchbrew](https://switchbrew.org) for the Switch 2 `GetInfo` ids, and the Switch homebrew community.
+### Static Recompilation Foundations
+- **[TotK Recomp](https://github.com/valentderah/totk-pc-recomp)** by **valentderah** and its contributors: The direct architectural foundation of this project—providing the ahead-of-time ARM64-to-C lifter, the native Horizon OS runtime environment, differential Unicorn testing, and Vulkan execution engine.
+- **[DKB Recomp](https://github.com/Lucas-blip-png/dkb-pc-recomp)** by **Lucas-blip-png**, **[sagaopc](https://github.com/sagaopc/dkb-pc-recomp)**, and **[sostenesfreitas](https://github.com/sostenesfreitas/dkb-pc-recomp)**: The pioneers of Nintendo Switch 2 static recompilation on PC—answering hundreds of Switch 2 NVN 2 API entry points, integrating Ampere lowering, and proving that Switch 2 titles can run natively on modern PC hardware.
+- **[LAS Recomp](https://github.com/peiikai/LASRecomp)** by **peiikai**: Foundational work in AArch64 function lifting, SIMD/FP translation, and Vulkan format bindings.
+- **[MacNativeGames](https://github.com/ly05010419/MacNativeGames)** by **ly05010419**: Essential Horizon runtime implementation, audio renderer, NPDM loader, and dynamic link mechanisms.
+- **[SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp)** by **Revivedx**: Early Switch recompilation research and Vulkan runtime optimizations.
+- **[nxnative](https://github.com/seedds/nxnative)** by **seedds**: Early native Horizon execution groundwork.
+
+### GPU, Shader Translation & Emulation Research
+- **[Eglantine](https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork)** (Eden Emulator Project) by **Franseven**: The indispensable Ampere-to-Maxwell shader lowering implementation and Switch 2 GPU architectural reverse engineering.
+- **[Mesa NAK](https://gitlab.freedesktop.org/mesa/mesa)** by **Faith Ekstrand** and Collabora: The open-source SM70+ (Volta/Turing/Ampere) instruction encodings that power our shader lowering pipelines.
+- **[Ryujinx](https://github.com/Ryujinx/Ryujinx)** Team: The industry-standard GPU shader translator and SPIR-V emitter architecture.
+- **[deko3d](https://github.com/devkitPro/deko3d)** by **FinCS** and the **[devkitPro](https://devkitpro.org)** team: Low-level NVN hardware documentation and register definitions.
+
+### Horizon OS, File Formats & Research
+- **[hactool](https://github.com/SciresM/hactool)** & **Atmosphère** by **SciresM** and the Reswitched team: Critical file format specifications (ExeFS, RomFS, NPDM, PFS0) and system service documentation.
+- **[Switchbrew](https://switchbrew.org)** and the Switch homebrew community: Exhaustive documentation of Horizon OS system calls, IPC protocols, and hardware specifications.
+
+### Libraries & Standards
+- **[The Khronos Group](https://www.khronos.org/vulkan/)**: The Vulkan 1.3 graphics API standard.
+- **[Simple DirectMedia Layer (SDL3)](https://libsdl.org)** by **Sam Lantinga** and contributors: Cross-platform windowing, high-precision event handling, and audio backends.
+- **[Vulkan Memory Allocator (VMA)](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)** by **Adam Sawicki** and **AMD / GPUOpen**: High-performance GPU memory and pool allocation.
+- **[libvpx](https://chromium.googlesource.com/webm/libvpx)** by the **WebM Project / Google**: VP9 movie playback and video decoding.
+- **[libopus](https://opus-codec.org/)** by the **Xiph.Org Foundation**, Mozilla, and Skype: Audio decoding and streaming.
+- **[Zstandard (zstd)](https://github.com/facebook/zstd)** by **Yann Collet** and Meta: Ultra-fast compression and streaming decompression.
+
+### Community & Early Testers
+- Special thanks to all early hardware testers running on NVIDIA, AMD, and Intel GPUs, sharing diagnostic logs, identifying shader edge cases, and helping drive this project forward.
 
 ## License
 
