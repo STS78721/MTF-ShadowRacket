@@ -22,10 +22,16 @@
 enum { T_CLOSE = 2, T_REQUEST = 4, T_CONTROL = 5, T_REQUEST_CTX = 6, T_CONTROL_CTX = 7, T_TIPC_CLOSE = 15,
        T_TIPC_BASE = 16 };
 
+static void fsp_srv_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    rt_log("ipc: fsp-srv cmd %u (type %u)", rq->cmd, rq->type);
+    rs->result = 0;
+}
+
 // Services sm: hands out. Anything else is a named fatal.
 static const struct { const char *name; IpcHandler handler; } services[] = {
     {"audren:u", audren_manager_handler},
     {"aud:u", aud_user_handler},   // Switch 2: the way the SDK reaches audren:u
+    {"fsp-srv", fsp_srv_handler},
 };
 
 static volatile int32_t g_live;

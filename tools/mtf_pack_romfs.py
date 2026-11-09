@@ -4,7 +4,7 @@ Dumps of Switch 2 games often come as a folder of loose files. The runtime only 
 and size of each file in it (tools/romfs_index.py), so the files are concatenated in path order, each aligned to 16
 bytes. Dot files the dump tool leaves (".listing") are skipped. The output is game data: it goes under build/.
 
-    .venv\\Scripts\\python tools\\mkw_pack_romfs.py --dir <dump>\\romfs --out build\\extracted\\mkw180\\romfs
+    .venv\\Scripts\\python tools\\mtf_pack_romfs.py --dir <dump>\\romfs --out build\\extracted\\mtf111\\romfs
 
 Standard library only.
 """
@@ -64,7 +64,7 @@ def main():
     index_path.write_text(json.dumps(index, indent=2) + '\n', encoding='utf-8')
     dt = time.time() - t0
     rate = (total_bytes / (1 << 20)) / dt if dt > 0 else 0
-    print(f'mkw_pack_romfs: {len(entries)} files, {total_bytes / (1 << 20):.1f} MiB in {dt:.1f}s ({rate:.1f} MiB/s) -> {args.out}')
+    print(f'mtf_pack_romfs: {len(entries)} files, {total_bytes / (1 << 20):.1f} MiB in {dt:.1f}s ({rate:.1f} MiB/s) -> {args.out}')
 
 
 if __name__ == '__main__':

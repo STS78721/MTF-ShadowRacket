@@ -1127,6 +1127,9 @@ HOST_OVERRIDE("_ZN2nn3ssl10InitializeEv", ov_ret_zero);
 HOST_OVERRIDE("_ZN2nn3ssl8FinalizeEv", ov_ret_zero);
 HOST_OVERRIDE("_ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE", ov_nsd_env);
 HOST_OVERRIDE("_ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_", ov_nsd_resolve);
+HOST_OVERRIDE("_ZN2nn2ro10InitializeEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn2ro22InitializeWithPortNameEPKc", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn2ro8FinalizeEv", ov_noop);
 HOST_OVERRIDE("_ZN2nn2ro12ProtectRelroEPKvS2_S2_S2_S2_", ov_noop);
 HOST_OVERRIDE("_ZN2nn2pl17RequestLoadNxFontEPvm", ov_noop);
 HOST_OVERRIDE("_ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE", ov_report_send);
@@ -1287,6 +1290,7 @@ static void ov_friends_friend_false(Cpu *c) {
 HOST_OVERRIDE("_ZN2nn7friends10InitializeEv", ov_friends_init);
 HOST_OVERRIDE("_ZN2nn7friends8FinalizeEv", ov_noop);
 HOST_OVERRIDE("_ZN2nn7friends12SetAllocatorEPFPvmEPFvS1_mE", ov_noop);
+HOST_OVERRIDE("_ZN2nn2fs12SetAllocatorEPFPvmEPFvS1_mE", ov_noop);
 HOST_OVERRIDE("_ZN2nn7friends12AsyncContextC1Ev", ov_friends_async_ctor);
 HOST_OVERRIDE("_ZN2nn7friends12AsyncContextC2Ev", ov_friends_async_ctor);
 HOST_OVERRIDE("_ZN2nn7friends12AsyncContextD1Ev", ov_noop);

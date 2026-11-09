@@ -1,6 +1,6 @@
-"""Write tools/data/expected-<name>.json for a Mario Kart World ExeFS: hashes and title id only, no game data.
+"""Write tools/data/expected-<name>.json for a Mario Tennis Fever ExeFS: hashes and title id only, no game data.
 
-    .venv\\Scripts\\python tools\\mkw_expected.py --exefs build\\extracted\\mkw180\\exefs --name mkw180 --display 1.8.0
+    .venv\\Scripts\\python tools\\mtf_expected.py --exefs build\\extracted\\mtf111\\exefs --name mtf111 --display 1.1.1
 """
 import argparse
 import hashlib
@@ -26,12 +26,12 @@ def title_id(npdm):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--exefs', type=Path, required=True)
-    ap.add_argument('--name', required=True, help='build version name, e.g. mkw180')
-    ap.add_argument('--display', required=True, help='display version, e.g. 1.8.0')
+    ap.add_argument('--name', required=True, help='build version name, e.g. mtf111')
+    ap.add_argument('--display', required=True, help='display version, e.g. 1.1.1')
     args = ap.parse_args()
     files = sorted(p for p in args.exefs.iterdir() if p.is_file() and not p.name.startswith('.'))
     out = {
-        '_comment': f'Mario Kart World {args.display} ExeFS. Hashes only; no game data.',
+        '_comment': f'Mario Tennis Fever {args.display} ExeFS. Hashes only; no game data.',
         'title_id': title_id(args.exefs / 'main.npdm'),
         'display_version': args.display,
         'exefs_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files},

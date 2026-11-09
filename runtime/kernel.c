@@ -1494,7 +1494,7 @@ uint32_t kern_main_thread(Cpu **cpu) {
     uint64_t stack = L->stack.base + L->stack.size - MAIN_STACK;
     if (!plat_mem_commit(stack, MAIN_STACK))
         rt_fatal("kernel: commit the main thread stack at %#llx failed", (unsigned long long)stack);
-    RtThread *t = thr_new(MAIN_PRIO, MAIN_CORE, 7);
+    RtThread *t = thr_new(MAIN_PRIO, MAIN_CORE, (1ull << NCORE) - 1);
     t->started = 1;
     t->is_main = 1;
     t->stack_top = stack + MAIN_STACK;
@@ -1630,11 +1630,11 @@ int kern_svc(Cpu *c, uint32_t imm) {
     switch (imm) {
     case 0x08: {   // CreateThread(-> w1 handle; x1 entry, x2 arg, x3 stack top, w4 priority, w5 core)
         int prio = (int)x[4], core = (int)x[5];
-        if (!x[1] || !x[3] || prio < 28 || prio > 59 || core < -3 || core > 2) {
+        if (!x[1] || !x[3] || prio < 28 || prio > 59 || core < -3 || core >= NCORE) {
             x[0] = R_BAD_STATE;
             return 1;
         }
-        RtThread *t = thr_new(prio, core >= 0 ? core : MAIN_CORE, core >= 0 ? 1ull << core : 7);
+        RtThread *t = thr_new(prio, core >= 0 ? core : MAIN_CORE, core >= 0 ? 1ull << core : ((1ull << NCORE) - 1));
         t->entry = x[1];
         t->arg = x[2];
         t->stack_top = x[3] & ~15ull;

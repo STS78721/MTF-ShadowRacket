@@ -107,13 +107,13 @@ static void log_open(int game) {
     if (cut && (size_t)(cut - dir) + sizeof "/logs" <= sizeof dir) {
         strcpy(cut, "/logs");
         plat_file_mkdir_p(dir);
-        for (int i = LOG_KEEP - 1; i > 0; i--) {   // mkw.3.log -> mkw.4.log, ..., mkw.log -> mkw.1.log
-            if (i > 1) snprintf(from, sizeof from, "%s/mkw.%d.log", dir, i - 1);
-            else snprintf(from, sizeof from, "%s/mkw.log", dir);
-            snprintf(to, sizeof to, "%s/mkw.%d.log", dir, i);
+        for (int i = LOG_KEEP - 1; i > 0; i--) {   // mtf.3.log -> mtf.4.log, ..., mtf.log -> mtf.1.log
+            if (i > 1) snprintf(from, sizeof from, "%s/mtf.%d.log", dir, i - 1);
+            else snprintf(from, sizeof from, "%s/mtf.log", dir);
+            snprintf(to, sizeof to, "%s/mtf.%d.log", dir, i);
             if (plat_file_exists(from)) plat_file_replace(from, to);
         }
-        snprintf(g_log_path, sizeof g_log_path, "%s/mkw.log", dir);
+        snprintf(g_log_path, sizeof g_log_path, "%s/mtf.log", dir);
         g_log_file = plat_append_open(g_log_path);
     }
     if (!g_log_file) {

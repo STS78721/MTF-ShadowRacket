@@ -1,6 +1,6 @@
 # Acknowledgments & Special Thanks
 
-**Mario Kart World PC Recompilation (MKW Recomp)** exists thanks to the dedicated research, tools, code, and insights of many pioneers in the console reverse engineering and emulation communities. We extend our deepest gratitude to everyone below:
+**Mario Tennis Fever PC Recompilation (MTF Recomp)** exists thanks to the dedicated research, tools, code, and insights of many pioneers in the console reverse engineering and emulation communities. We extend our deepest gratitude to everyone below:
 
 ---
 
@@ -9,6 +9,8 @@
   For architecting the static recompilation engine, the Horizon OS user-space host, differential CPU instruction testing against Unicorn, and the Vulkan graphics execution framework.
 - **[DKB Recomp](https://github.com/Lucas-blip-png/dkb-pc-recomp)** – **Lucas-blip-png**, **[sagaopc](https://github.com/sagaopc/dkb-pc-recomp)**, **[sostenesfreitas](https://github.com/sostenesfreitas/dkb-pc-recomp)** & contributors  
   For pioneering the first public Nintendo Switch 2 static recompilation, implementing hundreds of NVN 2 API entry points, adapting the Ampere shader pipeline, and proving Switch 2 recompilation on native PC hardware.
+- **[MKW Recomp](https://github.com/STS78721/MKW-THWOMP)** – **STS78721**  
+  For pioneering research into multi-core Horizon OS guest threading, Switch 2 NVN 2 texture formats, and PC recompilation pipelines.
 - **[LAS Recomp](https://github.com/peiikai/LASRecomp)** – **Peiikai**  
   For the original AArch64 ARM64-to-C lifter architecture, SIMD vector lowerings, and foundational Vulkan format mappings.
 - **[MacNativeGames](https://github.com/ly05010419/MacNativeGames)** – **ly05010419** & contributors  
@@ -50,5 +52,5 @@
 
 ---
 
-## 🏎️ Community & Early Hardware Testers
+## 🎾 Community & Early Hardware Testers
 - Thank you to all early community members, testers across NVIDIA GeForce, AMD Radeon, and Intel Arc GPUs, and everyone reporting logs, submitting pull requests, and advancing the frontier of Nintendo Switch 2 static recompilation on PC!

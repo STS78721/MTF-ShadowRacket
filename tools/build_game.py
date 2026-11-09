@@ -78,7 +78,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # them. MAIN_ROOT is where they land, so resolved paths still print and compare relative to a root.
 MAIN_ROOT = (ROOT / 'build').resolve().parent
 UCRT = Path(r'C:\msys64\ucrt64\bin')
-EXE = 'mkw.exe' if WIN else 'mkw'   # MKW Recomp: Mario Kart World PC executable
+EXE = 'mtf.exe' if WIN else 'mtf'   # MTF Recomp: Mario Tennis Fever PC executable
 
 
 def on_path(name):
@@ -150,7 +150,7 @@ WINDRES = UCRT / 'windres.exe'   # runtime/totk.rc: the manifest of totk.exe
 TOOLCHAIN_BIN = None   # llvm-mingw bin directory, set by main() for --toolchain
 DEPS = None            # the deps directory of an llvm-mingw build
 # tools/data/expected-<display version>.json for each build version name.
-DISPLAY_VERSIONS = {'v0': '1.0.0', 'v111': '1.1.1', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3'}
+DISPLAY_VERSIONS = {'v0': '1.0.0', 'v111': '1.1.1', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3', 'mtf111': '1.1.1', 'mkw180': '1.8.0'}
 
 GiB = 1 << 30
 # Peak commit of one compile, 1.2.1 at -O1 (2026-10-20): 120-180 MiB per ~3 MiB chunk, 568 MiB for main_table.c
@@ -298,7 +298,10 @@ def module_glue(layout, linked, hashes, paths, version, title_id=0x040074a01bf12
     out += ['};', f'const int rt_exefs_sha256_count = {len(hashes)};', '']
     for name in ('exefs', 'romfs', 'profile'):
         out.append(f'const char rt_default_{name}[] = {c_string(paths[name].as_posix())};')
-    number = int(DISPLAY_VERSIONS[version].replace('.', '')) if version in DISPLAY_VERSIONS else 0   # 1.4.3 -> 143
+    if any(k in version.lower() for k in ('mtf', 'mkw', 'dkb', 'oot')):
+        number = 0
+    else:
+        number = int(DISPLAY_VERSIONS[version].replace('.', '')) if version in DISPLAY_VERSIONS else 0   # 1.4.3 -> 143
     out += [f'const uint64_t rt_application_id = {title_id:#x}ull;',
             f'const int rt_game_version = {number};',
             f'const char rt_port_version[] = {c_string(port_version())};', '']
@@ -725,7 +728,7 @@ def mib(n):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--version', default='mkw180', help='game version (default mkw180)')
+    ap.add_argument('--version', default='mtf111', help='game version (default mtf111)')
     ap.add_argument('--gen', type=Path, help='generated C directory (default generated/<version>)')
     ap.add_argument('--out', type=Path, help='build directory (default build/<version>)')
     ap.add_argument('--modules', help='comma-separated subset of the layout modules (default all)')
@@ -738,10 +741,10 @@ def main():
                     help='comma-separated runtime/*.c names to leave out (the link needs another definition of what they '
                          'define)')
     ap.add_argument('--exefs', type=Path,
-                    help="totk.exe's default ExeFS directory (default build/extracted/<version>/exefs)")
-    ap.add_argument('--romfs', type=Path, help="totk.exe's default RomFS directory with romfs.bin and index.json "
+                    help="mtf.exe's default ExeFS directory (default build/extracted/<version>/exefs)")
+    ap.add_argument('--romfs', type=Path, help="mtf.exe's default RomFS directory with romfs.bin and index.json "
                                                '(default build/extracted/<version>/romfs)')
-    ap.add_argument('--profile', type=Path, help="totk.exe's default profile directory (default build/profile for v121, "
+    ap.add_argument('--profile', type=Path, help="mtf.exe's default profile directory (default build/profile for v121, "
                                                  "build/profile-<version> otherwise, so trying another version leaves "
                                                  "the main profile alone; saves load on 1.2.1 and 1.4.3 alike)")
     ap.add_argument('--toolchain', type=Path, help='llvm-mingw directory (with bin/clang.exe) to build with instead of '
@@ -754,21 +757,27 @@ def main():
     ap.add_argument('--deps', type=Path, help=f'with --toolchain: include/, lib/ and bin/ of Vulkan, SDL3, Opus, libvpx '
                                               f'and VMA (default {DEFAULT_DEPS.relative_to(ROOT).as_posix()})')
     ap.add_argument('--make-runtime-lib', action='store_true',
-                    help=f'build only <out>/{LIB_NAME} from runtime/ (no generated C, no totk.exe)')
+                    help=f'build only <out>/{LIB_NAME} from runtime/ (no generated C, no mtf.exe)')
     ap.add_argument('--runtime-lib', type=Path, help=f'link against this {LIB_NAME} instead of compiling runtime/ '
                                                     f'({", ".join(sorted(INSTALL_SIDE))} and modules.c still compile)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     args = ap.parse_args()
 
-    gen = (args.gen or (Path(r"C:\Games\MKW PC\generated\mkw180") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\generated\mkw180").is_dir() else ROOT / 'generated' / args.version)).resolve()
-    out = (args.out or (Path(r"C:\Games\MKW PC\build\mkw180") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\build\mkw180").is_dir() else ROOT / 'build' / args.version)).resolve()
+    gen = (args.gen or (Path(r"C:\Games\MTF PC\generated\mtf111") if 'mtf' in args.version.lower() and Path(r"C:\Games\MTF PC\generated\mtf111").is_dir()
+                        else (Path(r"C:\Games\MKW PC\generated\mkw180") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\generated\mkw180").is_dir()
+                              else ROOT / 'generated' / args.version))).resolve()
+    out = (args.out or (Path(r"C:\Games\MTF PC\build\mtf111") if 'mtf' in args.version.lower() and Path(r"C:\Games\MTF PC\build\mtf111").is_dir()
+                        else (Path(r"C:\Games\MKW PC\build\mkw180") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\build\mkw180").is_dir()
+                              else ROOT / 'build' / args.version))).resolve()
     extracted = ROOT / 'build' / 'extracted' / args.version
-    default_exefs = (Path(r"C:\Games\MKW PC\exefs") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\exefs").is_dir()
-                     else (ROOT / 'exefs' if (ROOT / 'exefs').is_dir() else extracted / 'exefs'))
-    default_romfs = (Path(r"C:\Games\MKW PC\romfs_packed") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\romfs_packed").is_dir()
-                     else (ROOT / 'romfs_packed' if (ROOT / 'romfs_packed').is_dir()
-                           else (ROOT / 'romfs' if (ROOT / 'romfs').is_dir() else extracted / 'romfs')))
+    default_exefs = (Path(r"C:\Games\MTF PC\exefs") if 'mtf' in args.version.lower() and Path(r"C:\Games\MTF PC\exefs").is_dir()
+                     else (Path(r"C:\Games\MKW PC\exefs") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\exefs").is_dir()
+                           else (ROOT / 'exefs' if (ROOT / 'exefs').is_dir() else extracted / 'exefs')))
+    default_romfs = (Path(r"C:\Games\MTF PC\romfs_packed") if 'mtf' in args.version.lower() and Path(r"C:\Games\MTF PC\romfs_packed").is_dir()
+                     else (Path(r"C:\Games\MKW PC\romfs_packed") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\romfs_packed").is_dir()
+                           else (ROOT / 'romfs_packed' if (ROOT / 'romfs_packed').is_dir()
+                                 else (ROOT / 'romfs' if (ROOT / 'romfs').is_dir() else extracted / 'romfs'))))
     paths = {'exefs': (args.exefs or default_exefs).resolve(),
              'romfs': (args.romfs or default_romfs).resolve(),
              'profile': (args.profile or ROOT / 'build' / ('profile' if args.version == 'v121'
@@ -783,9 +792,11 @@ def main():
             expected = ROOT / 'tools' / 'data' / f'expected-v{DISPLAY_VERSIONS[args.version]}.json'
     exp_data = json.loads(Path(expected).read_text())
     hashes = exp_data['exefs_sha256']
-    title_id = int(exp_data.get('title_id', '040074A01BF12000'), 16)
+    title_id = int(exp_data.get('title_id', '0400D4201C6EA000'), 16)
     global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS, EXE
-    if 'mkw' in args.version.lower() or 'mkw' in str(out).lower():
+    if 'mtf' in args.version.lower() or 'mtf' in str(out).lower():
+        EXE = 'mtf.exe' if WIN else 'mtf'
+    elif 'mkw' in args.version.lower() or 'mkw' in str(out).lower():
         EXE = 'mkw.exe' if WIN else 'mkw'
     if args.ninja:
         NINJA = args.ninja.resolve()
