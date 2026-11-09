@@ -101,6 +101,55 @@ static void ov_states_full_key(Cpu *c) { npad_states(c, STYLE_FULL_KEY); }
 static void ov_states_handheld(Cpu *c) { npad_states(c, STYLE_HANDHELD); }
 static void ov_states_joycon(Cpu *c) { npad_states(c, 0); }
 
+typedef struct { uint32_t main, sub; } NpadControllerColor;
+
+static void npad_state(Cpu *c, uint32_t want) {
+    NpadState *out = arg_p(c, 0);
+    uint32_t id = *need_id(c, 1, "GetNpadState");
+    if (!out) rt_fatal("nn::hid::GetNpadState: null output");
+    plat_mutex_lock(&lock);
+    NpadState s = {.sampling = ++sample};
+    int live = want && enabled && allowed && id == pad_id() && want == pad_style() && (styles & want);
+    plat_mutex_unlock(&lock);
+    if (live) {
+        s.attributes = ATTR_CONNECTED;
+        input_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry);
+    }
+    *out = s;
+}
+static void ov_state_full_key(Cpu *c) { npad_state(c, STYLE_FULL_KEY); }
+static void ov_state_handheld(Cpu *c) { npad_state(c, STYLE_HANDHELD); }
+static void ov_state_joycon(Cpu *c) { npad_state(c, 0); }
+
+static void ov_get_supported_styles(Cpu *c) {
+    plat_mutex_lock_shared(&lock);
+    uint32_t s = styles;
+    plat_mutex_unlock_shared(&lock);
+    ret_x(c, s);
+}
+
+static void ov_controller_color(Cpu *c) {
+    NpadControllerColor *col = arg_p(c, 0);
+    if (col) {
+        col->main = 0x828282;
+        col->sub = 0x0a0a0a;
+    }
+    ret_x(c, 0);
+}
+
+static void ov_controller_color_dual(Cpu *c) {
+    NpadControllerColor *l = arg_p(c, 0);
+    NpadControllerColor *r = arg_p(c, 1);
+    if (l) { l->main = 0x0ab9e6; l->sub = 0x001e32; }
+    if (r) { r->main = 0xff3c28; r->sub = 0x1e000a; }
+    ret_x(c, 0);
+}
+
+static void ov_controller_support_arg_default(Cpu *c) {
+    void *p = arg_p(c, 0);
+    if (p) memset(p, 0, 0x20);
+}
+
 // void SetNpadJoyHoldType(NpadJoyHoldType type)
 static void ov_hold_type(Cpu *c) {
     int64_t t = (int32_t)arg_x(c, 0);
@@ -669,3 +718,34 @@ HOST_OVERRIDE("_ZN2nn3hid6detail22GetSixAxisSensorStatesEPiPNS0_18SixAxisSensorS
               ov_six_states);
 HOST_OVERRIDE("_ZN2nn3hid6detail21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE",
               ov_six_state);
+
+HOST_OVERRIDE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj", ov_state_full_key);
+HOST_OVERRIDE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", ov_state_joycon);
+HOST_OVERRIDE("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyLeftStateERKj", ov_state_joycon);
+HOST_OVERRIDE("_ZN2nn3hid12GetNpadStateEPNS0_17NpadJoyRightStateERKj", ov_state_joycon);
+HOST_OVERRIDE("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", ov_state_handheld);
+HOST_OVERRIDE("_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", ov_six_state);
+HOST_OVERRIDE("_ZN2nn3hid24GetSupportedNpadStyleSetEv", ov_get_supported_styles);
+HOST_OVERRIDE("_ZN2nn3hid29SetNpadHandheldActivationModeENS0_26NpadHandheldActivationModeE", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid6detail29SetNpadHandheldActivationModeENS0_26NpadHandheldActivationModeE", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid18SwapNpadAssignmentERKjS2_", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid24ShowControllerStrapGuideEv", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorERKj", ov_controller_color);
+HOST_OVERRIDE("_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorES2_RKj", ov_controller_color_dual);
+HOST_OVERRIDE("_ZN2nn3hid20ControllerSupportArg10SetDefaultEv", ov_controller_support_arg_default);
+HOST_OVERRIDE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleEPjRKjNS0_17NpadJoyDeviceTypeE", ov_hid_zero);
+
+HOST_OVERRIDE("_ZN2nn3hid15VibrationTarget24SetVibrationDeviceHandleERKNS0_21VibrationDeviceHandleE", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid15VibrationTarget26UnsetVibrationDeviceHandleEv", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid23VibrationNodeConnection10DisconnectEv", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid23VibrationNodeConnection13SetModulationERKNS0_19VibrationModulationE", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid13VibrationNode6UpdateEv", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer4PlayEv", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer4StopEv", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer4LoadEPKvm", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer6UnloadEv", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer7SetLoopEb", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer15SetLoopIntervalEi", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer18SetCurrentPositionEi", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer20OnNextSampleRequiredEPNS0_14VibrationValueEPNS_4util13IntrusiveListINS0_23VibrationNodeConnectionENS4_27IntrusiveListBaseNodeTraitsIS6_S6_EEEE", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayerD2Ev", ov_hid_noop);

@@ -20,8 +20,8 @@ uint64_t hostfn_register_observer(const char *name, GuestFn fn, uint64_t origina
 enum { DT_NULL = 0, DT_PLTRELSZ = 2, DT_HASH = 4, DT_STRTAB = 5, DT_SYMTAB = 6, DT_RELA = 7, DT_RELASZ = 8,
        DT_INIT = 12, DT_FINI = 13, DT_JMPREL = 23, DT_INIT_ARRAY = 25, DT_FINI_ARRAY = 26, DT_INIT_ARRAYSZ = 27,
        DT_FINI_ARRAYSZ = 28, DT_RELRSZ = 0x23, DT_RELR = 0x24, DT_GNU_HASH = 0x6ffffef5 };
-enum { R_ABS64 = 257, R_GLOB_DAT = 1025, R_JUMP_SLOT = 1026, R_RELATIVE = 1027 };
-enum { K_RELATIVE, K_ABS64, K_GLOB_DAT, K_JUMP_SLOT, K_COUNT };
+enum { R_ABS64 = 257, R_GLOB_DAT = 1025, R_JUMP_SLOT = 1026, R_RELATIVE = 1027, R_TLSDESC = 1031 };
+enum { K_RELATIVE, K_ABS64, K_GLOB_DAT, K_JUMP_SLOT, K_TLSDESC, K_COUNT };
 enum { STB_WEAK = 2, STT_FUNC = 2 };
 
 typedef struct { uint32_t name; uint8_t info, other; uint16_t shndx; uint64_t value, size; } Elf64Sym;
@@ -355,6 +355,11 @@ static Res resolve(Mod *m, uint32_t si, int jump) {
     return r;
 }
 
+static void tlsdesc_static_resolver(Cpu *c) {
+    uint64_t td = c->x[0];
+    c->x[0] = *(const uint64_t *)(uintptr_t)(td + 8);
+}
+
 static void relocate_table(Mod *m, const Elf64Rela *r, uint64_t n) {
     uint64_t base = m->pub.base;
     for (uint64_t i = 0; i < n; i++) {
@@ -366,6 +371,14 @@ static void relocate_table(Mod *m, const Elf64Rela *r, uint64_t n) {
         if (type == R_RELATIVE) {
             m->kinds[K_RELATIVE]++;
             v = base + (uint64_t)r[i].addend;
+            ST64(base + r[i].off, v);
+        } else if (type == R_TLSDESC) {
+            static uint64_t s_tlsdesc_resolver = 0;
+            if (!s_tlsdesc_resolver)
+                s_tlsdesc_resolver = hostfn_register("tlsdesc_static_resolver", tlsdesc_static_resolver);
+            m->kinds[K_TLSDESC]++;
+            ST64(base + r[i].off, s_tlsdesc_resolver);
+            ST64(base + r[i].off + 8, (uint64_t)r[i].addend);
         } else {
             int k = type == R_ABS64 ? K_ABS64 : type == R_GLOB_DAT ? K_GLOB_DAT : type == R_JUMP_SLOT ? K_JUMP_SLOT : -1;
             if (k < 0) rt_fatal("loader: %s relocation %llu has type %u", m->pub.name, (unsigned long long)i, type);
@@ -376,8 +389,8 @@ static void relocate_table(Mod *m, const Elf64Rela *r, uint64_t n) {
             else m->sym_import++;
             Res s = resolve(m, si, type == R_JUMP_SLOT);
             v = s.kind == RES_WEAK ? 0 : s.value + (type == R_JUMP_SLOT ? 0 : (uint64_t)r[i].addend);
+            ST64(base + r[i].off, v);
         }
-        ST64(base + r[i].off, v);
     }
 }
 

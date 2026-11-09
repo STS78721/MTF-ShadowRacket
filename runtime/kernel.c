@@ -1634,6 +1634,40 @@ int kern_svc(Cpu *c, uint32_t imm) {
             x[0] = R_BAD_STATE;
             return 1;
         }
+        if (rt_application_id == 0x0400D4201C6EA000ull && x[2]) {
+            uint64_t thread_obj = x[2];
+            if (thread_obj >= 0x100000000ull && thread_obj < 0x8000000000ull) {
+                uint64_t user_func = *(const uint64_t *)(uintptr_t)(thread_obj + 104);
+                uint64_t user_arg = *(const uint64_t *)(uintptr_t)(thread_obj + 96);
+                if (user_func >= 0x7000000dd0ull && user_func <= 0x7000001d80ull &&
+                    user_arg >= 0x100000000ull && user_arg < 0x8000000000ull) {
+                    static uint64_t s_mtf_worker_args[4] = {0};
+                    static uint64_t s_mtf_hashes_ptr = 0;
+                    static uint64_t s_mtf_barrier_ptr = 0;
+                    const uint64_t *src = (const uint64_t *)(uintptr_t)user_arg;
+                    if (src[0] && src[1] && src[2]) {
+                        s_mtf_worker_args[0] = src[0];
+                        const uint64_t *p_hashes = (const uint64_t *)(uintptr_t)src[1];
+                        if (p_hashes && *p_hashes >= 0x100000000ull && *p_hashes < 0x8000000000ull) {
+                            s_mtf_hashes_ptr = *p_hashes;
+                            s_mtf_worker_args[1] = (uint64_t)(uintptr_t)&s_mtf_hashes_ptr;
+                        }
+                        const uint64_t *p_barrier = (const uint64_t *)(uintptr_t)src[2];
+                        if (p_barrier && *p_barrier >= 0x100000000ull && *p_barrier < 0x8000000000ull) {
+                            s_mtf_barrier_ptr = *p_barrier;
+                            s_mtf_worker_args[2] = (uint64_t)(uintptr_t)&s_mtf_barrier_ptr;
+                        }
+                    }
+                    *(uint64_t *)(uintptr_t)(thread_obj + 96) = (uint64_t)(uintptr_t)s_mtf_worker_args;
+                    rt_log("kernel: MTF worker %d (func %#llx): args=[%#llx, &hashes=%#llx(*=%#llx), &barrier=%#llx(*=%#llx)], redirected ThreadType %#llx",
+                           core, (unsigned long long)user_func,
+                           (unsigned long long)s_mtf_worker_args[0],
+                           (unsigned long long)s_mtf_worker_args[1], (unsigned long long)s_mtf_hashes_ptr,
+                           (unsigned long long)s_mtf_worker_args[2], (unsigned long long)s_mtf_barrier_ptr,
+                           (unsigned long long)thread_obj);
+                }
+            }
+        }
         RtThread *t = thr_new(prio, core >= 0 ? core : MAIN_CORE, core >= 0 ? 1ull << core : ((1ull << NCORE) - 1));
         t->entry = x[1];
         t->arg = x[2];

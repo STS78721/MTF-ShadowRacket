@@ -140,6 +140,19 @@ static void ov_cpu_boost(Cpu *c) {
 static void ov_operation_mode(Cpu *c) { ret_x(c, ov_handheld() ? 0 : 1); }
 static void ov_performance_mode(Cpu *c) { ret_x(c, ov_handheld() ? 0 : 1); }
 
+static void ov_get_default_display_resolution(Cpu *c) {
+    int32_t *w = (int32_t *)arg_p(c, 0);
+    int32_t *h = (int32_t *)arg_p(c, 1);
+    if (w) *w = ov_handheld() ? 1280 : 1920;
+    if (h) *h = ov_handheld() ? 720 : 1080;
+}
+
+static void ov_display_resolution_change_event(Cpu *c) {
+    uint64_t ev = arg_x(c, 0);
+    if (!ev) rt_fatal("nn::oe::GetDefaultDisplayResolutionChangeEvent: null event");
+    kern_bind_system_event(c, ev, 0);
+}
+
 // void SetFocusHandlingMode(FocusHandlingMode mode): the nnMain checkpoint of --boot
 static volatile int32_t focus_mode;
 static void ov_focus_mode(Cpu *c) {
@@ -184,6 +197,9 @@ static float balance[2] = {1.0f, 1.0f};
 static uint64_t start_ticks;
 __attribute__((constructor)) static void started(void) { start_ticks = rt_ticks(); }
 
+static uint64_t s_oe_notif_ev[8] = {0};
+static int s_oe_notif_initialized = 0;
+
 void oe_push_message(uint32_t message) {
     plat_mutex_lock(&lock);
     if (tail - head < 32) {
@@ -191,6 +207,18 @@ void oe_push_message(uint32_t message) {
         plat_cond_broadcast(&message_cv);
     }
     plat_mutex_unlock(&lock);
+    if (s_oe_notif_initialized) {
+        kern_signal_system_event((uint64_t)(uintptr_t)s_oe_notif_ev);
+    }
+}
+
+static void ov_oe_notification_message_event(Cpu *c) {
+    uint64_t ev = (uint64_t)(uintptr_t)s_oe_notif_ev;
+    if (!s_oe_notif_initialized) {
+        kern_bind_system_event(c, ev, 1);
+        s_oe_notif_initialized = 1;
+    }
+    ret_x(c, ev);
 }
 
 // void GetExpectedVolumeBalance(float *left, float *right)
@@ -845,7 +873,17 @@ static const uint8_t *font_data(Cpu *c, const char *fn, int64_t t) {
         fclose(f);
         uint64_t size = got == (size_t)len ? ov_bfttf_size(p, (uint64_t)len) : 0;
         if (!size) rt_fatal("nn::pl: shared font %s is not a BFTTF font", path);
-        fonts.size[t] = size;
+        // Decode the BFTTF XOR scrambling in-place so word0 is BFTTF_MAGIC (0x7f9a0218, or 0x18029a7f in little-endian)
+        // and the payload at p+8 is a valid TrueType/OpenType font.
+        uint32_t key = be32(p) ^ BFTTF_MAGIC;
+        for (uint64_t i = 0; i + 4 <= (uint64_t)len; i += 4) {
+            uint32_t w = be32(p + i) ^ key;
+            p[i]     = (uint8_t)(w >> 24);
+            p[i + 1] = (uint8_t)(w >> 16);
+            p[i + 2] = (uint8_t)(w >> 8);
+            p[i + 3] = (uint8_t)w;
+        }
+        fonts.size[t] = (uint64_t)len;
         __atomic_store_n(&fonts.file[t], p, __ATOMIC_RELEASE);
         rt_log("pl: shared font %lld (%s): %llu bytes from %s", (long long)t, font_type_name(t),
                (unsigned long long)size, path);
@@ -856,7 +894,7 @@ static const uint8_t *font_data(Cpu *c, const char *fn, int64_t t) {
 }
 static void ov_font_address(Cpu *c) {
     int64_t t = font_type(c, "GetSharedFontAddress");
-    ret_x(c, (uint64_t)(uintptr_t)(font_data(c, "GetSharedFontAddress", t) + 8));
+    ret_x(c, (uint64_t)(uintptr_t)font_data(c, "GetSharedFontAddress", t));
 }
 static void ov_font_size(Cpu *c) {
     int64_t t = font_type(c, "GetSharedFontSize");
@@ -957,6 +995,9 @@ HOST_OVERRIDE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", 
 HOST_OVERRIDE("_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE", ov_cpu_boost);
 HOST_OVERRIDE("_ZN2nn2oe16GetOperationModeEv", ov_operation_mode);
 HOST_OVERRIDE("_ZN2nn2oe18GetPerformanceModeEv", ov_performance_mode);
+HOST_OVERRIDE("_ZN2nn2oe27GetDefaultDisplayResolutionEPiS1_", ov_get_default_display_resolution);
+HOST_OVERRIDE("_ZN2nn2oe38GetDefaultDisplayResolutionChangeEventEPNS_2os11SystemEventE", ov_display_resolution_change_event);
+HOST_OVERRIDE("_ZN2nn2oe38GetDefaultDisplayResolutionChangeEventEPNS_2os15SystemEventTypeE", ov_display_resolution_change_event);
 HOST_OVERRIDE("_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE", ov_focus_mode);
 HOST_OVERRIDE("_ZN2nn2oe20GetCurrentFocusStateEv", ov_focus_state);
 HOST_OVERRIDE("_ZN2nn2oe28SetResumeNotificationEnabledEb", ov_resume_enabled);
@@ -973,6 +1014,7 @@ HOST_OVERRIDE("_ZN2nn2oe25GetProgramTotalActiveTimeEv", ov_active_time);
 HOST_OVERRIDE("_ZN2nn2oe38SetUserInactivityDetectionTimeExtendedEb", ov_inactivity_extended);
 HOST_OVERRIDE("_ZN2nn2oe44SetUserInactivityDetectionTimeExtendedUnsafeEb", ov_inactivity_extended);
 HOST_OVERRIDE("_ZN2nn2oe17FinishStartupLogoEv", ov_finish_logo);
+HOST_OVERRIDE("_ZN2nn2oe27GetNotificationMessageEventEv", ov_oe_notification_message_event);
 HOST_OVERRIDE("_ZN2nn2oe25TryPopNotificationMessageEPj", ov_try_pop);
 HOST_OVERRIDE("_ZN2nn2oe22PopNotificationMessageEv", ov_pop);
 HOST_OVERRIDE("_ZN2nn5prepo10PlayReport4SaveEv", ov_report_save);
@@ -1127,10 +1169,38 @@ HOST_OVERRIDE("_ZN2nn3ssl10InitializeEv", ov_ret_zero);
 HOST_OVERRIDE("_ZN2nn3ssl8FinalizeEv", ov_ret_zero);
 HOST_OVERRIDE("_ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE", ov_nsd_env);
 HOST_OVERRIDE("_ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_", ov_nsd_resolve);
+static void ov_ro_load_module(Cpu *c) {
+    uint64_t mod = c->x[0];
+    uint64_t image = c->x[1];
+    uint64_t buffer = c->x[2];
+    uint64_t size = c->x[3];
+    int flag = (int)c->x[4];
+    rt_log("ro: LoadModule(mod=%#llx, image=%#llx, buffer=%#llx, size=%llu, flag=%d)",
+           (unsigned long long)mod, (unsigned long long)image, (unsigned long long)buffer,
+           (unsigned long long)size, flag);
+    uint32_t magic = *(const uint32_t *)(uintptr_t)(image + 0x10);
+    uint32_t nro_size = *(const uint32_t *)(uintptr_t)(image + 0x18);
+    rt_log("ro: NRO header magic: 0x%08x (%.4s), nro_size=%u bytes (%.2f MiB)",
+           magic, (const char *)(uintptr_t)(image + 0x10), nro_size, (double)nro_size / (1024.0 * 1024.0));
+    FILE *f = fopen("C:/Games/MTF PC/dumped_game.nro", "wb");
+    if (f) {
+        size_t dump_sz = (nro_size > 0x1000 && nro_size < 200 * 1024 * 1024) ? nro_size : (48 * 1024 * 1024);
+        fwrite((const void *)(uintptr_t)image, 1, dump_sz, f);
+        fclose(f);
+        rt_log("ro: Dumped decrypted NRO (%zu bytes) to C:/Games/MTF PC/dumped_game.nro!", dump_sz);
+    }
+    ret_x(c, 0);
+}
+
 HOST_OVERRIDE("_ZN2nn2ro10InitializeEv", ov_ret_zero);
 HOST_OVERRIDE("_ZN2nn2ro22InitializeWithPortNameEPKc", ov_ret_zero);
 HOST_OVERRIDE("_ZN2nn2ro8FinalizeEv", ov_noop);
 HOST_OVERRIDE("_ZN2nn2ro12ProtectRelroEPKvS2_S2_S2_S2_", ov_noop);
+HOST_OVERRIDE("_ZN2nn2ro18RegisterModuleInfoEPNS0_16RegistrationInfoEPKv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn2ro18RegisterModuleInfoEPNS0_16RegistrationInfoEPKvj", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn2ro20UnregisterModuleInfoEPNS0_16RegistrationInfoE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmi", ov_ro_load_module);
+HOST_OVERRIDE("_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmib", ov_ro_load_module);
 HOST_OVERRIDE("_ZN2nn2pl17RequestLoadNxFontEPvm", ov_noop);
 HOST_OVERRIDE("_ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE", ov_report_send);
 HOST_OVERRIDE("_ZN2nn5prepo12AsyncContext18GetCompletionEventEPNS_2os11SystemEventE", ov_async_event);
@@ -1287,6 +1357,32 @@ static void ov_friends_friend_false(Cpu *c) {
     ret_x(c, 0);
 }
 
+static void ov_friends_notification_event(Cpu *c) {
+    static uint64_t s_notif_ev[8] = {0};
+    static int s_initialized = 0;
+    uint64_t ev = (uint64_t)(uintptr_t)s_notif_ev;
+    if (!s_initialized) {
+        kern_bind_system_event(c, ev, 0);
+        s_initialized = 1;
+    }
+    ret_x(c, ev);
+}
+
+static void ov_friends_invitation_event(Cpu *c) {
+    static uint64_t s_invitation_ev[8] = {0};
+    static int s_initialized = 0;
+    uint64_t ev = (uint64_t)(uintptr_t)s_invitation_ev;
+    if (!s_initialized) {
+        kern_bind_system_event(c, ev, 0);
+        s_initialized = 1;
+    }
+    ret_x(c, ev);
+}
+
+static void ov_friends_pop_invitation(Cpu *c) {
+    ret_x(c, 0);
+}
+
 HOST_OVERRIDE("_ZN2nn7friends10InitializeEv", ov_friends_init);
 HOST_OVERRIDE("_ZN2nn7friends8FinalizeEv", ov_noop);
 HOST_OVERRIDE("_ZN2nn7friends12SetAllocatorEPFPvmEPFvS1_mE", ov_noop);
@@ -1312,6 +1408,18 @@ HOST_OVERRIDE("_ZN2nn7friends6detail3ipc10InitializeEv", ov_friends_init);
 HOST_OVERRIDE("_ZN2nn7friends6detail3ipc8FinalizeEv", ov_noop);
 HOST_OVERRIDE("_ZN2nn7friends6detail17ShimLibraryGlobal10InitializeEv", ov_friends_init);
 HOST_OVERRIDE("_ZN2nn7friends6detail17ShimLibraryGlobal8FinalizeEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn7friends17NotificationQueue10InitializeERKNS_7account3UidE", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn7friends17NotificationQueue10InitializeEv", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn7friends17NotificationQueue8FinalizeEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn7friends17NotificationQueue5ClearEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn7friends17NotificationQueue3PopEPNS0_16NotificationInfoE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn7friends17NotificationQueue14GetSystemEventEv", ov_friends_notification_event);
+HOST_OVERRIDE("_ZN2nn7friends36GetFriendInvitationNotificationEventEv", ov_friends_invitation_event);
+HOST_OVERRIDE("_ZN2nn7friends38TryPopFriendInvitationNotificationInfoEPNS_7account3UidEPmPvm", ov_friends_pop_invitation);
+HOST_OVERRIDE("_ZN2nn7friends21StartFriendInvitationENS0_24FriendInvitationViewModeERKNS_7account3UidEiRKNS0_35FriendInvitationGameModeDescriptionEPKvm", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn7friends21StartFriendInvitationERKNS_7account3UidEiRKNS0_35FriendInvitationGameModeDescriptionEPKvm", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn7friends28StartSendingFriendInvitationERKNS_7account3UidEPKNS1_23NetworkServiceAccountIdEiRKNS0_35FriendInvitationGameModeDescriptionEPKvm", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn7friends28ShowReceivedInvitationDetailERKNS_7account3UidERKNS0_18FriendInvitationIdERKNS0_23FriendInvitationGroupIdE", ov_result_ok);
 
 static PlatMutex s_fallback_lock;
 static uint64_t g_heap_fallback_bump = 0;
