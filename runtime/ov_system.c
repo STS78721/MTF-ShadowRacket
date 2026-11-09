@@ -717,6 +717,22 @@ static void ov_to_posix_utc(Cpu *c) {
     ret_x(c, (uint64_t)t);
 }
 
+static void ov_get_device_location_name(Cpu *c) {
+    char *out = arg_p(c, 0);
+    if (!out) { ret_x(c, TIME_R_INVALID); return; }
+    location_name(out);
+    ret_x(c, 0);
+}
+
+static void ov_system_clock_context(Cpu *c) {
+    SystemClockContext *out = arg_p(c, 0);
+    if (!out) { ret_x(c, TIME_R_INVALID); return; }
+    SteadyClockTimePoint steady = steady_now();
+    int64_t now = posix_now();
+    *out = (SystemClockContext){now - steady.value, steady};
+    ret_x(c, 0);
+}
+
 // ClockSnapshot::ClockSnapshot()
 static void ov_snapshot_init(Cpu *c) {
     ClockSnapshot *s = arg_p(c, 0);
@@ -1013,6 +1029,9 @@ HOST_OVERRIDE("_ZN2nn4time8FinalizeEv", ov_time_finalize);
 HOST_OVERRIDE("_ZN2nn4time13IsInitializedEv", ov_time_ready);
 HOST_OVERRIDE("_ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", ov_current_time);
 HOST_OVERRIDE("_ZN2nn4time26StandardNetworkSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", ov_current_time);
+HOST_OVERRIDE("_ZN2nn4time26StandardNetworkSystemClock20IsAccuracySufficientEv", ov_ret_one);
+HOST_OVERRIDE("_ZN2nn4time26StandardNetworkSystemClock21GetSystemClockContextEPNS0_18SystemClockContextE", ov_system_clock_context);
+HOST_OVERRIDE("_ZN2nn4time23StandardUserSystemClock21GetSystemClockContextEPNS0_18SystemClockContextE", ov_system_clock_context);
 HOST_OVERRIDE("_ZN2nn4time23StandardUserSystemClock3nowEv", ov_posix_now);
 HOST_OVERRIDE("_ZN2nn4time26StandardNetworkSystemClock3nowEv", ov_posix_now);
 HOST_OVERRIDE("_ZN2nn4time19StandardSteadyClock3nowEv", ov_steady_now);
@@ -1030,6 +1049,9 @@ HOST_OVERRIDE("_ZN2nn4time13ClockSnapshot29CreateWithStandardSystemClockEPS1_", 
 HOST_OVERRIDE("_ZN2nn4time20CalculateSpanBetweenEPNS_8TimeSpanERKNS0_13ClockSnapshotES5_", ov_span_between);
 HOST_OVERRIDE("_ZN2nn4time48CalculateStandardUserSystemClockDifferenceByUserERKNS0_13ClockSnapshotES3_",
               ov_user_difference);
+HOST_OVERRIDE("_ZN2nn4time21GetDeviceLocationNameEPNS0_12LocationNameE", ov_get_device_location_name);
+HOST_OVERRIDE("_ZN2nn8settings6system29GetDeviceTimeZoneLocationNameEPNS_4time12LocationNameE", ov_get_device_location_name);
+HOST_OVERRIDE("_ZN2nn8settings6detail29GetDeviceTimeZoneLocationNameEPNS_4time12LocationNameE", ov_get_device_location_name);
 
 HOST_OVERRIDE("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", ov_font_state);
 HOST_OVERRIDE("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE", ov_font_address);
@@ -1150,11 +1172,142 @@ static void ov_account_async_move_assign(Cpu *c) {
 HOST_OVERRIDE("_ZN2nn7account12AsyncContextaSEOS1_", ov_account_async_move_assign);
 
 static void ov_mem_debug_break(Cpu *c) {
-    rt_log("mem: nnmem_nlib_debug_break ignored (x0=%#llx x1=%#llx lr=%#llx)",
-           (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[30]);
+    static int s_logged = 0;
+    if (s_logged < 10) {
+        s_logged++;
+        rt_log("mem: nnmem_nlib_debug_break ignored (x0=%#llx x1=%#llx lr=%#llx)%s",
+               (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[30],
+               s_logged == 10 ? " (further breaks suppressed)" : "");
+    }
 }
 HOST_OVERRIDE("nnmem_nlib_debug_break", ov_mem_debug_break);
 HOST_OVERRIDE("_ZN2nn7nlibsdk4heap18NotNMallocPtrErrorEPKv", ov_mem_debug_break);
+
+// nn::chat: Game Chat and Camera streaming stub (offline/disabled)
+static void ov_chat_init(Cpu *c) { ret_x(c, 0); }
+static void ov_chat_false(Cpu *c) { ret_x(c, 0); }
+static void ov_chat_attach_event(Cpu *c) {
+    uint64_t ev = arg_x(c, 0);
+    if (ev) kern_bind_system_event(c, ev, 0);
+    ret_x(c, 0);
+}
+
+HOST_OVERRIDE("_ZN2nn4chat10InitializeEv", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat10IsChattingEv", ov_chat_false);
+HOST_OVERRIDE("_ZN2nn4chat8FinalizeEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat30InitializeWithoutVirtualCameraEv", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat28FinalizeWithoutVirtualCameraEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat11GetRoomInfoEPNS0_8RoomInfoE", ov_chat_false);
+HOST_OVERRIDE("_ZN2nn4chat13SetSharingKeyERKNS0_10SharingKeyE", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat13ShowChatStartERKNS_7account3UidE", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat14GetChattingUidEv", ov_chat_false);
+HOST_OVERRIDE("_ZN2nn4chat15ClearSharingKeyEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat20SetScreenSharingModeENS0_17ScreenSharingModeE", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat22ShowCameraSharingGuideEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat24StopLocalCameraStreamingEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat25StartLocalCameraStreamingEv", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat25StopRemoteCameraStreamingERKNS_7account23NetworkServiceAccountIdE", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat26StartRemoteCameraStreamingERKNS_7account23NetworkServiceAccountIdE", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat25GetLocalCameraImageHandleEPKNS0_20LocalCameraVideoTypeEi", ov_chat_false);
+HOST_OVERRIDE("_ZN2nn4chat26GetRemoteCameraImageHandleEPKNS0_21RemoteCameraVideoTypeEi", ov_chat_false);
+HOST_OVERRIDE("_ZN2nn4chat27RequestNextLocalCameraImageEPNS_2gs16NativeSyncHandleEPNS0_20LocalCameraVideoTypeEiS2_", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat28AttachToRoomInfoChangedEventEPNS_2os11SystemEventE", ov_chat_attach_event);
+HOST_OVERRIDE("_ZN2nn4chat28RequestNextRemoteCameraImageEPNS_2gs16NativeSyncHandleEPNS0_21RemoteCameraVideoTypeEiS2_RKNS_7account23NetworkServiceAccountIdE", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat28SetScreenSharingDisallowListEPKNS_7account23NetworkServiceAccountIdEi", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat30ClearScreenSharingDisallowListEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat31FinalizeLocalCameraVideoStorageEPNS0_20LocalCameraVideoTypeE", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat32FinalizeRemoteCameraVideoStorageEPNS0_21RemoteCameraVideoTypeE", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat33AttachToChattingStateChangedEventEPNS_2os11SystemEventE", ov_chat_attach_event);
+HOST_OVERRIDE("_ZN2nn4chat33InitializeLocalCameraVideoStorageEPNS0_20LocalCameraVideoTypeEiiiPvm", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat34InitializeRemoteCameraVideoStorageEPNS0_21RemoteCameraVideoTypeEiiiPvm", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat35CalculateLocalCameraVideoBufferSizeEiii", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn4chat36CalculateRemoteCameraVideoBufferSizeEiii", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn4chat36ShowLocalCameraConfigurationVersion0ENS0_25CameraImageProcessingModeE", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat44EndFullScreenWithLocalCameraAvailableSectionEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat46BeginFullScreenWithLocalCameraAvailableSectionEb", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat46BeginFullScreenWithLocalCameraAvailableSectionEbb", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat6detail21InitializeUserServiceEv", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat6detail23CreateUserServiceByHipcEv", ov_chat_init);
+HOST_OVERRIDE("_ZN2nn4chat6detail19FinalizeUserServiceEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4chat6detail24DestroyUserServiceByHipcEv", ov_noop);
+
+static void ov_gs_check_init(Cpu *c) {
+    rt_log("gs: CheckGraphicsSystemInitialized called");
+    if (rt_application_id == 0x0400C3F00006E000ull) {
+        *(uint32_t *)(uintptr_t)0x70052db828ull = 1;
+    }
+}
+HOST_OVERRIDE("_ZN2nn2gs3sdk30CheckGraphicsSystemInitializedEPKcm", ov_gs_check_init);
+
+// nn::friends: Friends service stub (offline/no friends)
+static void ov_friends_init(Cpu *c) {
+    rt_log("friends: Initialize called");
+    ret_x(c, 0);
+}
+
+static void ov_friends_async_ctor(Cpu *c) {
+    uint64_t *ctx = arg_p(c, 0);
+    if (ctx) memset(ctx, 0, 32);
+    ret_x(c, (uint64_t)(uintptr_t)ctx);
+}
+
+static void ov_friends_async_done(Cpu *c) {
+    uint8_t *out = arg_p(c, 1);
+    if (out) *out = 1;
+    ret_x(c, 0);
+}
+
+static void ov_friends_check_availability(Cpu *c) {
+    uint8_t *out = arg_p(c, 0);
+    if (out) *out = 0;
+    ret_x(c, 0);
+}
+
+static void ov_friends_get_list(Cpu *c) {
+    int32_t *out_count = arg_p(c, 0);
+    if (out_count) *out_count = 0;
+    ret_x(c, 0);
+}
+
+static void ov_friends_friend_ctor(Cpu *c) {
+    void *p = arg_p(c, 0);
+    if (p) memset(p, 0, 0x100);
+    ret_x(c, (uint64_t)(uintptr_t)p);
+}
+
+static void ov_friends_friend_nickname(Cpu *c) {
+    static const char s_empty_name[] = "";
+    ret_x(c, (uint64_t)(uintptr_t)s_empty_name);
+}
+
+static void ov_friends_friend_false(Cpu *c) {
+    ret_x(c, 0);
+}
+
+HOST_OVERRIDE("_ZN2nn7friends10InitializeEv", ov_friends_init);
+HOST_OVERRIDE("_ZN2nn7friends8FinalizeEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn7friends12SetAllocatorEPFPvmEPFvS1_mE", ov_noop);
+HOST_OVERRIDE("_ZN2nn7friends12AsyncContextC1Ev", ov_friends_async_ctor);
+HOST_OVERRIDE("_ZN2nn7friends12AsyncContextC2Ev", ov_friends_async_ctor);
+HOST_OVERRIDE("_ZN2nn7friends12AsyncContextD1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn7friends12AsyncContextD2Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn7friends12AsyncContext7HasDoneEPb", ov_friends_async_done);
+HOST_OVERRIDE("_ZN2nn7friends12AsyncContext6CancelEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn7friends25EnsureFriendListAvailableEPNS0_12AsyncContextERKNS_7account3UidE", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn7friends27CheckFriendListAvailabilityEPbRKNS_7account3UidE", ov_friends_check_availability);
+HOST_OVERRIDE("_ZN2nn7friends13GetFriendListEPiPNS0_6FriendERKNS_7account3UidEiiRKNS0_12FriendFilterE", ov_friends_get_list);
+HOST_OVERRIDE("_ZN2nn7friends13GetFriendListEPiPNS0_6FriendEiiRKNS0_12FriendFilterE", ov_friends_get_list);
+HOST_OVERRIDE("_ZN2nn7friends14AddPlayHistoryERKNS_7account3UidERKNS0_26PlayHistoryRegistrationKeyERKNS0_15InAppScreenNameESA_", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn7friends29GetPlayHistoryRegistrationKeyEPNS0_26PlayHistoryRegistrationKeyERKNS_7account3UidEb", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn7friends6FriendC1Ev", ov_friends_friend_ctor);
+HOST_OVERRIDE("_ZN2nn7friends6FriendC2Ev", ov_friends_friend_ctor);
+HOST_OVERRIDE("_ZNK2nn7friends6Friend11GetNicknameEv", ov_friends_friend_nickname);
+HOST_OVERRIDE("_ZNK2nn7friends6Friend12GetAccountIdEv", ov_friends_friend_false);
+HOST_OVERRIDE("_ZNK2nn7friends6Friend7IsValidEv", ov_friends_friend_false);
+HOST_OVERRIDE("_ZN2nn7friends6detail3ipc10InitializeEv", ov_friends_init);
+HOST_OVERRIDE("_ZN2nn7friends6detail3ipc8FinalizeEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn7friends6detail17ShimLibraryGlobal10InitializeEv", ov_friends_init);
+HOST_OVERRIDE("_ZN2nn7friends6detail17ShimLibraryGlobal8FinalizeEv", ov_noop);
 
 static PlatMutex s_fallback_lock;
 static uint64_t g_heap_fallback_bump = 0;
@@ -1162,11 +1315,56 @@ static uint64_t g_heap_fallback_end = 0;
 static uint64_t s_expheap_hook_addr = 0;
 
 extern void __real_f_70003f24c0(Cpu *c) __attribute__((weak));
+extern void __real_f_7000d32270(Cpu *c) __attribute__((weak));
+extern void __real_f_7000d31b20(Cpu *c) __attribute__((weak));
+extern void __real_f_7000cdc2f0(Cpu *c) __attribute__((weak));
+extern void __real_f_70005e10a0(Cpu *c) __attribute__((weak));
+extern void __real_f_70003f2d70(Cpu *c) __attribute__((weak));
+
+void __wrap_f_70005e10a0(Cpu *c) {
+    if (__real_f_70005e10a0) {
+        __real_f_70005e10a0(c);
+    } else {
+        GuestFn orig = rt_dispatch_lookup(0x70005e10a0ull);
+        if (orig) orig(c);
+    }
+    if (c->x[0] == 0) {
+        rt_log("heap: f_70005e10a0 getMaxAllocatableSize returned 0, providing fallback 32 MiB");
+        c->x[0] = 32 * 1024 * 1024;
+    }
+}
+
+void __wrap_f_70003f2d70(Cpu *c) {
+    if (__real_f_70003f2d70) {
+        __real_f_70003f2d70(c);
+    } else {
+        GuestFn orig = rt_dispatch_lookup(0x70003f2d70ull);
+        if (orig) orig(c);
+    }
+    if (c->x[0] == 0) {
+        rt_log("heap: f_70003f2d70 getMaxAllocatableSize returned 0, providing fallback 32 MiB");
+        c->x[0] = 32 * 1024 * 1024;
+    }
+}
+
+void __wrap_f_7000cdc2f0(Cpu *c) {
+    rt_log("camera: f_7000cdc2f0 PlatformLocalCameraMgr::Initialize bypassed");
+}
+
+void __wrap_f_7000d32270(Cpu *c) {
+    rt_log("chat: f_7000d32270 camera video storage init bypassed");
+}
+
+void __wrap_f_7000d31b20(Cpu *c) {
+    rt_log("chat: f_7000d31b20 remote camera video storage init bypassed");
+}
 
 void __wrap_f_70003f24c0(Cpu *c) {
     uint64_t heap = c->x[0];
     uint64_t size = c->x[1];
-    uint64_t align = c->x[2];
+    int32_t raw_align = (int32_t)c->x[2];
+    int64_t mag_align = raw_align < 0 ? -(int64_t)raw_align : (int64_t)raw_align;
+    uint64_t align = (uint64_t)mag_align;
     uint64_t lr = c->x[30];
 
     // Try original guest ExpHeap::alloc first
@@ -1193,13 +1391,19 @@ void __wrap_f_70003f24c0(Cpu *c) {
 
     const RtGuestLayout *L = mem_layout();
     if (!g_heap_fallback_bump) {
-        // Start fallback region inside the committed heap at 1152 MiB offset (well within 1500 MiB)
+        // Start fallback region inside the reserved heap at 1152 MiB offset
         g_heap_fallback_bump = L->heap.base + 0x48000000ull;
-        g_heap_fallback_end = L->heap.base + 0x58000000ull;
+        g_heap_fallback_end = g_heap_fallback_bump;
     }
 
     if (size == 0) size = 16;
     if (align < 8) align = 8;
+    if (align > 65536) align = 65536;
+    if ((align & (align - 1)) != 0) {
+        uint64_t p = 1;
+        while (p < align) p <<= 1;
+        align = p;
+    }
 
     // Align user_ptr with 0x20 bytes reserved before it for the ExpHeap MemBlock header
     uint64_t user_ptr = (g_heap_fallback_bump + 0x20ull + align - 1) & ~(align - 1);
@@ -1208,9 +1412,14 @@ void __wrap_f_70003f24c0(Cpu *c) {
     uint64_t next_bump = user_ptr + alloc_sz;
 
     if (next_bump > g_heap_fallback_end) {
-        size_t commit_sz = 64ull << 20;
-        plat_mem_commit(g_heap_fallback_end, commit_sz);
+        size_t need = (size_t)(next_bump - g_heap_fallback_end);
+        size_t commit_sz = (need + (64ull << 20) - 1) & ~((64ull << 20) - 1);
+        if (!plat_mem_commit(g_heap_fallback_end, commit_sz)) {
+            rt_fatal("heap: failed to commit fallback heap %#llx bytes at %#llx",
+                     (unsigned long long)commit_sz, (unsigned long long)g_heap_fallback_end);
+        }
         g_heap_fallback_end += commit_sz;
+        mem_expand_heap(g_heap_fallback_end);
     }
 
     // Populate ExpHeap MemBlock header
@@ -1235,8 +1444,230 @@ static void ov_expheap_alloc_hook(Cpu *c) {
     __wrap_f_70003f24c0(c);
 }
 
+static uint64_t s_obj_dispose_hook_addr = 0;
+
+void __wrap_f_700087b9b0(Cpu *c) {
+    uint64_t obj = c->x[0];
+    if (!obj) return;
+
+    uint64_t x20 = 0;
+
+    // Check condition 1 (+0xf0)
+    uint64_t ea1 = obj + 0xf0ull;
+    uint64_t v1 = *(uint64_t *)(uintptr_t)ea1;
+    if (v1) {
+        uint64_t a0 = *(uint64_t *)(uintptr_t)(v1 + 0x38ull);
+        if (a0) {
+            uint64_t vt = *(uint64_t *)(uintptr_t)a0;
+            uint64_t fn = *(uint64_t *)(uintptr_t)(vt + 0xa0ull);
+            uint64_t res = rt_call(c, fn, 2, a0, obj);
+            if (res & 1) {
+                uint64_t v = *(uint64_t *)(uintptr_t)ea1;
+                x20 = *(uint64_t *)(uintptr_t)(v + 0x38ull);
+            }
+        }
+    }
+
+    // Check condition 2 (+0x118)
+    if (!x20) {
+        uint64_t ea2 = obj + 0x118ull;
+        uint64_t v2 = *(uint64_t *)(uintptr_t)ea2;
+        if (v2) {
+            uint64_t a0 = *(uint64_t *)(uintptr_t)(v2 + 0x38ull);
+            if (a0) {
+                uint64_t vt = *(uint64_t *)(uintptr_t)a0;
+                uint64_t fn = *(uint64_t *)(uintptr_t)(vt + 0xa0ull);
+                uint64_t res = rt_call(c, fn, 2, a0, obj);
+                if (res & 1) {
+                    uint64_t v = *(uint64_t *)(uintptr_t)ea2;
+                    x20 = *(uint64_t *)(uintptr_t)(v + 0x38ull);
+                }
+            }
+        }
+    }
+
+    // Call vtable[0](obj) (destructor)
+    uint64_t obj_vt = *(uint64_t *)(uintptr_t)obj;
+    uint64_t dtor = *(uint64_t *)(uintptr_t)obj_vt;
+    rt_call(c, dtor, 1, obj);
+
+    // If x20 is valid, call vtable[0x38/8](x20, obj) (unlink)
+    if (x20) {
+        uint64_t cnt_vt = *(uint64_t *)(uintptr_t)x20;
+        uint64_t unlink_fn = *(uint64_t *)(uintptr_t)(cnt_vt + 0x38ull);
+        rt_call(c, unlink_fn, 2, x20, obj);
+    } else {
+        rt_log("heap: __wrap_f_700087b9b0 object %#llx unattached, unlink skipped", (unsigned long long)obj);
+    }
+}
+
+void __real_f_700025a680(Cpu *c) __attribute__((weak));
+void __wrap_f_700025a680(Cpu *c) {
+    uint64_t ea = 0x70036f4148ull;
+    uint64_t mgr_ptr = *(uint64_t *)(uintptr_t)ea;
+    uint64_t mgr = mgr_ptr ? *(uint64_t *)(uintptr_t)mgr_ptr : 0;
+    if (!mgr) {
+        c->x[0] = 0;
+        return;
+    }
+    if (__real_f_700025a680) {
+        __real_f_700025a680(c);
+    } else {
+        c->x[0] = 0;
+    }
+}
+
+void __real_f_70006cec80(Cpu *c) __attribute__((weak));
+void __wrap_f_70006cec80(Cpu *c) {
+    uint64_t obj = c->x[0];
+    if (obj) {
+        uint32_t count = *(const uint32_t *)(uintptr_t)(obj + 0x240);
+        uint64_t arr_addr = *(const uint64_t *)(uintptr_t)(obj + 0x248);
+        if (arr_addr && count > 0 && count < 0x10000) {
+            uint64_t *arr = (uint64_t *)(uintptr_t)arr_addr;
+            for (uint32_t i = 0; i < count; i++) {
+                uint64_t item = arr[i];
+                if (item) {
+                    uint64_t vtbl = *(const uint64_t *)(uintptr_t)item;
+                    if (!vtbl) {
+                        rt_log("system: f_70006cec80 item %u (%#llx) null vtable, clearing", i, (unsigned long long)item);
+                        arr[i] = 0;
+                    } else {
+                        uint64_t fn = *(const uint64_t *)(uintptr_t)(vtbl + 0x58);
+                        if (!fn) {
+                            rt_log("system: f_70006cec80 item %u (%#llx, vtbl %#llx) null fn+0x58, clearing", i, (unsigned long long)item, (unsigned long long)vtbl);
+                            arr[i] = 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (__real_f_70006cec80) {
+        __real_f_70006cec80(c);
+    }
+}
+
+void __real_f_70006d2800(Cpu *c) __attribute__((weak));
+void __wrap_f_70006d2800(Cpu *c) {
+    uint64_t obj = c->x[0];
+    if (!obj || obj < 0x1000) return;
+    uint64_t vtable = *(const uint64_t *)(uintptr_t)obj;
+    if (vtable < 0x7000000000ull || vtable >= 0x7005400000ull) {
+        return;
+    }
+    if (__real_f_70006d2800) {
+        __real_f_70006d2800(c);
+    }
+}
+
+void __real_f_70006f9c50(Cpu *c) __attribute__((weak));
+void __wrap_f_70006f9c50(Cpu *c) {
+    uint64_t x19 = c->x[0];
+    if (x19 >= 0x100000000ull && x19 < 0x8000000000ull) {
+        uint64_t x24 = x19 + 128; // 0x80
+        uint64_t x22 = *(const uint64_t *)(uintptr_t)(x24 + 8);
+        if (x22 > 1 && x22 < 0x8000000000ull) {
+            int32_t off = *(const int32_t *)(uintptr_t)(x22 + 0x7c);
+            uint64_t x8 = x24 + off;
+            if (x8 >= 0x100000000ull && x8 < 0x8000000000ull && (x8 & 7) == 0) {
+                uint64_t next = *(const uint64_t *)(uintptr_t)(x8);
+                uint64_t prev = *(const uint64_t *)(uintptr_t)(x8 + 8);
+                int next_ok = (next == 0) || (next >= 0x100000000ull && next < 0x8000000000ull && (next & 7) == 0);
+                int prev_ok = (prev == 0) || (prev >= 0x100000000ull && prev < 0x8000000000ull && (prev & 7) == 0);
+                if (!next_ok || !prev_ok) {
+                    rt_log("heap: f_70006f9c50 invalid list node at %#llx (next=%#llx, prev=%#llx), clearing",
+                           (unsigned long long)x8, (unsigned long long)next, (unsigned long long)prev);
+                    *(uint64_t *)(uintptr_t)x8 = 0;
+                    *(uint64_t *)(uintptr_t)(x8 + 8) = 0;
+                }
+            }
+        }
+    }
+    if (__real_f_70006f9c50) {
+        __real_f_70006f9c50(c);
+    }
+}
+
+void __real_f_70001a6e80(Cpu *c) __attribute__((weak));
+void __wrap_f_70001a6e80(Cpu *c) {
+    uint64_t obj = c->x[0];
+    if (obj >= 0x100000000ull && obj < 0x8000000000ull) {
+        for (int off = 0x128; off <= 0x130; off += 8) {
+            uint64_t child = *(const uint64_t *)(uintptr_t)(obj + off);
+            if (child >= 0x100000000ull && child < 0x8000000000ull) {
+                uint64_t vt = *(const uint64_t *)(uintptr_t)child;
+                if (vt >= 0x100000000ull && vt < 0x8000000000ull) {
+                    uint64_t fn = *(const uint64_t *)(uintptr_t)(vt + 0x48);
+                    if (!rt_dispatch_lookup(fn)) {
+                        rt_log("system: f_70001a6e80 obj %#llx child+0x%x (%#llx, vt %#llx) invalid fn+0x48 %#llx, clearing",
+                               (unsigned long long)obj, off, (unsigned long long)child, (unsigned long long)vt, (unsigned long long)fn);
+                        *(uint64_t *)(uintptr_t)(obj + off) = 0;
+                    }
+                } else {
+                    rt_log("system: f_70001a6e80 obj %#llx child+0x%x (%#llx) invalid vt %#llx, clearing",
+                           (unsigned long long)obj, off, (unsigned long long)child, (unsigned long long)vt);
+                    *(uint64_t *)(uintptr_t)(obj + off) = 0;
+                }
+            } else if (child != 0) {
+                *(uint64_t *)(uintptr_t)(obj + off) = 0;
+            }
+        }
+    }
+    if (__real_f_70001a6e80) {
+        __real_f_70001a6e80(c);
+    }
+}
+
+static uint64_t s_noop_hook_addr = 0;
+
+void __real_f_7000192d60(Cpu *c) __attribute__((weak));
+void __wrap_f_7000192d60(Cpu *c) {
+    uint64_t x0 = c->x[0];
+    if (x0 >= 0x100000000ull && x0 < 0x8000000000ull) {
+        uint64_t obj22 = *(const uint64_t *)(uintptr_t)(x0 + 0x20);
+        if (obj22 >= 0x100000000ull && obj22 < 0x8000000000ull) {
+            uint64_t head = obj22 + 0x310;
+            uint64_t end_val = *(const uint64_t *)(uintptr_t)(obj22 + 0x318);
+            if (end_val != head && end_val >= 0x100000000ull && end_val < 0x8000000000ull) {
+                int32_t off = *(const int32_t *)(uintptr_t)(obj22 + 0x324);
+                uint64_t term = head - off;
+                uint64_t cur = end_val - off;
+                uint64_t noop = s_noop_hook_addr ? s_noop_hook_addr : 0x70029a7700ull;
+                int safety = 0;
+                while (cur != term && safety++ < 1000) {
+                    if (cur < 0x100000000ull || cur >= 0x8000000000ull) break;
+                    uint64_t vt = *(const uint64_t *)(uintptr_t)cur;
+                    if (vt >= 0x100000000ull && vt < 0x8000000000ull) {
+                        uint64_t slot10 = *(const uint64_t *)(uintptr_t)(vt + 0x10);
+                        if (slot10 == 0x7002921330ull) {
+                            uint64_t *pfn = (uint64_t *)(uintptr_t)(cur + 64);
+                            if (!rt_dispatch_lookup(*pfn)) {
+                                rt_log("system: f_7000192d60 delegate at %#llx invalid fn %#llx, replacing with noop",
+                                       (unsigned long long)cur, (unsigned long long)*pfn);
+                                *pfn = noop;
+                            }
+                        } else if (!rt_dispatch_lookup(slot10)) {
+                            rt_log("system: f_7000192d60 item at %#llx invalid slot10 %#llx, replacing with noop",
+                                   (unsigned long long)cur, (unsigned long long)slot10);
+                            *(uint64_t *)(uintptr_t)(vt + 0x10) = noop;
+                        }
+                    }
+                    uint64_t next = *(const uint64_t *)(uintptr_t)(cur + off + 8);
+                    if (next < 0x100000000ull || next >= 0x8000000000ull) break;
+                    cur = next - off;
+                }
+            }
+        }
+    }
+    if (__real_f_7000192d60) {
+        __real_f_7000192d60(c);
+    }
+}
+
 void ov_system_post_load(void) {
     if (rt_application_id == 0x0400C3F00006E000ull) {
+        s_noop_hook_addr = hostfn_register("mkw_noop", ov_noop);
         s_expheap_hook_addr = hostfn_register("sead__ExpHeap__alloc", ov_expheap_alloc_hook);
         uint64_t *vtable1 = (uint64_t *)(uintptr_t)0x700363a330ull;
         uint64_t *vtable2 = (uint64_t *)(uintptr_t)0x70036e1e18ull;
@@ -1246,12 +1677,25 @@ void ov_system_post_load(void) {
         rt_log("heap: patching ExpHeap derived vtable at %p (%#llx -> %#llx)",
                vtable2, (unsigned long long)*vtable2, (unsigned long long)s_expheap_hook_addr);
         *vtable2 = s_expheap_hook_addr;
+
+        s_obj_dispose_hook_addr = hostfn_register("mkw_object_dispose", __wrap_f_700087b9b0);
+        uint64_t *vtable_disp = (uint64_t *)(uintptr_t)0x70036b6a18ull;
+        rt_log("heap: patching dispose vtable at %p (%#llx -> %#llx)",
+               vtable_disp, (unsigned long long)*vtable_disp, (unsigned long long)s_obj_dispose_hook_addr);
+        *vtable_disp = s_obj_dispose_hook_addr;
     }
 }
 
 void ov_system_on_inits_done(void) {
-    if (rt_application_id == 0x0400C3F00006E000ull && s_expheap_hook_addr) {
-        *(uint64_t *)(uintptr_t)0x700363a330ull = s_expheap_hook_addr;
-        *(uint64_t *)(uintptr_t)0x70036e1e18ull = s_expheap_hook_addr;
+    if (rt_application_id == 0x0400C3F00006E000ull) {
+        if (s_expheap_hook_addr) {
+            *(uint64_t *)(uintptr_t)0x700363a330ull = s_expheap_hook_addr;
+            *(uint64_t *)(uintptr_t)0x70036e1e18ull = s_expheap_hook_addr;
+        }
+        if (s_obj_dispose_hook_addr) {
+            *(uint64_t *)(uintptr_t)0x70036b6a18ull = s_obj_dispose_hook_addr;
+        }
+        *(uint32_t *)(uintptr_t)0x70052db828ull = 1;
+        rt_log("gs: set 0x70052db828 = 1 in ov_system_on_inits_done");
     }
 }

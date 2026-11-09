@@ -573,21 +573,16 @@ static LONG CALLBACK crash_veh(EXCEPTION_POINTERS *ep) {
                      : code == EXCEPTION_IN_PAGE_ERROR ? "in-page error" : NULL;
     if (!what) return EXCEPTION_CONTINUE_SEARCH;
     uintptr_t rip = (uintptr_t)ep->ContextRecord->Rip;
-    MODULEINFO mi;
-    if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(NULL), &mi, sizeof mi) ||
-        rip - (uintptr_t)mi.lpBaseOfDll >= mi.SizeOfImage)
-        return EXCEPTION_CONTINUE_SEARCH;   // not our code: leave it to the handler that expects it
-    PlatCrash c = {what, (uint32_t)code, rip, rip - (uintptr_t)mi.lpBaseOfDll, -1, 0};
+    MODULEINFO mi = {0};
+    GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(NULL), &mi, sizeof mi);
+    uintptr_t base = (uintptr_t)mi.lpBaseOfDll;
+    PlatCrash c = {what, (uint32_t)code, rip, base ? rip - base : 0, -1, 0};
     if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
         c.access = (int)ep->ExceptionRecord->ExceptionInformation[0], c.addr = ep->ExceptionRecord->ExceptionInformation[1];
-    // A fault in lifted code keeps its guest registers in host locals, so the guest frame walk in crash_handler finds
-    // nothing. Return addresses into this executable on the faulting host stack name the callers instead (crash_handler
-    // prints each with its lifted function). A scan, not an unwind: stale slots can appear, the innermost are reliable.
-    // Bounded by the current stack's base in the TIB (a host fiber's own stack while one runs).
     c.frames[c.nframes++] = rip;
     {
         const NT_TIB *tib = (const NT_TIB *)NtCurrentTeb();
-        uintptr_t base = (uintptr_t)mi.lpBaseOfDll, sp = (uintptr_t)ep->ContextRecord->Rsp & ~(uintptr_t)7;
+        uintptr_t sp = (uintptr_t)ep->ContextRecord->Rsp & ~(uintptr_t)7;
         uintptr_t top = (uintptr_t)tib->StackBase, end = top - sp > 0x10000 ? sp + 0x10000 : top;
         if (sp && top > sp && top - sp < ((uintptr_t)1 << 30))
             for (uintptr_t a = sp; a + 8 <= end && c.nframes < (int)(sizeof c.frames / sizeof *c.frames); a += 8) {

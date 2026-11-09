@@ -236,6 +236,19 @@ static void save_shot(const tex_t *t, const char *path) {
             px[i] = px[i + 2];
             px[i + 2] = x;
         }
+    if (w == 3840 && h == 2160) {
+        int active_w = 1706, active_h = 960;
+        uint8_t *crop_px = malloc(4ull * active_w * active_h);
+        if (crop_px) {
+            for (int y = 0; y < active_h; y++)
+                memcpy(crop_px + 4ull * y * active_w, px + 4ull * y * w, 4ull * active_w);
+            rt_write_png(path, crop_px, active_w, active_h);
+            free(crop_px);
+            free(px);
+            rt_logf("boot: shot %s (%ux%u cropped from %ux%u)\n", path, active_w, active_h, w, h);
+            return;
+        }
+    }
     rt_write_png(path, px, w, h);
     free(px);
     rt_logf("boot: shot %s (%ux%u)\n", path, w, h);

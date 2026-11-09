@@ -537,9 +537,9 @@ static int copy_decoded_astc(VkExec *ex, const p_copy_t2t *p) {
     if (!p->src || p->src->d.format < 0x79 || p->src->d.format > 0x94) return 0;
     TexVkFormat f;
     if (!tex_vk_format(p->src->d.format, &f) || !f.astc_bw) return 0;
-    if (!p->dst || p->src->d.format != p->dst->d.format || f.astc_bc || p->flags ||
-        (f.vk != VK_FORMAT_R8G8B8A8_UNORM && f.vk != VK_FORMAT_R8G8B8A8_SRGB)) {
-        warn_once(W_COPY, "decoded ASTC copy requires matching RGBA8 formats and no copy flags: skipped");
+    if (!p->dst || p->src->d.format != p->dst->d.format || p->flags ||
+        (!f.astc_bc && f.vk != VK_FORMAT_R8G8B8A8_UNORM && f.vk != VK_FORMAT_R8G8B8A8_SRGB)) {
+        warn_once(W_COPY, "decoded ASTC copy requires matching formats and no copy flags: skipped");
         return 1;
     }
     uint64_t sa = (uintptr_t)p->src->mem, da = (uintptr_t)p->dst->mem;

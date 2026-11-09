@@ -299,13 +299,11 @@ static int create_pipeline(VkCtx *c) {
 
 // TOTK_ASTC_BC=1: the BC3 encoder, when the device samples BC3 (every desktop GPU does); 0 leaves ASTC as RGBA8.
 static int create_bc_pipeline(VkCtx *c) {
-    const char *e = cfg_get("TOTK_ASTC_BC");
-    if (!e || !*e || *e == '0') return 0;
     VkFormatProperties p;
     vkGetPhysicalDeviceFormatProperties(c->phys, VK_FORMAT_BC3_SRGB_BLOCK, &p);
     VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     if ((p.optimalTilingFeatures & need) != need) {
-        rt_log("vk: TOTK_ASTC_BC: the device does not sample BC3; ASTC stays RGBA8");
+        rt_log("vk: the device does not sample BC3; BC3 encoder disabled");
         return 0;
     }
     VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizeof bc3_encode_spv,
@@ -320,10 +318,9 @@ static int create_bc_pipeline(VkCtx *c) {
     vkDestroyShaderModule(c->device, m, NULL);
     if (r != VK_SUCCESS) {
         G.bc_pipe = VK_NULL_HANDLE;
-        rt_log("vk: TOTK_ASTC_BC: the BC3 encoder pipeline failed (%d); ASTC stays RGBA8", (int)r);
+        rt_log("vk: the BC3 encoder pipeline failed (%d)", (int)r);
         return 0;
     }
-    rt_log("vk: ASTC textures are encoded to BC3 after the decode (TOTK_ASTC_BC)");
     return 1;
 }
 

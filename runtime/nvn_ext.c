@@ -122,6 +122,70 @@ NVN_API(nvnTextureBuilderGetViewOffset) {
 // size_t nvnTextureBuilderGetZCullStorageSize / nvnTextureGetZCullStorageSize: the depth-cull cache needs no storage
 NVN_API(nvnTextureBuilderGetZCullStorageSize) { ret_x(c, 0); }
 NVN_API(nvnTextureGetZCullStorageSize) { ret_x(c, 0); }
+static void fill_sparse_tile_layout(NVNtextureSparseTileLayout *layout, int target, int format, int levels) {
+    if (!layout) return;
+    layout->numLevels = levels > 0 ? levels : 1;
+    int bpb = 4;
+    switch (format) {
+        case 1: case 2: case 3: case 4: case 0x31: case 0x51: case 0x52:
+            bpb = 1; break;
+        case 5: case 6: case 7: case 8: case 9: case 0xd: case 0xe: case 0xf: case 0x10:
+        case 0x32: case 0x39: case 0x3a: case 0x3b: case 0x3c: case 0x53: case 0x54: case 0x57: case 0x58:
+        case 0x95: case 0x96: case 0x97: case 0x98:
+            bpb = 2; break;
+        case 0x16: case 0x17: case 0x18: case 0x29: case 0x2a: case 0x2b: case 0x2c: case 0x2d:
+        case 0x36: case 0x5b: case 0x5c: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75:
+            bpb = 8; break;
+        case 0x2e: case 0x2f: case 0x30: case 0x67: case 0x68: case 0x76: case 0x77: case 0x78:
+            bpb = 16; break;
+        default:
+            bpb = 4; break;
+    }
+    if (target == NVN_TEXTURE_TARGET_3D) {
+        layout->tileWidth = 32;
+        layout->tileHeight = 32;
+        layout->tileDepth = 65536 / (32 * 32 * bpb);
+        if (layout->tileDepth < 1) layout->tileDepth = 1;
+    } else {
+        layout->tileDepth = 1;
+        if (bpb <= 1) {
+            layout->tileWidth = 256;
+            layout->tileHeight = 256;
+        } else if (bpb == 2) {
+            layout->tileWidth = 256;
+            layout->tileHeight = 128;
+        } else if (bpb == 4) {
+            layout->tileWidth = 128;
+            layout->tileHeight = 128;
+        } else if (bpb == 8) {
+            layout->tileWidth = 128;
+            layout->tileHeight = 64;
+        } else {
+            layout->tileWidth = 64;
+            layout->tileHeight = 64;
+        }
+    }
+}
+// void nvnTextureBuilderGetSparseTileLayout(const NVNtextureBuilder *b, NVNtextureSparseTileLayout *layout)
+NVN_API(nvnTextureBuilderGetSparseTileLayout) {
+    const tex_builder_t *b = tb_of(c);
+    NVNtextureSparseTileLayout *layout = arg_p(c, 1);
+    int target = b ? b->d.target : NVN_TEXTURE_TARGET_2D;
+    int format = b ? b->d.format : 0;
+    int levels = b ? b->d.levels : 1;
+    fill_sparse_tile_layout(layout, target, format, levels);
+    NVN_LOG("nvnTextureBuilderGetSparseTileLayout(b=%p, out=%p, levels=%d)", b, layout, layout ? layout->numLevels : 0);
+}
+// void nvnTextureGetSparseTileLayout(const NVNtexture *t, NVNtextureSparseTileLayout *layout)
+NVN_API(nvnTextureGetSparseTileLayout) {
+    const tex_t *t = tex_of(c);
+    NVNtextureSparseTileLayout *layout = arg_p(c, 1);
+    int target = t ? t->d.target : NVN_TEXTURE_TARGET_2D;
+    int format = t ? t->d.format : 0;
+    int levels = t ? t->d.levels : 1;
+    fill_sparse_tile_layout(layout, target, format, levels);
+    NVN_LOG("nvnTextureGetSparseTileLayout(tex=%p, out=%p, levels=%d)", t, layout, layout ? layout->numLevels : 0);
+}
 
 // ---------- window queries
 static const win_builder_t *wb_of(const Cpu *c) { return arg_p(c, 0); }

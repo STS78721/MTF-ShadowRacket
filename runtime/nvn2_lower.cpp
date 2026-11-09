@@ -56,6 +56,12 @@ Lowered *lower(const uint8_t *control, const uint8_t *code) {
         rt_log("nvn2: Ampere lowering failed shader %016llx stage %u code %#x at +%#x: %.*s",
                (unsigned long long)gfx_shader_nvn2_hash(control, code), (w0 >> 10) & 15, code_len,
                lowered.error_offset, (int)lowered.error.size(), lowered.error.data());
+        if (lowered.error_offset / 16 < native.size()) {
+            const auto &i = native[lowered.error_offset / 16];
+            rt_log("nvn2: failed insn words: [%08x %08x %08x %08x] (op=%#x rd=%u ra=%u)",
+                   i.words[0], i.words[1], i.words[2], i.words[3],
+                   i.Bits(0, 12), i.Bits(16, 8), i.Bits(24, 8));
+        }
         if (lowered.error == "native texture dimension query mode" && lowered.error_offset / 16 < native.size()) {
             const auto &i = native[lowered.error_offset / 16];
             rt_log("nvn2: TXQ fields op=%#x rd=%u ra=%u mask=%#x second_rd=%u tex=%u off=%#x mode=%#x reserved=%#x bit91=%u",

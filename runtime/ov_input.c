@@ -490,14 +490,87 @@ static void ov_touch_init(Cpu *c) {
     once(&logged, "hid: the game initialized the touch screen (none on this host)", 0);
 }
 
+// Touch screen states: the host has no touch screen, so state queries return 0 touches with increasing sampling numbers.
+static volatile int64_t g_touch_sampling;
+
 // void GetTouchScreenState<1>(TouchScreenState<1> *out): sampling number, then a count of 0 touches
 static void ov_touch_state1(Cpu *c) {
-    static volatile int64_t sampling;
     uint8_t *out = arg_p(c, 0);
     if (!out) rt_fatal("nn::hid::GetTouchScreenState: null output");
     memset(out, 0, 0x38);   // int64 sampling number, int32 count, int32 reserved, one 0x28-byte TouchState
-    int64_t n = __atomic_add_fetch(&sampling, 1, __ATOMIC_RELAXED);
+    int64_t n = __atomic_add_fetch(&g_touch_sampling, 1, __ATOMIC_RELAXED);
     memcpy(out, &n, 8);
+}
+
+static void ov_touch_state1_detail(Cpu *c) {
+    uint8_t *out = arg_p(c, 0);
+    if (!out) { ret_x(c, 0x802); return; }
+    memset(out, 0, 0x38);
+    int64_t n = __atomic_add_fetch(&g_touch_sampling, 1, __ATOMIC_RELAXED);
+    memcpy(out, &n, 8);
+    ret_x(c, 0);
+}
+
+static void ov_touch_states1_public(Cpu *c) {
+    uint8_t *out = arg_p(c, 0);
+    int max = (int)arg_x(c, 1);
+    if (!out || max <= 0) { ret_x(c, 0); return; }
+    int count = max > 1 ? 1 : max;
+    memset(out, 0, (size_t)count * 0x38);
+    int64_t n = __atomic_add_fetch(&g_touch_sampling, (int64_t)count, __ATOMIC_RELAXED);
+    for (int i = 0; i < count; i++) {
+        int64_t sn = n - count + i + 1;
+        memcpy(out + i * 0x38, &sn, 8);
+    }
+    ret_x(c, (uint64_t)(int64_t)count);
+}
+
+static void ov_touch_state16(Cpu *c) {
+    uint8_t *out = arg_p(c, 0);
+    if (!out) rt_fatal("nn::hid::GetTouchScreenState: null output");
+    memset(out, 0, 0x290);
+    int64_t n = __atomic_add_fetch(&g_touch_sampling, 1, __ATOMIC_RELAXED);
+    memcpy(out, &n, 8);
+}
+
+static void ov_touch_state16_detail(Cpu *c) {
+    uint8_t *out = arg_p(c, 0);
+    if (!out) { ret_x(c, 0x802); return; }
+    memset(out, 0, 0x290);
+    int64_t n = __atomic_add_fetch(&g_touch_sampling, 1, __ATOMIC_RELAXED);
+    memcpy(out, &n, 8);
+    ret_x(c, 0);
+}
+
+static void ov_touch_states16_public(Cpu *c) {
+    uint8_t *out = arg_p(c, 0);
+    int max = (int)arg_x(c, 1);
+    if (!out || max <= 0) { ret_x(c, 0); return; }
+    int count = max > 16 ? 16 : max;
+    memset(out, 0, (size_t)count * 0x290);
+    int64_t n = __atomic_add_fetch(&g_touch_sampling, (int64_t)count, __ATOMIC_RELAXED);
+    for (int i = 0; i < count; i++) {
+        int64_t sn = n - count + i + 1;
+        memcpy(out + i * 0x290, &sn, 8);
+    }
+    ret_x(c, (uint64_t)(int64_t)count);
+}
+
+static void ov_touch_states16_detail(Cpu *c) {
+    int32_t *out_count = arg_p(c, 0);
+    uint8_t *out = arg_p(c, 1);
+    int max = (int)arg_x(c, 2);
+    if (out_count) *out_count = 0;
+    if (!out || max <= 0) { ret_x(c, 0); return; }
+    int count = max > 16 ? 16 : max;
+    memset(out, 0, (size_t)count * 0x290);
+    int64_t n = __atomic_add_fetch(&g_touch_sampling, (int64_t)count, __ATOMIC_RELAXED);
+    for (int i = 0; i < count; i++) {
+        int64_t sn = n - count + i + 1;
+        memcpy(out + i * 0x290, &sn, 8);
+    }
+    if (out_count) *out_count = count;
+    ret_x(c, 0);
 }
 
 // void SetNpadJoyAssignmentModeDual(const NpadIdType &), SetNpadJoyAssignmentModeSingle(const NpadIdType &,
@@ -538,7 +611,22 @@ HOST_OVERRIDE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS
 HOST_OVERRIDE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", ov_vib_init);
 HOST_OVERRIDE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", ov_vib_info);
 HOST_OVERRIDE("_ZN2nn3hid21InitializeTouchScreenEv", ov_touch_init);
+HOST_OVERRIDE("_ZN2nn3hid21InitializeTouchScreenEii", ov_touch_init);
+HOST_OVERRIDE("_ZN2nn3hid6detail19FinalizeTouchScreenEv", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid6detail27SetTouchScreenConfigurationERKNS0_29TouchScreenConfigurationForNxE", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid32SetTouchScreenConfigurationForNxERKNS0_29TouchScreenConfigurationForNxE", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid41EnableNxTouchScreenEmulationForTouchEnterEv", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid42DisableNxTouchScreenEmulationForTouchEnterEv", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid6detail41EnableNxTouchScreenEmulationForTouchEnterEb", ov_hid_zero);
+
 HOST_OVERRIDE("_ZN2nn3hid19GetTouchScreenStateILm1EEEvPNS0_16TouchScreenStateIXT_EEE", ov_touch_state1);
+HOST_OVERRIDE("_ZN2nn3hid6detail19GetTouchScreenStateILm1EEENS_6ResultEPNS0_16TouchScreenStateIXT_EEE", ov_touch_state1_detail);
+HOST_OVERRIDE("_ZN2nn3hid20GetTouchScreenStatesILm1EEEiPNS0_16TouchScreenStateIXT_EEEi", ov_touch_states1_public);
+
+HOST_OVERRIDE("_ZN2nn3hid19GetTouchScreenStateILm16EEEvPNS0_16TouchScreenStateIXT_EEE", ov_touch_state16);
+HOST_OVERRIDE("_ZN2nn3hid6detail19GetTouchScreenStateILm16EEENS_6ResultEPNS0_16TouchScreenStateIXT_EEE", ov_touch_state16_detail);
+HOST_OVERRIDE("_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_EEEi", ov_touch_states16_public);
+HOST_OVERRIDE("_ZN2nn3hid6detail20GetTouchScreenStatesILm16EEENS_6ResultEPiPNS0_16TouchScreenStateIXT_EEEi", ov_touch_states16_detail);
 HOST_OVERRIDE("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", ov_joy_assignment);
 HOST_OVERRIDE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKjNS0_17NpadJoyDeviceTypeE", ov_joy_assignment);
 HOST_OVERRIDE("_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_", ov_joy_assignment);

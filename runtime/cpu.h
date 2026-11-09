@@ -77,14 +77,14 @@ extern volatile int g_fnprof;
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
 #define FN_ENTER(a) do { if (__builtin_expect(g_fnprof, 0)) fnprof_hit(a, c->x[30], c->x[0]); } while (0)
 
-#define LD8(a)  (*(const u8a *)(uintptr_t)(a))
-#define LD16(a) (*(const u16u *)(uintptr_t)(a))
-#define LD32(a) (*(const u32u *)(uintptr_t)(a))
-#define LD64(a) (*(const u64u *)(uintptr_t)(a))
-#define ST8(a, v)  (*(u8a *)(uintptr_t)(a) = (uint8_t)(v))
-#define ST16(a, v) (*(u16u *)(uintptr_t)(a) = (uint16_t)(v))
-#define ST32(a, v) (*(u32u *)(uintptr_t)(a) = (uint32_t)(v))
-#define ST64(a, v) (*(u64u *)(uintptr_t)(a) = (uint64_t)(v))
+#define LD8(a)  (*(const volatile u8a *)(uintptr_t)(a))
+#define LD16(a) (*(const volatile u16u *)(uintptr_t)(a))
+#define LD32(a) (*(const volatile u32u *)(uintptr_t)(a))
+#define LD64(a) (*(const volatile u64u *)(uintptr_t)(a))
+#define ST8(a, v)  (*(volatile u8a *)(uintptr_t)(a) = (uint8_t)(v))
+#define ST16(a, v) (*(volatile u16u *)(uintptr_t)(a) = (uint16_t)(v))
+#define ST32(a, v) (*(volatile u32u *)(uintptr_t)(a) = (uint32_t)(v))
+#define ST64(a, v) (*(volatile u64u *)(uintptr_t)(a) = (uint64_t)(v))
 
 // ---- exclusive monitor (emulated with compare-and-swap)
 #define EXCL(N, T)                                                                         \

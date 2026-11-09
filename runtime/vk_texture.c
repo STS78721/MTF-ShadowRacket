@@ -413,6 +413,16 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     if (!img) {
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         VkResult r = vmaCreateImage(c->vma, &ci, &ai, &img, &e->alloc, NULL);
+        if (r != VK_SUCCESS && f.astc_bw && !f.astc_bc) {
+            f.vk = f.astc_srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+            f.astc_bc = 1;
+            ci.format = f.vk;
+            r = vmaCreateImage(c->vma, &ci, &ai, &img, &e->alloc, NULL);
+            if (r == VK_SUCCESS) {
+                e->f = f;
+                rt_log("vk: mega-texture %ux%ux%u layers %u fell back to BC3 (%s)", w, h, depth, layers, f.astc_srgb ? "SRGB" : "UNORM");
+            }
+        }
         if (r != VK_SUCCESS) {
             log_limited(&n_failed, "image creation failed (%d): nvn fmt %#x %ux%ux%u target %d levels %u layers %u", (int)r,
                         d->format, w, h, depth, d->target, levels, layers);
@@ -712,6 +722,9 @@ static void upload(Tex *e) {
     }
     barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
     vk_upload_end();
+    if (total > (64ull << 20)) {
+        vk_upload_flush(1);
+    }
     if (acheck) {   // waits for the GPU
         vk_upload_flush(1);
         if (checked) {

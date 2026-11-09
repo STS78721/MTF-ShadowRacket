@@ -241,6 +241,7 @@ static char *trim(char *s) {
 
 static const char *unprefix(const char *name) {
     if (!name) return NULL;
+    if (!strncmp(name, "MKW_", 4)) return name + 4;
     if (!strncmp(name, "DKB_", 4)) return name + 4;
     if (!strncmp(name, "TOTK_", 5)) return name + 5;
     return NULL;
@@ -351,8 +352,11 @@ static const char *dkb_alias(const char *name) {
     char alias[96];
     const char *u = unprefix(name);
     if (!u || strlen(u) >= sizeof alias - 6) return NULL;
-    snprintf(alias, sizeof alias, "DKB_%s", u);
+    snprintf(alias, sizeof alias, "MKW_%s", u);
     const char *e = getenv(alias);
+    if (e) return e;
+    snprintf(alias, sizeof alias, "DKB_%s", u);
+    e = getenv(alias);
     if (e) return e;
     snprintf(alias, sizeof alias, "TOTK_%s", u);
     return getenv(alias);
@@ -729,7 +733,7 @@ static int find_ini(void) {
     char *cut = plat_last_sep(path);
     if (!cut) cut = strrchr(path, '/');
     if (!cut || cut + 12 >= path + sizeof path) return 0;
-    strcpy(cut + 1, "dkb.ini");
+    strcpy(cut + 1, "mkw.ini");
     if (plat_file_exists(path)) {
         snprintf(ini_path, sizeof ini_path, "%s", path);
         return 1;
@@ -739,7 +743,7 @@ static int find_ini(void) {
         snprintf(ini_path, sizeof ini_path, "%s", path);
         return 1;
     }
-    strcpy(cut + 1, "dkb.ini");
+    strcpy(cut + 1, "mkw.ini");
     snprintf(ini_path, sizeof ini_path, "%s", path);
     return 1;
 }

@@ -274,7 +274,7 @@ static int hex32(const char *h, uint8_t out[32]) {        // 64 hex digits, then
 static void xlate_identity(void) {
     char text[256] = "";
     const char *how = "TOTK_XLATE_ID";
-    const char *id_env = cfg_get("DKB_XLATE_ID") ? cfg_get("DKB_XLATE_ID") : cfg_get("TOTK_XLATE_ID");
+    const char *id_env = cfg_get("MKW_XLATE_ID") ? cfg_get("MKW_XLATE_ID") : (cfg_get("DKB_XLATE_ID") ? cfg_get("DKB_XLATE_ID") : cfg_get("TOTK_XLATE_ID"));
     if (id_env && *id_env && strlen(id_env) < sizeof text) {
         strcpy(text, id_env);
         if (!hex32(text, xlate_id)) rt_sha256(text, strlen(text), xlate_id);
@@ -312,26 +312,33 @@ static void init_paths(void *param) {
         for (char *cut = plat_last_sep(exe); cut; cut = plat_last_sep(exe)) {
             *cut = 0;
             char probe[PATH_CAP + 32];
+            snprintf(probe, sizeof probe, "%s/build/xlate/mkw_xlate" PLAT_EXE_SUFFIX, exe);
+            if (file_exists(probe)) { strcpy(root, exe); break; }
             snprintf(probe, sizeof probe, "%s/build/xlate/dkb_xlate" PLAT_EXE_SUFFIX, exe);
             if (file_exists(probe)) { strcpy(root, exe); break; }
             snprintf(probe, sizeof probe, "%s/build/xlate/totk_xlate" PLAT_EXE_SUFFIX, exe);
             if (file_exists(probe)) { strcpy(root, exe); break; }
         }
     }
-    const char *xlate_cfg = cfg_get("DKB_XLATE");
+    const char *xlate_cfg = cfg_get("MKW_XLATE");
+    if (!xlate_cfg || !*xlate_cfg) xlate_cfg = cfg_get("DKB_XLATE");
     if (!xlate_cfg || !*xlate_cfg) xlate_cfg = cfg_get("TOTK_XLATE");
-    const char *cache_cfg = cfg_get("DKB_SHADER_CACHE");
+    const char *cache_cfg = cfg_get("MKW_SHADER_CACHE");
+    if (!cache_cfg || !*cache_cfg) cache_cfg = cfg_get("DKB_SHADER_CACHE");
     if (!cache_cfg || !*cache_cfg) cache_cfg = cfg_get("TOTK_SHADER_CACHE");
-    char beside[PATH_CAP + 32], beside_old[PATH_CAP + 32];
+    char beside_mkw[PATH_CAP + 32], beside[PATH_CAP + 32], beside_old[PATH_CAP + 32];
     if (exe_dir[0]) {
+        snprintf(beside_mkw, sizeof beside_mkw, "%s/mkw_xlate" PLAT_EXE_SUFFIX, exe_dir);
         snprintf(beside, sizeof beside, "%s/dkb_xlate" PLAT_EXE_SUFFIX, exe_dir);
         snprintf(beside_old, sizeof beside_old, "%s/totk_xlate" PLAT_EXE_SUFFIX, exe_dir);
     }
     if (xlate_cfg && *xlate_cfg && strlen(xlate_cfg) < sizeof xlate_exe) strcpy(xlate_exe, xlate_cfg);
+    else if (exe_dir[0] && file_exists(beside_mkw)) strcpy(xlate_exe, beside_mkw);
     else if (exe_dir[0] && file_exists(beside)) strcpy(xlate_exe, beside);
     else if (exe_dir[0] && file_exists(beside_old)) strcpy(xlate_exe, beside_old);
     else if (root[0]) {
-        snprintf(xlate_exe, sizeof xlate_exe, "%s/build/xlate/dkb_xlate" PLAT_EXE_SUFFIX, root);
+        snprintf(xlate_exe, sizeof xlate_exe, "%s/build/xlate/mkw_xlate" PLAT_EXE_SUFFIX, root);
+        if (!file_exists(xlate_exe)) snprintf(xlate_exe, sizeof xlate_exe, "%s/build/xlate/dkb_xlate" PLAT_EXE_SUFFIX, root);
         if (!file_exists(xlate_exe)) snprintf(xlate_exe, sizeof xlate_exe, "%s/build/xlate/totk_xlate" PLAT_EXE_SUFFIX, root);
     }
     if (cache_cfg && *cache_cfg && strlen(cache_cfg) < sizeof cache_dir) strcpy(cache_dir, cache_cfg);

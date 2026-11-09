@@ -293,6 +293,18 @@ uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
     return R_OK;
 }
 
+void mem_expand_heap(uint64_t new_end) {
+    plat_mutex_lock(&lock);
+    if (new_end > L.heap.base) {
+        uint64_t sz = align_up(new_end - L.heap.base, PAGE);
+        if (sz > heap_size && sz <= HEAP_CAP) {
+            heap_size = sz;
+            rt_log("heap: expanded heap_size to %#llx (end %#llx)", (unsigned long long)heap_size, (unsigned long long)(L.heap.base + heap_size));
+        }
+    }
+    plat_mutex_unlock(&lock);
+}
+
 // ---- module data permissions (0x02, 0x03) and module pages for QueryMemory
 static int module_index(uint64_t a) {
     for (int i = 0; i < ldr_count(); i++) {
@@ -377,9 +389,13 @@ static int alias_all_mapped(uint64_t a, uint64_t n) {   // under lock
 static uint32_t stack_move(int unmap, uint64_t dst, uint64_t src, uint64_t n) {
     if (!n || ((dst | src | n) & (PAGE - 1))) return R_INVALID_ADDRESS;
     if (!inside(dst, n, L.stack)) return R_INVALID_REGION;
-    int in_heap = inside(src, n, (RtRange){L.heap.base, heap_size});
+    int in_heap = inside(src, n, (RtRange){L.heap.base, heap_size}) || inside(src, n, L.heap);
     int in_alias = inside(src, n, L.alias);
-    if (!in_heap && !in_alias) return R_INVALID_REGION;
+    if (!in_heap && !in_alias) {
+        rt_log("stack_move: src=%#llx n=%#llx not in heap (base=%#llx sz=%#llx) nor alias",
+               (unsigned long long)src, (unsigned long long)n, (unsigned long long)L.heap.base, (unsigned long long)heap_size);
+        return R_INVALID_REGION;
+    }
     plat_mutex_lock(&lock);
     uint32_t r = R_OK;
     if (in_alias && !alias_all_mapped(src, n)) {

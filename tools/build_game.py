@@ -78,7 +78,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # them. MAIN_ROOT is where they land, so resolved paths still print and compare relative to a root.
 MAIN_ROOT = (ROOT / 'build').resolve().parent
 UCRT = Path(r'C:\msys64\ucrt64\bin')
-EXE = 'dkb.exe' if WIN else 'dkb'   # DKB Recomp: not TotK's executable
+EXE = 'mkw.exe' if WIN else 'mkw'   # MKW Recomp: Mario Kart World PC executable
 
 
 def on_path(name):
@@ -336,6 +336,18 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     ldflags = list(LINK_FLAGS)
     if 'mkw' in str(out).lower() or 'mkw' in str(gen).lower():
         ldflags.append('-Wl,--wrap,f_70003f24c0')
+        ldflags.append('-Wl,--wrap,f_7000d32270')
+        ldflags.append('-Wl,--wrap,f_7000d31b20')
+        ldflags.append('-Wl,--wrap,f_7000cdc2f0')
+        ldflags.append('-Wl,--wrap,f_70005e10a0')
+        ldflags.append('-Wl,--wrap,f_70003f2d70')
+        ldflags.append('-Wl,--wrap,f_700087b9b0')
+        ldflags.append('-Wl,--wrap,f_700025a680')
+        ldflags.append('-Wl,--wrap,f_70006cec80')
+        ldflags.append('-Wl,--wrap,f_70006d2800')
+        ldflags.append('-Wl,--wrap,f_70006f9c50')
+        ldflags.append('-Wl,--wrap,f_70001a6e80')
+        ldflags.append('-Wl,--wrap,f_7000192d60')
     lines = [
         '# Written by tools/build_game.py; do not edit.',
         'ninja_required_version = 1.10',
@@ -713,7 +725,7 @@ def mib(n):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('--version', default='v121', help='game version (default v121)')
+    ap.add_argument('--version', default='mkw180', help='game version (default mkw180)')
     ap.add_argument('--gen', type=Path, help='generated C directory (default generated/<version>)')
     ap.add_argument('--out', type=Path, help='build directory (default build/<version>)')
     ap.add_argument('--modules', help='comma-separated subset of the layout modules (default all)')
@@ -749,22 +761,29 @@ def main():
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     args = ap.parse_args()
 
-    gen = (args.gen or ROOT / 'generated' / args.version).resolve()
-    out = (args.out or ROOT / 'build' / args.version).resolve()
+    gen = (args.gen or (Path(r"C:\Games\MKW PC\generated\mkw180") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\generated\mkw180").is_dir() else ROOT / 'generated' / args.version)).resolve()
+    out = (args.out or (Path(r"C:\Games\MKW PC\build\mkw180") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\build\mkw180").is_dir() else ROOT / 'build' / args.version)).resolve()
     extracted = ROOT / 'build' / 'extracted' / args.version
-    paths = {'exefs': (args.exefs or extracted / 'exefs').resolve(),
-             'romfs': (args.romfs or extracted / 'romfs').resolve(),
+    default_exefs = Path(r"C:\Games\MKW PC\exefs") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\exefs").is_dir() else extracted / 'exefs'
+    default_romfs = Path(r"C:\Games\MKW PC\romfs_packed") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\romfs_packed").is_dir() else extracted / 'romfs'
+    paths = {'exefs': (args.exefs or default_exefs).resolve(),
+             'romfs': (args.romfs or default_romfs).resolve(),
              'profile': (args.profile or ROOT / 'build' / ('profile' if args.version == 'v121'
                                                            else f'profile-{args.version}')).resolve()}
     expected = args.expected
     if not expected:
-        if args.version not in DISPLAY_VERSIONS:
+        if (ROOT / 'tools' / 'data' / f'expected-{args.version}.json').is_file():
+            expected = ROOT / 'tools' / 'data' / f'expected-{args.version}.json'
+        elif args.version not in DISPLAY_VERSIONS:
             sys.exit(f'no expected hashes known for {args.version}; pass --expected')
-        expected = ROOT / 'tools' / 'data' / f'expected-v{DISPLAY_VERSIONS[args.version]}.json'
+        else:
+            expected = ROOT / 'tools' / 'data' / f'expected-v{DISPLAY_VERSIONS[args.version]}.json'
     exp_data = json.loads(Path(expected).read_text())
     hashes = exp_data['exefs_sha256']
     title_id = int(exp_data.get('title_id', '040074A01BF12000'), 16)
-    global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS
+    global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS, EXE
+    if 'mkw' in args.version.lower() or 'mkw' in str(out).lower():
+        EXE = 'mkw.exe' if WIN else 'mkw'
     if args.ninja:
         NINJA = args.ninja.resolve()
     elif not NINJA.is_file() and (ROOT / 'bin' / ('ninja' + ('.exe' if WIN else ''))).is_file():

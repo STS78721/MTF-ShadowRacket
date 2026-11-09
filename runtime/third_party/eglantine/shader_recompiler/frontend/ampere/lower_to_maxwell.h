@@ -61,7 +61,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
     const auto address_of = [](u32 index) { return 0x50U + index * 8 + ((index + 1) / 3) * 8; };
     const auto no_gpr_destination = [](u32 op) {
         return op == 0x947 || op == 0x20b || op == 0x80b || op == 0xa0b || op == 0x20c ||
-               op == 0x80c || op == 0xa0c || op == 0xc0c;
+               op == 0x80c || op == 0xa0c || op == 0xc0c || op == 0x927 || op == 0x59f || op == 0xb9b;
     };
     const auto fail = [&](u32 index, std::string_view reason) {
         result.instructions.clear();
@@ -1084,6 +1084,19 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
                 (u64{15} << 20) | (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
             break;
         }
+        case 0x59f: { // SUST.D.2D, direct descriptor.
+            const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
+            const u32 data = insn.Bits(32, 8), coordinate = insn.Bits(24, 8);
+            const u32 dimension = insn.Bits(61, 3);
+            if (binding >= 18 || offset > 0x1fff || data > 252 || coordinate > 253)
+                return fail(index, "native surface store mode");
+            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                return fail(index, "native surface descriptor buffer conflict");
+            result.required_texture_buffer = binding;
+            emit(0xeb20000000000000ULL | predicate | data | (u64{coordinate} << 8) |
+                (u64{15} << 20) | (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
+            break;
+        }
         case 0x301: // BREV register.
             if (insn.words[2] || insn.words[1] > 255) return fail(index, "native bit reverse mode");
             emit(base(0x3828000000000000ULL) | (u64{insn.words[1]} << 8) |
@@ -1910,9 +1923,9 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
         }
         case 0x923: // ISBERD map read: geometry vertex index to attribute handle. ALD takes the index
                     // itself (Maxwell ISBERD in this mode is a copy), so this is a move.
-            if (insn.Bits(32, 32) || insn.words[2] || insn.Bits(24, 8) == 255)
-                return fail(index, "native stage buffer read mode");
             emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{insn.Bits(24, 8)} << 20));
+            break;
+        case 0x927: // ISBEWR: stage buffer write. Maxwell AST uses direct attribute handles, so no-op.
             break;
         case 0x34e: { // LEPC: 64-bit address of the next instruction
             // Only seen in geometry shader prologues, where the address is consumed by opcode 0x357

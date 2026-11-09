@@ -1,125 +1,140 @@
-# 🍌 SteelTempSaint's Donkey Kong Bananza PC Recomp 🎮⚡
-### *Transforming Donkey Kong Bananza into a Flagship Modern PC Experience*
+# MKW Recomp
 
-[![Latest Release](https://img.shields.io/github/v/release/STS78721/dkb-BANANAS?label=Latest%20Release&color=brightgreen)](https://github.com/STS78721/dkb-BANANAS/releases/latest)
-[![Release Date](https://img.shields.io/github/release-date/STS78721/dkb-BANANAS?color=blue)](https://github.com/STS78721/dkb-BANANAS/releases/latest)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20x86--64-informational)](https://github.com/STS78721/dkb-BANANAS)
-[![Renderer](https://img.shields.io/badge/Renderer-Vulkan%201.3-red)](https://github.com/STS78721/dkb-BANANAS)
-[![DualSense](https://img.shields.io/badge/Controller-PS5%20DualSense%20Native-blueviolet)](https://github.com/STS78721/dkb-BANANAS)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-[![Community Feedback](https://img.shields.io/badge/Community-Feedback%20Welcome-orange)](https://github.com/STS78721/dkb-BANANAS/issues)
+[![Content guard](https://github.com/STS78721/MKW-THWOMP/actions/workflows/content-guard.yml/badge.svg?branch=main)](https://github.com/STS78721/MKW-THWOMP/actions/workflows/content-guard.yml)
+[![Stars](https://img.shields.io/github/stars/STS78721/MKW-THWOMP?style=flat)](https://github.com/STS78721/MKW-THWOMP/stargazers)
+[![Help wanted](https://img.shields.io/github/issues/STS78721/MKW-THWOMP/help%20wanted?label=help%20wanted)](https://github.com/STS78721/MKW-THWOMP/issues?q=is%3Aopen+label%3A%22help+wanted%22)
+[![Discussions](https://img.shields.io/github/discussions/STS78721/MKW-THWOMP)](https://github.com/STS78721/MKW-THWOMP/discussions)
+
+**MKW Recomp** is a static recompilation of *Mario Kart World* (Nintendo Switch 2, 2025) into a native Windows
+x86-64 application with a Vulkan renderer. There is no emulator at run time: the game's ARM64 code is translated to C
+ahead of time and compiled into one executable, and its graphics calls are answered by a host implementation of
+NVN 2. It is built on [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) and the [DKB Recomp](https://github.com/sagaopc/dkb-pc-recomp) Switch 2 work.
+
+As far as we know, this is the first public static recompilation of Mario Kart World.
 
 > [!IMPORTANT]
-> **No copyrighted game files are included.** You need your own legally obtained copy of *Donkey Kong Bananza* (Nintendo Switch 2, Base **v1.0.0** `ExeFS` / `RomFS` or `.nup` container), dumped from your own console. No Nintendo binaries, ROMs, or cryptographic keys are distributed with this repository.
+> **No game files are included, and none ever will be.** You need your own copy of *Mario Kart World*, dumped
+> from your own console. Instructions for obtaining those files will not be provided. There are no downloadable
+> builds: everyone builds from their own dump.
 
----
+## Status
 
-## 🌟 Our Vision: What We Want to Achieve
+**Not playable yet.** The game boots, initializes Horizon OS services, advances through the intro sequence, renders
+3D graphics with Ampere shaders lowered to Maxwell SPIR-V, but has graphical issues (lighting/textures and render pipeline).
 
-**SteelTempSaint's Donkey Kong Bananza PC Recomp (DKB)** is an enthusiast-driven, high-performance static recompilation of *Donkey Kong Bananza* (Nintendo Switch 2, 2025) into a native Windows x86-64 application with a Vulkan 1.3 renderer. There is no emulator at run time: all 180,061 ARM64 functions (`main` + `sdk`) are translated ahead-of-time into C, and Switch 2 NVN 2 (Ampere SM86) graphics calls and shaders are lowered and executed natively on your PC GPU.
+| Phase | | State |
+| --- | --- | --- |
+| F0 CPU | ✅ | `main` and `sdk` lift with no unsupported instruction (ARMv8.3 pointer authentication and `LDAPR` added). All functions translate cleanly to C. |
+| F1 OS | ✅ | Boots on Horizon host with Switch 2 differences: RomFS, save, audio, controller, system memory mapping. |
+| F2 NVN 2 | ✅ | NVN 2 entry points answered; the game loop runs. Command buffer calls accepted and executed. |
+| F3 Shaders | ✅ | Ampere shader stages go through Ampere-to-Maxwell lowering (`ISBERD`, `ISBEWR`, `SUST.D.2D` extended support) and translator to SPIR-V. |
+| F4 Vulkan | ✅ | The intro and 3D scenes render. Massive 8K ASTC texture arrays auto-fallback to BC3 compression to fit within VRAM. |
+| F5 Playable | 🚧 | In progress: Graphical issues, track lighting, in-race physics and gameplay controls. |
 
-Our goal is to **elevate *Donkey Kong Bananza* into a native, flagship PC experience** that harnesses modern PC hardware:
-- **Next-Gen Tactile Immersion:** Native PlayStation 5 DualSense integration with 4-channel audio-driven voice-coil haptics, adaptive trigger tension for terrain smashing and rolling dashes, and real-time controller battery telemetry.
-- **State-of-the-Art Rendering & Upscaling:** Multi-vendor AI upscaling hub featuring **NVIDIA DLSS 4.5 / DLSS-NR**, **Intel XeSS 1.3+**, **AMD FSR**, and **DLAA**, paired with ultra-low latency **NVIDIA Reflex** (`VK_NV_low_latency2`) and **AMD Anti-Lag 2**.
-- **Destructible World Fidelity:** Full native passthrough geometry shader support (`NATIVE_GS=1`), Ampere RGB-mask `TXD` gradient texture lowering, and instanced light-quad fault protection for rock-solid stability across NVIDIA RTX, AMD RDNA, and Intel Arc GPUs.
-- **A Completely Community-Guided Project:** Built for players, with players—featuring a Sony/Nixxes-inspired standalone launcher (`DKBLauncher.exe`) and a 1-click setup wizard (`DKB-Setup.exe`).
+## How it works
 
----
+```mermaid
+flowchart LR
+    subgraph offline["At build time, on your PC"]
+        exefs["Your dump: main + sdk<br/>(ARM64)"] --> lifter["Lifter<br/>recomp/"] --> c["C code"] --> clang["Clang"] --> exe["mkw.exe"]
+    end
+    subgraph runtime["At run time"]
+        exe --> host["Horizon host<br/>threads, files, audio, input"]
+        exe --> nvn["NVN 2 front end<br/>runtime/nvn_*"] --> vk["Vulkan back end"]
+        sass["Ampere shaders"] --> lower["Eglantine lowering<br/>Ampere → Maxwell"] --> xlate["Translator<br/>tools/xlate"] --> spirv["SPIR-V"] --> vk
+    end
+```
 
-## 🎮 What Makes This Build Unique (Alpha 1 Feature Highlights)
+The longer version is in [docs/architecture.md](docs/architecture.md) (shared with TotK Recomp) and
+[docs/bananza-shaders.md](docs/bananza-shaders.md) (the NVN 2 shader work).
 
-### 🕹️ Sony PlayStation 5 DualSense & Native Controller Integration
-* **4-Channel Haptic Streaming & Tactile Feedback:** Real-time audio-driven vibration and DualSense trigger rumble support (`rumble_triggers`, `rumble_strength`).
-* **Selectable Button Prompt Layouts:** Switch effortlessly between **PlayStation 5 DualSense** (Monochrome & Color), **Xbox Series X|S** (Monochrome & Color), and **Nintendo Switch** button prompts (`pad_layout`).
-* **Full In-Game Controller Overlay Navigation:** Open and control the entire Recomp settings menu with **`[Select + Start]`** and toggle the performance HUD with **`[L3 + R3]`** without touching a keyboard.
+## How to help
 
-### 🖥️ Standalone Nixxes/Sony-Style PC Launcher (`DKBLauncher.exe`)
-<p align="center">
-  <img src="https://raw.githubusercontent.com/STS78721/dkb-BANANAS/bananza/launcher/launcher_showcase.png" alt="SteelTemple DKB Standalone Launcher" width="90%">
-</p>
+Each open problem is a separate, well-bounded job with its own issue. Pick one, say in the issue that you are on it,
+and keep each pull request to one topic.
 
-* **Synchronized In-Game Settings:** Configure Display, Upscaler (`Off`, `DLSS 4.5`, `FSR`, `XeSS`, `DLAA`), Upscaler Quality Preset, DLSS Preset (`Preset K`, `Preset L`, `Preset M`), Low Latency (`NVIDIA Reflex` / `AMD Anti-Lag 2`), Frame Generation, Frame Pacing (`30` / `60` / `120` / `Unlimited` FPS), FOV (`70`–`120`), Color Grading (`Default`, `Vivid`, `Warm`, `Cool`, `Cinema`), Audio, and Controller Glyphs before or during play.
-* **Pre-Warm Vulkan Shaders:** 1-click multi-threaded shader and pipeline library pre-compilation directly into your GPU driver cache.
-* **Pre-Flight Startup Protection:** Automatically verifies `exefs/main.npdm` and `romfs/` before launching, with a 1-click *Open Game Folder* prompt if missing.
-* **Save Backup Vault & Mod Manager:** Instant timestamped save snapshots (`profile-dkb100/backups/save_<timestamp>/`) with pre-restore safety backups and 1-click `.disabled` mod toggling.
+**No code needed**, only your PC and your own copy of the game:
 
-### ⚡ Upstream Bananza Engine Sync & Pre-Tested Alpha 1 Fixes
-* **NVIDIA Cutscene & Save-Load Device-Loss Fix (`runtime/vk_exec_draw.c`):** Resolved `VK_ERROR_DEVICE_LOST` (`instruction pointer (invalid)`) crashes when loading saves and during the Ingot Isle Cave-In cutscenes by accurately identifying faulting per-instance light-quad draws (`count <= 6`, `>= 8` active streams, all active streams `divisor != 0`) plus 7 cutscene vertex stage origins—while preserving 100% of 3D world meshes, skyboxes, cave walls, and distant terrain (`0x03ff`–`0x7fff` per-vertex shaders).
-* **Destructible Terrain & Opening Wall Restoration:**
-  - Enabled native passthrough geometry stages by default (`NATIVE_GS=1`) so destructible terrain renders with full geometry and materials instead of black.
-  - Integrated Ampere RGB-mask `TXD` gradient texture lowering (`lower_to_maxwell.h`) and shader translator patch `0019` (allowing instructions after unpredicated `CAL` calls to run, restoring the opening tutorial wall).
-  - Allowed passthrough geometry shaders to read unforwarded inputs (`runtime/gfx_shader.c`).
-* **Indirect Reset & Texture Fence Write-Back Integrity (`runtime/vk_exec_draw.c`, `runtime/vk_texture.c`, `runtime/vk_backend.c`):**
-  - Enforced `vk_exec_read_buffer` in `vk_exec_reset_indirect` so destructible terrain indirect-reset pointer lists always resolve shadow/VRAM mirror memory cleanly.
-  - Maintained synchronous 64 KB fence write-backs (`WB_SMALL_DEFAULT`) and sRGB mutable storage image views (`VK_IMAGE_CREATE_EXTENDED_USAGE_BIT`) so GPU-generated LUTs and distant environment maps never read stale zeros.
-* **Indexed Shadow Memory Sync & Alpha-Test Key Rounding:**
-  - Binary-searched union of pending GPU writes during shadow memory synchronization (`runtime/vk_memory.c`).
-  - Rounded alpha-test pipeline key references to nearest `1/255` step (`runtime/vk_pipeline.c`) to eliminate per-frame pipeline compilation stutter during camera/scene fades.
+- **Test on your GPU.** Runs on AMD, Intel and different NVIDIA cards, with logs, show what breaks there.
+- **Graphical issue debugging**: Report visual differences, missing render targets, or shader issues with log output.
 
----
+**Code** ([help wanted](https://github.com/STS78721/MKW-THWOMP/issues?q=is%3Aopen+label%3A%22help+wanted%22)):
 
-## 📥 Quick Start & Downloads
+- **Texture & lighting shaders**: Investigate remaining black surfaces and material render states.
+- **NVN 2 entry points**: Complete recording of new Switch 2 NVN 2 command buffer calls.
 
-Grab the latest prebuilt packages from our **[Latest Release (Alpha 1f)](https://github.com/STS78721/dkb-BANANAS/releases/tag/Alpha-1f)**:
+Your first contribution, step by step:
 
-### 🛠️ 1. All-In-One Setup Wizard (Recommended for New Players)
-👉 **Download: [`SteelTemple-DKB-Alpha1f-Full-Setup-Wizard.exe`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1f/SteelTemple-DKB-Alpha1f-Full-Setup-Wizard.exe)** *(or [`DKB-Setup.zip`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1f/DKB-Setup.zip))*
-1. Run the setup executable (**DKB PC Recomp - Setup (Alpha 1f)**).
-2. Select your legally dumped **Donkey Kong Bananza v1.0.0** source:
-   - **`.nup` container** (unpacked natively with zero external tools or keys required),
-   - **Unpacked dump folder** containing `exefs/` and `romfs/` (or `base/exefs` and `base/romfs`), or
-   - **`.nsp` / `.xci` container** (with your console `prod.keys`).
-3. Choose your target installation directory (default: `C:\Games\DKB PC`), pick your preferred controller prompt style (**PS5 DualSense**, **Xbox Series X|S**, or **Nintendo Switch**), and click **Install & Launch**!
+1. Build from your own dump ([Building from source](#building-from-source)).
+2. Run it and note how far it gets on your machine.
+3. Report your findings in Issues or Discussions.
 
----
+Before you open a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md). Its hard rule: nothing that came out of the
+game goes into the repository, not in commits, issues or pull requests. Run `python tools/check_content.py --staged`
+before committing; CI runs the same check. Questions go to
+[Discussions](https://github.com/STS78721/MKW-THWOMP/discussions). Everyone taking part follows the
+[code of conduct](CODE_OF_CONDUCT.md).
 
-### 🎮 2. Portable Standalone Package (Zero-Install Zip)
-👉 **Download: [`SteelTemple-DKB-Alpha1f-Portable-StandAlone.zip`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1f/SteelTemple-DKB-Alpha1f-Portable-StandAlone.zip)**
-1. Extract the archive into your chosen game folder (e.g. `C:\Games\DKB PC`).
-   - *Includes `DKBLauncher.exe`, `dkb.exe`, `SDL3.dll`, pre-warmed shader/pipeline caches, and Nodix Super Motion SMRS / Frame Generation.*
-2. Copy **both** your dumped **`exefs`** and **`romfs`** folders (from your legally owned Base v1.0.0 dump) directly into this folder:
-   ```text
-   C:\Games\DKB PC\
-   ├── dkb.exe                <-- Recompiled Native x86-64 Game Engine
-   ├── DKBLauncher.exe        <-- Standalone PC Launcher (Alpha 1f)
-   ├── dkb.ini                <-- Synchronized Game & Graphics Configuration
-   ├── SDL3.dll, libopus-0.dll, etc.
-   ├── exefs/                 <-- Contains main, sdk, main.npdm (from your v1.0.0 dump)
-   └── romfs/                 <-- Contains romfs.bin or unpacked game assets
-   ```
-3. Launch **`DKBLauncher.exe`** to configure graphics, pre-warm shaders, and hit **PLAY**!
+## Building from source
 
----
+The toolchain is based on MSYS2 UCRT64 Clang, Ninja, Python 3.10+ and the .NET SDK for the shader translator. With the ExeFS and RomFS from your own dump:
 
-### ⚡ 3. Upgrading Existing Builds (Drop-in Update)
-👉 **Download: [`SteelTemple-DKB-Alpha1f-Update.zip`](https://github.com/STS78721/dkb-BANANAS/releases/download/Alpha-1f/SteelTemple-DKB-Alpha1f-Update.zip)** (~100 MB)
-1. Extract and overwrite files directly into your existing game directory (`C:\Games\DKB PC`).
-2. Preserves all your save files (`profile-dkb100/save`), custom `dkb.ini` configuration, and mods.
+```powershell
+.venv\Scripts\python tools\build_xlate.py
+.venv\Scripts\python recomp\gen.py --exefs <exefs> --out generated\mkw180 --modules main,sdk
+.venv\Scripts\python tools\mkw_expected.py --exefs <exefs> --name mkw180 --display 1.8.0
+.venv\Scripts\python tools\mkw_pack_romfs.py --dir <romfs folder> --out build\extracted\mkw180\romfs
+.venv\Scripts\python tools\build_game.py --version mkw180 --expected tools\data\expected-mkw180.json --exefs <exefs> --romfs build\extracted\mkw180\romfs
+```
 
----
+Everything the build writes stays under `build\` and `generated\`, which git ignores. Running and testing logs are stored in `logs/mkw.log`.
 
-## 🎮 In-Game Controls & Overlay Shortcuts
+## FAQ
 
-| Action | Controller Shortcut | Keyboard Shortcut |
-| :--- | :--- | :--- |
-| **Open / Close In-Game Settings Menu** | **Select + Start** (`Share + Options` on PS5 / `View + Menu` on Xbox) | **`F1`** or **`Esc`** |
-| **Cycle Performance Overlay (FPS / VRAM)** | **L3 + R3** (Click Left Stick + Right Stick together) | **`F10`** |
-| **Toggle Fullscreen / Windowed** | — | **`F11`** or **`Alt + Enter`** |
+**Can I play it?** Not yet. The intro renders with graphical issues and work is underway to reach full gameplay. Follow the Issues and Discussions.
 
----
+**Will there be a download?** No. The executable is made from the game's own code, so it cannot be shared. Everyone
+builds it from their own dump.
 
-## 🛠️ Credits & Acknowledgments
+**Which version of the game?** Base 1.8.0 (Title ID `0400C3F00006E000`).
 
-- **[Lucas-blip-png/dkb-pc-recomp](https://github.com/Lucas-blip-png/dkb-pc-recomp)** & **[TotK Recomp](https://github.com/valentderah/totk-pc-recomp)** by valentderah — Core static recompilation architecture, Horizon OS host, and NVN 2 / Vulkan backend.
-- **[Eglantine](https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork)** (Eden Emulator Project) & **[Mesa NAK](https://gitlab.freedesktop.org/mesa/mesa)** — Switch 2 Ampere (SM86) to Maxwell shader lowering.
-- **[GRAnimated/DKBananza](https://github.com/GRAnimated/DKBananza)** — Function symbols and reverse-engineering research.
-- **NVIDIA, Intel & AMD** — DLSS 4.5, Streamline, Reflex, XeSS, and FidelityFX Super Resolution SDKs.
-- **SteelTemple Community & Alpha Testers** — Testing, logs, and feedback!
+**Linux?** The recompilation toolchain supports Linux; testing on Linux with native Vulkan is welcome.
 
----
+**Why GPL?** The shader lowering comes from Eglantine (Eden Emulator Project), which is GPL. Files that came from TotK
+Recomp keep their MIT terms.
 
-## 📜 License
+**How is AI used?** Portions of the code and documentation are written with AI coding assistance, as in TotK
+Recomp, and checked by running the game and tests. AI-assisted pull requests are welcome; you are
+responsible for having read and run them.
 
-DKB Recomp is distributed under the **[GNU GPL v3 or later](LICENSE)** (incorporating Eglantine's GPL Ampere shader lowering in `runtime/third_party/eglantine/`). Files originating from TotK Recomp retain their **[MIT License](LICENSE-MIT)**; third-party notices are detailed in **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)**.
+## Credits and origin
 
-*Thank you to all contributors, testers, and players building the ultimate Donkey Kong Bananza PC experience!* 🍌🌴✨
+MKW Recomp is built on [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) (*Tears of the Kingdom*, Switch 1)
+by valentderah and contributors, and [DKB Recomp](https://github.com/sagaopc/dkb-pc-recomp) by Lucas-blip-png, sagaopc, sostenesfreitas and contributors. It uses Eglantine's Ampere shader
+lowering (GPL-3.0-or-later, `runtime/third_party/eglantine/`) and Ryujinx's shader translator (MIT, vendored with
+MacNativeGames' patches), plus the other projects in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The whole is
+under [LICENSE](LICENSE).
+
+- [TotK Recomp](https://github.com/valentderah/totk-pc-recomp) by valentderah, the base of everything here, and the
+  projects it builds on: [LAS Recomp](https://github.com/peiikai/LASRecomp),
+  [MacNativeGames](https://github.com/ly05010419/MacNativeGames), [nxnative](https://github.com/seedds/nxnative),
+  [SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp), [Ryujinx](https://github.com/Ryujinx/Ryujinx),
+  [deko3d](https://github.com/devkitPro/deko3d), [hactool](https://github.com/SciresM/hactool) and the rest listed in
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- [DKB Recomp](https://github.com/sagaopc/dkb-pc-recomp) for the Switch 2 NVN 2 and Ampere shader foundation.
+- [Eglantine](https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork) (Eden Emulator Project) for the
+  Ampere-to-Maxwell shader lowering and its Switch 2 notes, and [Mesa NAK](https://gitlab.freedesktop.org/mesa/mesa)
+  for the SM70+ encodings both build on.
+- [libvpx](https://chromium.googlesource.com/webm/libvpx) for the movies.
+- [Switchbrew](https://switchbrew.org) for the Switch 2 `GetInfo` ids, and the Switch homebrew community.
+
+## License
+
+MKW Recomp as a whole is under the [GNU GPL v3 or later](LICENSE), because it includes Eglantine's GPL Ampere shader
+lowering (`runtime/third_party/eglantine/`). The files that came from TotK Recomp keep their
+[MIT License](LICENSE-MIT); third-party code keeps its own license ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
+The license grants nothing for Nintendo's game.
+
+MKW Recomp is an independent, non-commercial fan project, not affiliated with or endorsed by Nintendo. *Mario Kart
+World* and *Nintendo Switch 2* are trademarks of Nintendo.

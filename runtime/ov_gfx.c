@@ -149,6 +149,14 @@ HOST_OVERRIDE("_ZN2nn2vi28SetLayerExtendedSwapIntervalEPNS0_5LayerEii", ov_vi_ac
 HOST_OVERRIDE("_ZN2nn2vi30ClearLayerExtendedSwapIntervalEPNS0_5LayerE", ov_vi_accept);
 HOST_OVERRIDE("_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt", ov_vi_accept);
 HOST_OVERRIDE("_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn2vi39SetLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerEfff", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn2vi41ClearLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerE", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn2vi5Layer34SetNextHdrAdjustableBezierMetadataEfff", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn2vi5Layer36ClearNextHdrAdjustableBezierMetadataEv", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn3vi239SetLayerNextHdrAdjustableBezierMetadataEPNS0_9LayerTypeEfff", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn3vi241ClearLayerNextHdrAdjustableBezierMetadataEPNS0_9LayerTypeE", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn2gs3sdk46SetNativeWindowNextHdrAdjustableBezierMetadataEPvfff", ov_vi_accept);
+HOST_OVERRIDE("_ZN2nn2gs3sdk48ClearNativeWindowNextHdrAdjustableBezierMetadataEPv", ov_vi_accept);
 
 // void *nvnBootstrapLoader(const char *name): the first NVN call
 static void ov_nvn_bootstrap(Cpu *c) {
