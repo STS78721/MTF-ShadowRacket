@@ -547,6 +547,30 @@ static void ov_open_user_by_uid(Cpu *c) {
     ret_x(c, ok ? 0 : ACCOUNT_R_INVALID);
 }
 
+// Result LoadProfileImage(uint64_t *out_size, void *buffer, uint64_t buffer_size, const Uid &):
+// Mario Tennis Fever loads the user icon after the intro. The SDK walks an account:acc service pointer that the
+// host never opens, so the lifted path null-dereferences. The local offline user has no JPEG; report size 0.
+static void ov_load_profile_image(Cpu *c) {
+    uint64_t *out_size = arg_p(c, 0);
+    const Uid *u = arg_p(c, 3);
+    (void)arg_p(c, 1);
+    (void)arg_x(c, 2);
+    if (!out_size || !u) {
+        ret_x(c, ACCOUNT_R_INVALID);
+        return;
+    }
+    plat_mutex_lock(&account_lock);
+    load_uid();
+    int ok = same_uid(u);
+    plat_mutex_unlock(&account_lock);
+    if (!ok) {
+        ret_x(c, ACCOUNT_R_INVALID);
+        return;
+    }
+    *out_size = 0;
+    ret_x(c, 0);
+}
+
 // ==== nn::time (time_host.c): the host clock and time zone. User and network clocks follow the host wall clock; the
 // steady clock counts seconds since Windows started, with one random source id per process. ClockSnapshot has the
 // public 0xD0-byte layout, because game code reads its fields through inline accessors.
@@ -1065,6 +1089,7 @@ HOST_OVERRIDE("_ZN2nn7account13ListOpenUsersEPiPNS0_3UidEi", ov_list_all_users);
 HOST_OVERRIDE("_ZN2nn7account18ListQualifiedUsersEPiPNS0_3UidEi", ov_list_all_users);
 HOST_OVERRIDE("_ZN2nn7account8OpenUserEPNS0_10UserHandleERKNS0_3UidE", ov_open_user_by_uid);
 HOST_OVERRIDE("_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE", ov_open_user);
+HOST_OVERRIDE("_ZN2nn7account16LoadProfileImageEPmPvmRKNS0_3UidE", ov_load_profile_image);
 
 HOST_OVERRIDE("_ZN2nn4time10InitializeEv", ov_time_initialize);
 HOST_OVERRIDE("_ZN2nn4time8FinalizeEv", ov_time_finalize);
