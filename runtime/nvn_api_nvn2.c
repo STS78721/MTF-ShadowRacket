@@ -29,6 +29,9 @@ NVN_API(nvnDeviceRegisterFastClearColorIndex) { ret_x(c, 0); }
 NVN_API(nvnDeviceRegisterFastClearColoriIndex) { ret_x(c, 0); }
 NVN_API(nvnDeviceRegisterFastClearColoruiIndex) { ret_x(c, 0); }
 NVN_API(nvnDeviceRegisterFastClearStencil) { ret_x(c, 0); }
+// Depth/stencil fast-clear indexes (NVN 2): "not registered" keeps the normal clear path.
+NVN_API(nvnDeviceRegisterFastClearDepthIndex) { ret_x(c, 0); }
+NVN_API(nvnDeviceRegisterFastClearStencilIndex) { ret_x(c, 0); }
 
 // ---- Device message buffer (driver debug messages): the host driver writes none
 NVN_API(nvnDeviceMessageBufferSetDefaults) { (void)c; }
@@ -102,7 +105,36 @@ NVN2_NOT_RECORDED(nvnCommandBufferResetDeviceMessageBufferDeferred)
 NVN2_NOT_RECORDED(nvnCommandBufferBindShadingRateImage)
 NVN2_NOT_RECORDED(nvnCommandBufferSetShadingRatePaletteMode)
 NVN2_NOT_RECORDED(nvnCommandBufferShadingRateImagePalette)
+// Dirty-tile map: Mario Tennis Fever's deferred court lighting streams through these (Orchid runs
+// the same path on Maxwell; Bananza/MKW need the GetProc entries so pointers are never NULL). Until
+// the Vulkan replay fills the map, accept parameters and compute as no-ops — NULL GetProc left the
+// tile outputs uncleared and drew the black triangle grid over the court.
 NVN2_NOT_RECORDED(nvnCommandBufferComputeDirtyTileMap)
+NVN2_NOT_RECORDED(nvnCommandBufferComputeDirtyTileMapEx)
+NVN_API(nvnDirtyTileMapParametersSetDefaults) { (void)c; }
+NVN_API(nvnDirtyTileMapParametersSetTexture) { (void)c; }
+NVN_API(nvnDirtyTileMapParametersSetInputs) { (void)c; }
+NVN_API(nvnDirtyTileMapParametersSetOutputs) { (void)c; }
+NVN_API(nvnDirtyTileMapParametersSetExpandFootprint) { (void)c; }
+NVN_API(nvnDirtyTileMapParametersSetDepthStencilMask) { (void)c; }
+NVN_API(nvnDirtyTileMapParametersSetConstantColorTable) { (void)c; }
+NVN_API(nvnDirtyTileMapParametersGetTexture) { ret_x(c, 0); }
+NVN_API(nvnDirtyTileMapParametersGetInputs) { ret_x(c, 0); }
+NVN_API(nvnDirtyTileMapParametersGetOutputs) { ret_x(c, 0); }
+NVN_API(nvnDirtyTileMapParametersGetExpandFootprint) { ret_x(c, 0); }
+NVN_API(nvnDirtyTileMapParametersGetDepthStencilMask) { ret_x(c, 0); }
+NVN_API(nvnDirtyTileMapParametersGetConstantColorTable) { ret_x(c, 0); }
+NVN2_NOT_RECORDED(nvnCommandBufferSetGraphicsWorkloadPriority)
+NVN2_NOT_RECORDED(nvnCommandBufferSetComputeWorkloadPriority)
+NVN2_NOT_RECORDED(nvnCommandBufferSetResourceOccupancy)
+NVN2_NOT_RECORDED(nvnCommandBufferSetFloatBlendClamp)
+NVN_API(nvnQueueBuilderGetPrimaryQueue) { ret_x(c, 0); }
+NVN_API(nvnMultisampleStateGetSampleLocations) { ret_x(c, 0); }
+NVN_API(nvnTexturePoolWriteDescriptorTableData) { (void)c; }
+NVN_API(nvnSamplerPoolWriteDescriptorTableData) { (void)c; }
+NVN_API(nvnDlssNetworkBuilderGetTexturePool) { ret_x(c, 0); }
+NVN_API(nvnDlssNetworkBuilderGetTextureIDs) { ret_x(c, 0); }
+NVN_API(nvnDlssNetworkResize) { ret_x(c, 0); }
 NVN2_NOT_RECORDED(nvnCommandBufferDrawMeshTasks)
 NVN2_NOT_RECORDED(nvnCommandBufferDrawMeshTasks3D)
 NVN2_NOT_RECORDED(nvnCommandBufferDrawMeshTasks3DIndirect)
