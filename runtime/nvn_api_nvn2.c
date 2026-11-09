@@ -105,25 +105,106 @@ NVN2_NOT_RECORDED(nvnCommandBufferResetDeviceMessageBufferDeferred)
 NVN2_NOT_RECORDED(nvnCommandBufferBindShadingRateImage)
 NVN2_NOT_RECORDED(nvnCommandBufferSetShadingRatePaletteMode)
 NVN2_NOT_RECORDED(nvnCommandBufferShadingRateImagePalette)
-// Dirty-tile map: Mario Tennis Fever's deferred court lighting streams through these (Orchid runs
-// the same path on Maxwell; Bananza/MKW need the GetProc entries so pointers are never NULL). Until
-// the Vulkan replay fills the map, accept parameters and compute as no-ops — NULL GetProc left the
-// tile outputs uncleared and drew the black triangle grid over the court.
-NVN2_NOT_RECORDED(nvnCommandBufferComputeDirtyTileMap)
-NVN2_NOT_RECORDED(nvnCommandBufferComputeDirtyTileMapEx)
-NVN_API(nvnDirtyTileMapParametersSetDefaults) { (void)c; }
-NVN_API(nvnDirtyTileMapParametersSetTexture) { (void)c; }
-NVN_API(nvnDirtyTileMapParametersSetInputs) { (void)c; }
-NVN_API(nvnDirtyTileMapParametersSetOutputs) { (void)c; }
-NVN_API(nvnDirtyTileMapParametersSetExpandFootprint) { (void)c; }
-NVN_API(nvnDirtyTileMapParametersSetDepthStencilMask) { (void)c; }
-NVN_API(nvnDirtyTileMapParametersSetConstantColorTable) { (void)c; }
-NVN_API(nvnDirtyTileMapParametersGetTexture) { ret_x(c, 0); }
-NVN_API(nvnDirtyTileMapParametersGetInputs) { ret_x(c, 0); }
-NVN_API(nvnDirtyTileMapParametersGetOutputs) { ret_x(c, 0); }
-NVN_API(nvnDirtyTileMapParametersGetExpandFootprint) { ret_x(c, 0); }
-NVN_API(nvnDirtyTileMapParametersGetDepthStencilMask) { ret_x(c, 0); }
-NVN_API(nvnDirtyTileMapParametersGetConstantColorTable) { ret_x(c, 0); }
+// Dirty-tile map: Mario Tennis Fever's deferred court lighting. GetProc must not be NULL (that left
+// the tile buffer untouched and drew the black half-quad grid over the court). Until the Vulkan
+// replay can classify tiles from the G-buffer, keep Set/Get coherent in a host-side table and on
+// Compute fill the destination texture with 0xff so every tile counts as dirty (full lighting).
+typedef struct {
+    void *key;
+    tex_t *texture;
+    uint32_t inputs, outputs, expand_footprint, depth_stencil_mask;
+    void *constant_color_table;
+} dirty_tile_params_t;
+enum { DIRTY_TILE_PARAMS_CAP = 8 };
+static dirty_tile_params_t dirty_tile_params[DIRTY_TILE_PARAMS_CAP];
+static dirty_tile_params_t *dirty_tile_params_of(void *key) {
+    if (!key) return NULL;
+    dirty_tile_params_t *free = NULL;
+    for (int i = 0; i < DIRTY_TILE_PARAMS_CAP; i++) {
+        if (dirty_tile_params[i].key == key) return &dirty_tile_params[i];
+        if (!free && !dirty_tile_params[i].key) free = &dirty_tile_params[i];
+    }
+    if (!free) {
+        static int once;
+        if (!once++) rt_log("nvn: DirtyTileMapParameters table full; reusing slot 0");
+        free = &dirty_tile_params[0];
+    }
+    memset(free, 0, sizeof *free);
+    free->key = key;
+    return free;
+}
+static void dirty_tile_fill_all_dirty(tex_t *tex) {
+    if (!tex || tex->magic != NVN_TEX_MAGIC || !tex->mem || !tex->L.size) return;
+    size_t n = tex->L.size > 0x1000000ull ? 0x1000000ull : (size_t)tex->L.size; // 16 MiB cap
+    memset(tex->mem, 0xff, n);
+    nvn_guest_written((uint64_t)(uintptr_t)tex->mem, n);
+}
+static void compute_dirty_tile_map(Cpu *c, const char *name) {
+    static volatile int32_t logged;
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 1));
+    if (!__atomic_exchange_n(&logged, 1, __ATOMIC_RELAXED))
+        rt_log("nvn2: %s: fill tile map all-dirty (tex=%p size=%llu)", name, (void *)(p ? p->texture : NULL),
+               p && p->texture ? (unsigned long long)p->texture->L.size : 0ull);
+    if (p) dirty_tile_fill_all_dirty(p->texture);
+}
+NVN_API(nvnCommandBufferComputeDirtyTileMap) { compute_dirty_tile_map(c, "ComputeDirtyTileMap"); }
+NVN_API(nvnCommandBufferComputeDirtyTileMapEx) { compute_dirty_tile_map(c, "ComputeDirtyTileMapEx"); }
+NVN_API(nvnDirtyTileMapParametersSetDefaults) {
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 0));
+    if (p) {
+        void *key = p->key;
+        memset(p, 0, sizeof *p);
+        p->key = key;
+    }
+}
+NVN_API(nvnDirtyTileMapParametersSetTexture) {
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 0));
+    if (p) p->texture = arg_p(c, 1);
+}
+NVN_API(nvnDirtyTileMapParametersSetInputs) {
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 0));
+    if (p) p->inputs = (uint32_t)arg_x(c, 1);
+}
+NVN_API(nvnDirtyTileMapParametersSetOutputs) {
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 0));
+    if (p) p->outputs = (uint32_t)arg_x(c, 1);
+}
+NVN_API(nvnDirtyTileMapParametersSetExpandFootprint) {
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 0));
+    if (p) p->expand_footprint = (uint32_t)arg_x(c, 1);
+}
+NVN_API(nvnDirtyTileMapParametersSetDepthStencilMask) {
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 0));
+    if (p) p->depth_stencil_mask = (uint32_t)arg_x(c, 1);
+}
+NVN_API(nvnDirtyTileMapParametersSetConstantColorTable) {
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 0));
+    if (p) p->constant_color_table = arg_p(c, 1);
+}
+NVN_API(nvnDirtyTileMapParametersGetTexture) {
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 0));
+    ret_x(c, (uint64_t)(uintptr_t)(p ? p->texture : NULL));
+}
+NVN_API(nvnDirtyTileMapParametersGetInputs) {
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 0));
+    ret_x(c, p ? p->inputs : 0);
+}
+NVN_API(nvnDirtyTileMapParametersGetOutputs) {
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 0));
+    ret_x(c, p ? p->outputs : 0);
+}
+NVN_API(nvnDirtyTileMapParametersGetExpandFootprint) {
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 0));
+    ret_x(c, p ? p->expand_footprint : 0);
+}
+NVN_API(nvnDirtyTileMapParametersGetDepthStencilMask) {
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 0));
+    ret_x(c, p ? p->depth_stencil_mask : 0);
+}
+NVN_API(nvnDirtyTileMapParametersGetConstantColorTable) {
+    dirty_tile_params_t *p = dirty_tile_params_of(arg_p(c, 0));
+    ret_x(c, (uint64_t)(uintptr_t)(p ? p->constant_color_table : NULL));
+}
 NVN2_NOT_RECORDED(nvnCommandBufferSetGraphicsWorkloadPriority)
 NVN2_NOT_RECORDED(nvnCommandBufferSetComputeWorkloadPriority)
 NVN2_NOT_RECORDED(nvnCommandBufferSetResourceOccupancy)
