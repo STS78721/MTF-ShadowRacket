@@ -52,15 +52,17 @@ def main() -> int:
         code.write_bytes(fragment_code())
         out = tmp / "out"
         job = {"key": "const_ps", "stage": "ps", "code": str(code), "debug": False, "fout": {"0": "float"}}
+        job_int = dict(job, key="int_tex", tex={"0": "2d_uint"})
         lines = [
             json.dumps({"job": job, "out": str(out)}),
             "this is not json",
             json.dumps({"job": dict(job, key="again"), "out": str(out)}),
+            json.dumps({"job": job_int, "out": str(out)}),
         ]
         r = subprocess.run([str(EXE), "--serve"], input="\n".join(lines) + "\n", capture_output=True, text=True, timeout=60)
         replies = r.stdout.splitlines()
         print("replies:", replies)
-        if len(replies) != 3 or replies[0] != "ok const_ps" or not replies[1].startswith("fail ") or replies[2] != "ok again":
+        if len(replies) != 4 or replies[0] != "ok const_ps" or not replies[1].startswith("fail ") or replies[2] != "ok again" or replies[3] != "ok int_tex":
             print("unexpected replies; stderr:", r.stderr, file=sys.stderr)
             return 1
         spv = out / "const_ps.spv"

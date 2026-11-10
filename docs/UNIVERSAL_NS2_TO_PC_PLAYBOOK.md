@@ -154,3 +154,43 @@ Read AGENTS.md and docs\UNIVERSAL_NS2_TO_PC_PLAYBOOK.md first. Follow these stri
    - Keep all game dumps, lifted C, and binaries outside git-tracked paths.
    - Run `python tools/check_content.py` before finishing.
 ```
+
+---
+
+## 5. Crucial Switch 2 Findings & Solutions (Fast Fusion & Beyond)
+
+### 5.1. Massive Vertex Explosions: Speculative SSBO DMA Writeback
+- **Symptom:** The 3D scene shows giant skewed polygon sheets, skewed triangles, or exploded vertex geometry covering the screen, while 2D UI/HUD remains intact.
+- **Root Cause:** In branching compute/graphics dispatches, `GlobalToStorage.cs` registers every candidate storage buffer expression with `BufferUsageFlags.Write` for SPIR-V validator safety. In `runtime/vk_exec_draw.c`, `ssbo_info` binds these speculative candidates with `guarded=1` (`direct_only=1`). If `vk_mem_gpu_wrote(&sp, n)` and `note_written` are called for candidate buffers, the engine schedules full-extent (`n = 120 KiB+` or pool remainder) `mbuf -> buf` GPU DMA writebacks at `vk_mem_mirror_end`. Because Windows `GetWriteWatch` only tracks host CPU writes and does not track GPU DMA writes, host memory is overwritten with stale mirror buffer bytes. This clobbers guest host RAM where subsequent draws' vertex buffers reside.
+- **Solution:** Guarded storage buffer candidates (`direct_only` / `guarded`) must NEVER schedule full-extent writeback or register completion dirty ranges:
+  ```c
+  // runtime/vk_exec_draw.c: bind_range
+  if (written && !direct_only) vk_mem_gpu_wrote(&sp, n);
+  if (written) vk_usnap_drop(addr, n);
+
+  // runtime/vk_exec_draw.c: ssbo_info
+  if (written && !guarded && bi.buffer != VK_NULL_HANDLE) {
+      note_written(ex, b->addr - lead, bi.range);
+      ...
+  }
+  ```
+
+### 5.2. Missing Volumetric Fog LUT / Black Skybox: Single-Image Fallback
+- **Symptom:** Night/space or foggy courses render with a completely pitch-black skybox or missing atmospheric lighting.
+- **Root Cause:** Ampere compute shaders writing to 3D image LUTs (`SUST.P` image store instructions) in NVN2 packed `c0` banks may have image handles where the computed handle byte offset does not match `nvn2_c0_part(&s->c0, 4)` partitions, resulting in `r->slot = -1`. When `r->slot` is negative, `vk_exec_draw.c` binds a 1x1 dummy black texture instead of the target 3D LUT (e.g. `lut738` `160x90x64`).
+- **Solution:** When a compute shader declares exactly 1 image in its `c0` layout, fall back to slot 0 if slot resolution yielded negative:
+  ```c
+  // runtime/gfx_shader.c
+  if (kind == GFX_RES_IMG && r->slot < 0 && s->c0.images == 1) r->slot = 0;
+  ```
+
+### 5.3. Dynamic Window Title Across Titles
+- **Solution:** Rather than hardcoding titles in window creation, use `game_profile()->display_name`:
+  ```c
+  // runtime/gfx_window_win.c & gfx_window_sdl.c
+  const char *dn = game_profile()->display_name;
+  swprintf(title_w, sizeof title_w / sizeof title_w[0], L"%hs (PC Recomp)", (dn && *dn) ? dn : "Universal NS2 Title");
+  ```
+
+### 5.4. Automatic Shader Translator Deployment
+- `tools/build_game.py` automatically deploys `build/xlate/totk_xlate.exe` (and `.id`) to `<out>/ns2_xlate.exe` and `ns2_xlate.id` beside the output executable so every new game build has its native shader translator ready out of the box.
