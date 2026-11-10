@@ -214,6 +214,18 @@ static class SwshXlate
             if (raw != null && raw.EndsWith("_sint")) return TextureFormat.R32Sint;
             return TextureFormat.Unknown;
         }
+        public bool QueryTextureCoordNormalized(int handle, int cbufSlot = -1)
+        {
+            int slot = TexSlot(handle, cbufSlot);
+            if (slot >= 0)
+            {
+                if (_job["tex"] is JsonObject t && t[slot.ToString()] is JsonObject o && o["unnormalized"] is JsonNode un && (bool)un)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
         public TextureFormat QueryTextureFormat(int handle, int cbufSlot = -1)
         {
             int slot;

@@ -229,6 +229,7 @@ static char *trim(char *s) {
 static const char *unprefix(const char *name) {
     if (!name) return NULL;
     if (!strncmp(name, "NS2_", 4)) return name + 4;
+    if (!strncmp(name, "FF_", 3)) return name + 3;
     if (!strncmp(name, "MTF_", 4)) return name + 4;
     if (!strncmp(name, "MKW_", 4)) return name + 4;
     if (!strncmp(name, "DKB_", 4)) return name + 4;
@@ -342,7 +343,7 @@ static const char *dkb_alias(const char *name) {
     char alias[96];
     const char *u = unprefix(name);
     if (!u || strlen(u) >= sizeof alias - 6) return NULL;
-    static const char *const kPrefixes[] = {"NS2", "MTF", "MKW", "DKB", "OOT", "TOTK"};
+    static const char *const kPrefixes[] = {"NS2", "FF", "MTF", "MKW", "DKB", "OOT", "TOTK"};
     for (size_t i = 0; i < sizeof kPrefixes / sizeof *kPrefixes; i++) {
         snprintf(alias, sizeof alias, "%s_%s", kPrefixes[i], u);
         const char *e = getenv(alias);
