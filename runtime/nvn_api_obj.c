@@ -720,9 +720,17 @@ NVN_API(nvnWindowSetPresentInterval) {
 NVN_API(nvnWindowSetCrop) {
     win_t *o = WN(c);
     int v[4] = {(int)arg_x(c, 1), (int)arg_x(c, 2), (int)arg_x(c, 3), (int)arg_x(c, 4)};
+    const tex_t *t0 = (const tex_t *)o->tex[0];
+    if (t0 && t0->d.width > 0 && t0->d.height > 0) {
+        unsigned want[2] = {0};
+        res_wanted(want);
+        if (want[0] > 1920 && v[2] <= 1920 && v[3] <= 1080 && t0->d.width >= want[0] && v[0] == 0 && v[1] == 0) {
+            v[2] = (int)t0->d.width;
+            v[3] = (int)t0->d.height;
+        }
+    }
     if (memcmp(o->crop, v, sizeof v)) NVN_LOG("WindowCrop %d,%d %dx%d", v[0], v[1], v[2], v[3]);
     memcpy(o->crop, v, sizeof v);
-    const tex_t *t0 = (const tex_t *)o->tex[0];
     res_record_game_surface(t0 ? t0->d.width : 0, t0 ? t0->d.height : 0, v[0], v[1], v[2], v[3]);
 }
 

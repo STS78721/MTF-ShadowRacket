@@ -353,6 +353,10 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         ldflags.append('-Wl,--wrap,f_70006f9c50')
         ldflags.append('-Wl,--wrap,f_70001a6e80')
         ldflags.append('-Wl,--wrap,f_7000192d60')
+    if 'ff' in str(out).lower() or 'ff' in str(gen).lower():
+        ldflags.append('-Wl,--wrap,f_700011ff04')
+        ldflags.append('-Wl,--wrap,f_700011ff1c')
+        ldflags.append('-Wl,--wrap,f_7000075cc0')
     lines = [
         '# Written by tools/build_game.py; do not edit.',
         'ninja_required_version = 1.10',
@@ -764,6 +768,8 @@ def main():
                                                     f'({", ".join(sorted(INSTALL_SIDE))} and modules.c still compile)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
+    ap.add_argument('--prepare-shaders', action='store_true',
+                    help='extract RomFS/ExeFS shaders and warm host GPU driver cache after linking')
     args = ap.parse_args()
 
     gen = (args.gen or (Path(r"C:\Games\MTF PC\generated\mtf111") if 'mtf' in args.version.lower() and Path(r"C:\Games\MTF PC\generated\mtf111").is_dir()
@@ -941,6 +947,12 @@ def main():
           f'image {mib(image)}; ' + ', '.join(f'{k} {mib(v)}' for k, v in sections.items() if k.startswith('.') and v))
     if image > 3 * GiB // 2:
         print('build_game: warning: image over 1.5 GiB; RIP-relative code reaches only 2 GiB', file=sys.stderr)
+    if args.prepare_shaders:
+        prep_script = ROOT / 'tools' / 'prepare_shaders.py'
+        if prep_script.is_file():
+            print(f'build_game: warming native RomFS/ExeFS shaders into host GPU driver cache...', flush=True)
+            cmd = [sys.executable, str(prep_script), str(out), '--romfs', str(paths['romfs']), '--exefs', str(paths['exefs'])]
+            subprocess.run(cmd)
 
 
 if __name__ == '__main__':

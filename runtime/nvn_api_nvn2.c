@@ -302,6 +302,7 @@ NVN_API(nvnDlssNetworkBuilderGetFlags) { dlss_builder_t *b = dlss_builder_of(arg
 NVN_API(nvnDlssNetworkBuilderSetOutputResolution) {
     dlss_builder_t *b = dlss_builder_of(arg_p(c, 0), 0);
     if (b) { b->out_w = (uint32_t)arg_x(c, 1); b->out_h = (uint32_t)arg_x(c, 2); }
+    rt_log("dlss: SetOutputResolution %ux%u (lr=%#llx)", (unsigned)arg_x(c, 1), (unsigned)arg_x(c, 2), (unsigned long long)c->x[30]);
 }
 NVN_API(nvnDlssNetworkBuilderGetOutputResolution) {
     dlss_builder_t *b = dlss_builder_of(arg_p(c, 0), 0);
@@ -316,6 +317,7 @@ NVN_API(nvnDlssNetworkBuilderGetOptimalSettings) {
     dlss_builder_t *b = dlss_builder_of(arg_p(c, 0), 0);
     uint32_t w = (b && b->out_w) ? b->out_w : 1920u;
     uint32_t h = (b && b->out_h) ? b->out_h : 1080u;
+    rt_log("dlss: GetOptimalSettings out=%ux%u method=%u preset=%u (lr=%#llx)", w, h, b ? b->method : 0, b ? b->preset : 0, (unsigned long long)c->x[30]);
     dlss_write_u32(c, 1, w);
     dlss_write_u32(c, 2, h);
     dlss_write_u32(c, 3, w);

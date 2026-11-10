@@ -108,6 +108,37 @@ def bnsh_shaders(data):
             yield digest(control + code[:length]), stage, control, code[:length]
 
 
+def shdr_shaders(data):
+    """Shin'en SHN! shader container (Fast Fusion loose or packed RomFS)."""
+    if len(data) < 68 or data[:4] != b'SHN!':
+        return
+    if b'SHDROUNC' not in data[:256]:
+        return
+    hdr = struct.unpack_from('<17I', data, 0)
+    code_off = hdr[9] + 1
+    code_len = hdr[10] - 1
+    if code_off >= len(data) or code_len <= 0 or code_off + code_len > len(data):
+        code_len = len(data) - code_off
+    code = data[code_off:code_off + code_len]
+    if len(code) < 4:
+        return
+    w0 = struct.unpack_from('<I', code, 0)[0]
+    gfx = (w0 & 31) in (1, 2) and ((w0 >> 5) & 31) == 4
+    if gfx:
+        st = (w0 >> 10) & 15
+        stage = 'ps' if st in (1, 3) else ('vs' if st == 0 else ('gs' if st == 4 else 'ps'))
+    else:
+        stage = 'cs'
+    ctl = bytearray(0x880)
+    struct.pack_into('<II', ctl, 0x700, len(code), len(code))
+    actual_stage = {'vs': 0, 'ps': 1, 'cs': 5, 'gs': 3}[stage]
+    struct.pack_into('<I', ctl, 0x714, actual_stage)
+    if stage == 'cs':
+        struct.pack_into('<III', ctl, 0x748, 1, 1, 1)
+    ctl_bytes = bytes(ctl)
+    yield digest(ctl_bytes + code), stage, ctl_bytes, code
+
+
 def sharcb_shaders(data, rejected):
     """agl shader packages (.sharcb, magic BAHS): records <u64 code offset in the pool, u32 control size (0x880 or
     0x88c), i32 offset of the control from the record>; a record may reuse an earlier record's control.
@@ -179,14 +210,11 @@ SHADER_DIRS = ('Shader/', 'Effect/', 'Lib/agl/', 'Lib/Terrain/', 'Lib/gsys/', 'U
 
 
 def inventory(romfs, exefs, everything=True):
-    """Every unique shader: key -> dict(stage, control, code, source, origin, startup). As in MNG, a shader is a startup
-    shader when it comes from an agl package, a game module, or a startup_package() RomFS file; the others come from
-    effect and UI layout resources, which MNG translates only for bind states players have met. Also returns the number
+    """Every unique shader: key -> dict(stage, control, code, source, origin, startup). Scans packed RomFS (index.json +
+    romfs.bin) and loose RomFS directories for BNSH, agl BAHS packages, and Shin'en SHN! containers. Also returns the number
     of .sharcb record candidates rejected for a missing control magic (see sharcb_shaders)."""
-    index = json.loads((romfs / 'index.json').read_text(encoding='utf-8'))
-    if index.get('status') != 'pass':
-        raise ValueError('RomFS has not passed integrity verification')
-    entries = {r['path']: r for r in index['files']}
+    romfs = Path(romfs) if romfs else None
+    exefs = Path(exefs) if exefs else None
     shaders = {}
     rejected = [0]
 
@@ -197,52 +225,97 @@ def inventory(romfs, exefs, everything=True):
             if startup and not s['startup']:
                 s.update(source=name, origin=origin, startup=True)
 
-    with (romfs / 'romfs.bin').open('rb') as stream:
-        def read(name):
-            row = entries[name]
-            stream.seek(row['offset'])
-            raw = stream.read(row['size'])
-            if len(raw) != row['size']:
-                raise ValueError('short RomFS read')
-            return raw
-
-        dictionaries = {}
-        for raw in sarc(zstd.decompress(read('Pack/ZsDic.pack.zs'))).values():
-            d = zstd.ZstdDict(raw)
-            dictionaries[d.dict_id] = d
-
-        def decode(raw):
-            info = zstd.get_frame_info(raw)
-            if info.decompressed_size is None or info.decompressed_size > 512 << 20:
-                raise ValueError('unbounded shader package')
-            return zstd.decompress(raw, zstd_dict=dictionaries[info.dictionary_id] if info.dictionary_id else None)
-
-        def visit(origin, name, data, startup, depth=0):
-            if data[:4] == b'BAHS':
-                add('sharcb', name, sharcb_shaders(data, rejected), True)
+    def visit(origin, name, data, startup, depth=0):
+        if data[:4] == b'SHN!':
+            add('shdr', name, shdr_shaders(data), True)
+            return
+        if data[:4] == b'BAHS':
+            add('sharcb', name, sharcb_shaders(data, rejected), True)
+            return
+        if data[:4] == b'SARC':
+            if depth > 4:
                 return
-            if data[:4] == b'SARC':
-                if depth > 4:
-                    return
-                for member, raw in sarc(data).items():
-                    visit(origin, name + '/' + member, decode(raw) if raw[:4] == ZSTD else raw, startup, depth + 1)
-                return
-            pos = 0   # BFSHA and BNSH files, effect and layout resources: complete, independently addressed BNSH files
-            while (pos := data.find(b'BNSH\0\0\0\0', pos)) >= 0:
+            for member, raw in sarc(data).items():
+                visit(origin, name + '/' + member, decode(raw) if raw[:4] == ZSTD else raw, startup, depth + 1)
+            return
+        pos = 0   # BFSHA and BNSH files, effect and layout resources: complete, independently addressed BNSH files
+        while (pos := data.find(b'BNSH\0\0\0\0', pos)) >= 0:
+            try:
                 size = struct.unpack_from('<I', checked(data, pos + 28, 4))[0]
                 add(origin, name, bnsh_shaders(checked(data, pos, size)), startup)
                 pos += max(size, 8)
+            except Exception:
+                pos += 8
 
-        for name in sorted(entries):
-            if not everything and not name.startswith(SHADER_DIRS):
+    if romfs and (romfs / 'index.json').is_file() and (romfs / 'romfs.bin').is_file():
+        index = json.loads((romfs / 'index.json').read_text(encoding='utf-8'))
+        entries = {r['path']: r for r in index['files']}
+        with (romfs / 'romfs.bin').open('rb') as stream:
+            def read(name):
+                row = entries[name]
+                stream.seek(row['offset'])
+                raw = stream.read(row['size'])
+                if len(raw) != row['size']:
+                    raise ValueError('short RomFS read')
+                return raw
+
+            dictionaries = {}
+            if 'Pack/ZsDic.pack.zs' in entries:
+                try:
+                    for raw in sarc(zstd.decompress(read('Pack/ZsDic.pack.zs'))).values():
+                        d = zstd.ZstdDict(raw)
+                        dictionaries[d.dict_id] = d
+                except Exception:
+                    pass
+
+            def decode(raw):
+                info = zstd.get_frame_info(raw)
+                if info.decompressed_size is None or info.decompressed_size > 512 << 20:
+                    raise ValueError('unbounded shader package')
+                return zstd.decompress(raw, zstd_dict=dictionaries[info.dictionary_id] if info.dictionary_id else None)
+
+            for name in sorted(entries):
+                if not everything and not name.startswith(SHADER_DIRS) and not name.endswith(('.shdr', '.bnsh')):
+                    continue
+                raw = read(name)
+                if raw[:4] not in (ZSTD, b'SARC', b'FSHA', b'BNSH', b'BAHS', b'SHN!') and b'BNSH\0\0\0\0' not in raw:
+                    continue
+                visit('bnsh' if raw[:4] != b'SHN!' else 'shdr', name,
+                      decode(raw) if raw[:4] == ZSTD else raw,
+                      startup_package(name) or name.endswith('.shdr'))
+    elif romfs and romfs.is_dir():
+        for p in sorted(romfs.rglob('*')):
+            if not p.is_file():
                 continue
-            raw = read(name)
-            if raw[:4] not in (ZSTD, b'SARC', b'FSHA', b'BNSH', b'BAHS') and b'BNSH\0\0\0\0' not in raw:
-                continue
-            visit('bnsh', name, decode(raw) if raw[:4] == ZSTD else raw, startup_package(name))
-    for module in sorted(exefs.iterdir()):
-        if module.name in ('main', 'sdk', 'subsdk0', 'rtld'):
-            visit('main', 'module:' + module.name, nso_image(module), True)
+            rel = p.relative_to(romfs).as_posix()
+            try:
+                raw = p.read_bytes()
+                if p.suffix == '.shdr' or (raw[:4] == b'SHN!' and b'SHDROUNC' in raw[:256]):
+                    add('shdr', rel, shdr_shaders(raw), True)
+                elif p.suffix == '.bnsh' or b'BNSH\0\0\0\0' in raw:
+                    pos = 0
+                    while (pos := raw.find(b'BNSH\0\0\0\0', pos)) >= 0:
+                        try:
+                            size = struct.unpack_from('<I', checked(raw, pos + 28, 4))[0]
+                            add('bnsh', rel, bnsh_shaders(checked(raw, pos, size)), startup_package(rel))
+                            pos += max(size, 8)
+                        except Exception:
+                            pos += 8
+                elif p.suffix == '.sharcb' or raw[:4] == b'BAHS':
+                    try:
+                        add('sharcb', rel, sharcb_shaders(raw, rejected), True)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+    if exefs and exefs.is_dir():
+        for module in sorted(exefs.iterdir()):
+            if module.name in ('main', 'sdk', 'subsdk0', 'rtld'):
+                try:
+                    visit('main', 'module:' + module.name, nso_image(module), True)
+                except Exception:
+                    pass
     return shaders, rejected[0]
 
 

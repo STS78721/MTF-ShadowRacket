@@ -194,3 +194,48 @@ Read AGENTS.md and docs\UNIVERSAL_NS2_TO_PC_PLAYBOOK.md first. Follow these stri
 
 ### 5.4. Automatic Shader Translator Deployment
 - `tools/build_game.py` automatically deploys `build/xlate/totk_xlate.exe` (and `.id`) to `<out>/ns2_xlate.exe` and `ns2_xlate.id` beside the output executable so every new game build has its native shader translator ready out of the box.
+
+### 5.5. Black Skybox in 3D Passes: Unnormalized Fragment Coord Textures & Depth-Stencil Split Copies
+- **Symptom:** Skybox, sunset clouds, and atmospheric haze render pitch black or are clipped away, while vehicles and tracks render normally.
+- **Root Cause #1 (Texture Coordinates):** Skybox shaders (e.g. Pass 75 `sh_96b7b3b96d984bcf.spv`) sample depth/normal buffers using `gl_FragCoord.xy` as unnormalized coordinates. In `tools/xlate` (specifically patch `0027-unnormalized-fragment-coord-textures.patch`), if a fragment shader uses screen-space coordinates without explicit normalization, the translator ensures texture coordinates are normalized to `[0.0, 1.0]` for Vulkan sampled images.
+- **Root Cause #2 (Dual-Aspect Blit in `copy_t2t`):** Fast Fusion performs texture-to-texture depth copies (`copy_t2t` in `runtime/vk_exec_xfer.c`) on format `0x35` (`DEPTH32F_STENCIL8`). In Vulkan, blitting or resolving combined depth/stencil images requires separate aspect masks (`VK_IMAGE_ASPECT_DEPTH_BIT` and `VK_IMAGE_ASPECT_STENCIL_BIT`). If a combined `DEPTH_BIT | STENCIL_BIT` mask is passed to `vkCmdBlitImage` or if `sub_resolve()` doesn't split aspects (`allow_mode = 2`), the blit command fails or produces invalid/stale depth data. Skybox depth tests then discard all sky fragments against 0.0 depth.
+- **Solution:** In `runtime/vk_exec_xfer.c` (`copy_t2t`), enable `allow_mode = 2` for format `0x35` (`DEPTH32F_STENCIL8`), splitting dual-aspect blits into separate depth and stencil passes.
+
+### 5.6. High-Resolution Scaling Hooks (4K / Custom Resolutions in Engine)
+- **Symptom:** Setting `output_res = 3840x2160` and `render_scale = 100` in `.ini` displays the window in 4K, but the 3D scene remains locked to native Switch 2 resolution (960x540 / 1080p canvas), or is stretched/cropped.
+- **Root Cause:** Games often hardcode display buffer resolutions in internal functions or register constants (e.g. `0x780` = 1920, `0x438` = 1080 in Fast Fusion `f_700010f328` and `f_700011fde4`). Guest calls to `nvnWindowSetCrop` clamp surfaces to 1920x1080 even when allocated at 3840x2160. Additionally, screenshots in `boot.c` had hardcoded resolution overrides (`w == 3840 && h == 2160` clamping to `1706x960`).
+- **Solution:**
+  1. In `runtime/resolution.c`:
+     - `res_apply_live()` synchronizes `NS2_WINDOW_SIZE` to `NS2_OUTPUT_RES` on initial startup.
+     - Add guest wrappers:
+       - `__wrap_f_700011ff04`: Intercepts docked canvas size setter and applies `want[0] x want[1]` (e.g. 3840x2160).
+       - `__wrap_f_700011ff1c`: Intercepts handheld canvas size setter and applies half output resolution.
+       - `__wrap_f_7000075cc0`: Intercepts 3D scene manager, dynamically setting internal horizontal and vertical render scale factors (`1.0f` for 100%, `0.5f` for 50%) at `scene_mgr + 0xb0` and `scene_mgr + 0xb4`.
+  2. In `runtime/nvn_api_obj.c` (`nvnWindowSetCrop`):
+     - Unclamp crop `v = (0, 0, width, height)` when the underlying surface was allocated at output resolution (`3840x2160`).
+  3. In `runtime/boot.c` (`save_shot`):
+     - Remove hardcoded 1706x960 crop override so full-resolution 4K frames are saved.
+  4. In `tools/build_game.py`:
+     - Pass `-Wl,--wrap,f_700011ff04,-Wl,--wrap,f_700011ff1c,-Wl,--wrap,f_7000075cc0` when linking Fast Fusion builds.
+
+### 5.7. Native RomFS/ExeFS Preshader Warmer & Host GPU Driver Cache Injection
+- **Symptom:** Significant compilation stutter when entering new tracks or encountering new effects.
+- **Architecture:**
+  - Shaders exist as loose files (e.g. `romfs/shaders/*.shdr`), packed in `romfs.bin` / `index.json`, in game archives (`.w3d`, `.sarc`), or as BNSH/BAHS containers.
+  - `.shdr` (`SHN!`) container structure:
+    - Header (68 bytes): `ctl_off = hdr[1]` (68), `ctl_sz = hdr[2]`, `code_sz = hdr[3]`, `code_off = hdr[9] + 1`, `code_len = hdr[10] - 1`.
+    - Validated by checking `b'SHDROUNC'` at `hdr[1]`.
+    - SPH v4 header word 0: `(w0 & 31) in (1, 2) && ((w0 >> 5) & 31) == 4`. Graphics stages: `st = (w0 >> 10) & 15` (1/3: ps, 0: vs, 4: gs). Non-graphics: compute (cs).
+  - `tools/shader_census.py`:
+    - `shdr_shaders(data)`: Parses `SHN!` containers, creates synthetic 0x880 control section (matching `nvn2_lower` layout), and yields `(key, stage, ctl, code)`.
+    - `inventory(romfs, exefs)`: Supports both packed RomFS (`index.json` + `romfs.bin`) and loose RomFS directories (`rglob`).
+  - `tools/prepare_shaders.py`:
+    - Reads inventoried shaders and merges any runtime-recorded shaders (`shader-programs.bin` and `shader-answers.bin`).
+    - Writes `seed-programs.bin` and `seed-answers.bin`.
+    - Auto-detects the target game executable in build directory (`ff.exe`, `dkb.exe`, `totk.exe`, etc.).
+    - Executes `<game>.exe --prepare-shaders`:
+      - The runtime (`runtime/gfx_shader.c` and `runtime/vk_pipeline.c`) compiles all seed variants into SPIR-V.
+      - Builds stage libraries and compute pipelines with Vulkan GPL (`graphics_pipeline_library`).
+      - Injects prebuilt pipelines directly into the host GPU driver's disk cache (NVIDIA NV_Cache/DXCache, AMD, Intel) and `pipeline-cache.bin`.
+      - Writes `shader-prepared.bin` for instant prebuild on subsequent game boots (0 fast-link stutters during gameplay).
+  - Integrated into `tools/build_game.py` via `--prepare-shaders` flag.

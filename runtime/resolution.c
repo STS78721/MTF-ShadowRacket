@@ -340,6 +340,11 @@ void res_apply_live(void) {
         init = 1;
         prev_handheld = hh;
         if (out_res) snprintf(prev_out, sizeof prev_out, "%s", out_res);
+        decide();
+        // Synchronize window size on initial startup if set
+        if (out_res && !cfg_bool("NS2_FULLSCREEN") && strcmp(cfg_value("NS2_WINDOW_SIZE"), out_res) != 0) {
+            cfg_set("NS2_WINDOW_SIZE", out_res);
+        }
         return;
     }
 
@@ -381,5 +386,72 @@ void res_live_snapshot(unsigned win_sz[2], unsigned crop_sz[2], unsigned out_tgt
     if (handheld) {
         const char *op = cfg_value("NS2_OPERATION_MODE");
         *handheld = (op && !strcmp(op, "handheld")) ? 1 : 0;
+    }
+}
+
+// ---- Fast Fusion Resolution Scaling Hooks
+extern void __real_f_700011ff04(Cpu *c) __attribute__((weak));
+extern void __real_f_700011ff1c(Cpu *c) __attribute__((weak));
+extern void __real_f_7000075cc0(Cpu *c) __attribute__((weak));
+
+void __wrap_f_700011ff04(Cpu *c) {
+    unsigned want[2] = {0};
+    res_wanted(want);
+    if (want[0] && want[1]) {
+        rt_log("ff: resolution hook: docked canvas %ux%u (was %ux%u)",
+               want[0], want[1], (unsigned)c->x[1], (unsigned)c->x[2]);
+        c->x[1] = want[0];
+        c->x[2] = want[1];
+    }
+    if (__real_f_700011ff04) __real_f_700011ff04(c);
+    else {
+        GuestFn orig = rt_dispatch_lookup(0x700011ff04ull);
+        if (orig) orig(c);
+    }
+}
+
+void __wrap_f_700011ff1c(Cpu *c) {
+    unsigned want[2] = {0};
+    res_wanted(want);
+    if (want[0] && want[1]) {
+        uint32_t hw = (want[0] >= 3840) ? 1920 : (want[0] >= 2560 ? 1280 : want[0] / 2);
+        uint32_t hh = (want[1] >= 2160) ? 1080 : (want[1] >= 1440 ? 720 : want[1] / 2);
+        rt_log("ff: resolution hook: handheld canvas %ux%u (was %ux%u)",
+               hw, hh, (unsigned)c->x[1], (unsigned)c->x[2]);
+        c->x[1] = hw;
+        c->x[2] = hh;
+    }
+    if (__real_f_700011ff1c) __real_f_700011ff1c(c);
+    else {
+        GuestFn orig = rt_dispatch_lookup(0x700011ff1cull);
+        if (orig) orig(c);
+    }
+}
+
+void __wrap_f_7000075cc0(Cpu *c) {
+    uint64_t x21 = c->x[0];
+    if (x21) {
+        float *scale_x = (float *)(uintptr_t)(x21 + 0xb0);
+        float *scale_y = (float *)(uintptr_t)(x21 + 0xb4);
+        float target_scale = 1.0f;
+        const char *s = cfg_value("TOTK_RENDER_SCALE");
+        if (s && strcmp(s, "game") != 0) {
+            float pct = (float)atof(s);
+            if (pct >= 25.0f && pct <= 400.0f) target_scale = pct / 100.0f;
+        } else if (s && !strcmp(s, "game")) {
+            target_scale = 0.5f;
+        }
+        *scale_x = target_scale;
+        *scale_y = target_scale;
+        static int logged = 0;
+        if (!logged) {
+            logged = 1;
+            rt_log("ff: resolution hook: 3D scene scale set to %.2fx (RENDER_SCALE=%s)", target_scale, s ? s : "default");
+        }
+    }
+    if (__real_f_7000075cc0) __real_f_7000075cc0(c);
+    else {
+        GuestFn orig = rt_dispatch_lookup(0x7000075cc0ull);
+        if (orig) orig(c);
     }
 }

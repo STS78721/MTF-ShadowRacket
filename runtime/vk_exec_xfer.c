@@ -571,8 +571,8 @@ static int copy_decoded_astc(VkExec *ex, const p_copy_t2t *p) {
 static void copy_t2t(VkExec *ex, const p_copy_t2t *p) {
     if (copy_decoded_astc(ex, p)) return;
     Sub s, d;
-    if (!sub_resolve(p->src, &p->sv, p->has_sv, &p->sr, 1, 0, &s)) return;
-    if (!sub_resolve(p->dst, &p->dv, p->has_dv, &p->dr, 1, 0, &d)) return;
+    if (!sub_resolve(p->src, &p->sv, p->has_sv, &p->sr, 1, 2, &s)) return;
+    if (!sub_resolve(p->dst, &p->dv, p->has_dv, &p->dr, 1, 2, &d)) return;
     d.nz = s.nz;
     int same_size = s.w == d.w && s.h == d.h;
     int same_format = s.img->format == d.img->format;
@@ -595,13 +595,30 @@ static void copy_t2t(VkExec *ex, const p_copy_t2t *p) {
         vkCmdCopyImage(ex->cb, s.img->image, VK_IMAGE_LAYOUT_GENERAL, d.img->image, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
     } else {   // scaled or converting copy: nearest, or linear when asked for (colour only)
         int is3d = s.img->type == VK_IMAGE_TYPE_3D;
-        VkImageBlit bl = {.srcSubresource = sl, .dstSubresource = dl};
-        bl.srcOffsets[0] = sub_offset(&s);
-        bl.srcOffsets[1] = (VkOffset3D){s.x + (int32_t)s.w, s.y + (int32_t)s.h, is3d ? s.z + (int32_t)s.nz : 1};
-        bl.dstOffsets[0] = sub_offset(&d);
-        bl.dstOffsets[1] = (VkOffset3D){d.x + (int32_t)d.w, d.y + (int32_t)d.h, is3d ? d.z + (int32_t)d.nz : 1};
+        VkImageBlit bl[2];
+        uint32_t nbl = 0;
+        if (s.aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+            static const VkImageAspectFlags kAsp[2] = {VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_ASPECT_STENCIL_BIT};
+            for (int i = 0; i < 2; i++) {
+                VkImageSubresourceLayers sla = sl, dla = dl;
+                sla.aspectMask = dla.aspectMask = kAsp[i];
+                bl[i] = (VkImageBlit){.srcSubresource = sla, .dstSubresource = dla};
+                bl[i].srcOffsets[0] = sub_offset(&s);
+                bl[i].srcOffsets[1] = (VkOffset3D){s.x + (int32_t)s.w, s.y + (int32_t)s.h, is3d ? s.z + (int32_t)s.nz : 1};
+                bl[i].dstOffsets[0] = sub_offset(&d);
+                bl[i].dstOffsets[1] = (VkOffset3D){d.x + (int32_t)d.w, d.y + (int32_t)d.h, is3d ? d.z + (int32_t)d.nz : 1};
+            }
+            nbl = 2;
+        } else {
+            bl[0] = (VkImageBlit){.srcSubresource = sl, .dstSubresource = dl};
+            bl[0].srcOffsets[0] = sub_offset(&s);
+            bl[0].srcOffsets[1] = (VkOffset3D){s.x + (int32_t)s.w, s.y + (int32_t)s.h, is3d ? s.z + (int32_t)s.nz : 1};
+            bl[0].dstOffsets[0] = sub_offset(&d);
+            bl[0].dstOffsets[1] = (VkOffset3D){d.x + (int32_t)d.w, d.y + (int32_t)d.h, is3d ? d.z + (int32_t)d.nz : 1};
+            nbl = 1;
+        }
         int linear = (p->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT) && s.aspect == VK_IMAGE_ASPECT_COLOR_BIT;
-        vkCmdBlitImage(ex->cb, s.img->image, VK_IMAGE_LAYOUT_GENERAL, d.img->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl,
+        vkCmdBlitImage(ex->cb, s.img->image, VK_IMAGE_LAYOUT_GENERAL, d.img->image, VK_IMAGE_LAYOUT_GENERAL, nbl, bl,
                        linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     }
     ex->recorded++;
