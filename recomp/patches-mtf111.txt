@@ -1,0 +1,2 @@
+# Code patches for Mario Tennis Fever 1.1.1 main (recomp/patches.py). Each original word is checked against main.
+# Mario Tennis Fever 1.1.1 lifts with zero instruction errors out of the box.

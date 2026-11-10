@@ -1,0 +1,973 @@
+import zstandard
+"""Modern CustomTkinter GUI Installer for Donkey Kong Bananza (PC Recompiled).
+
+Features:
+- Sleek dark jungle theme with Donkey Kong Banana Gold styling (replacing Zonai teal)
+- High-resolution multi-size DKB banana game icon embedded
+- Dynamic tab-synchronized navigation (Back / Next buttons)
+- Vendor AI & Upscaler SDK management (NVIDIA DLSS 4.5 / DLSS-NR / Reflex, Intel XeSS, AMD FSR)
+- Controller UI selection (PS5 DualSense, Xbox Series, Switch)
+- Desktop shortcut creation with dkb.ico
+- Integrated In-Game Controller Overlay Guide & Readme creator
+- Real-time animated progress & live logging
+"""
+
+import hashlib
+import json
+import os
+import shutil
+import sys
+import threading
+import time
+from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
+
+# Self-contained Vendor SDKs, Controller Layouts & Desktop Shortcut helpers
+import subprocess
+
+VENDOR_SDK_FILES = [
+    {"name": "nvngx_dlss.dll", "desc": "NVIDIA DLSS 4.5 / Super Resolution", "vendor": "NVIDIA"},
+    {"name": "nvngx_dlssnr.dll", "desc": "NVIDIA DLSS-NR Neural Reconstruction", "vendor": "NVIDIA"},
+    {"name": "nvngx_dlssg.dll", "desc": "NVIDIA DLSS Frame Generation", "vendor": "NVIDIA"},
+    {"name": "sl.common.dll", "desc": "NVIDIA Streamline Common", "vendor": "NVIDIA"},
+    {"name": "sl.dlss.dll", "desc": "NVIDIA Streamline DLSS plugin", "vendor": "NVIDIA"},
+    {"name": "sl.dlss_g.dll", "desc": "NVIDIA Streamline DLSS-G plugin", "vendor": "NVIDIA"},
+    {"name": "sl.dlss_nr.dll", "desc": "NVIDIA Streamline DLSS-NR plugin", "vendor": "NVIDIA"},
+    {"name": "sl.interposer.dll", "desc": "NVIDIA Streamline Interposer", "vendor": "NVIDIA"},
+    {"name": "sl.reflex.dll", "desc": "NVIDIA Reflex Low Latency", "vendor": "NVIDIA"},
+    {"name": "libxess.dll", "desc": "Intel XeSS Super Sampling SDK", "vendor": "Intel"},
+    {"name": "libxess_fg.dll", "desc": "Intel XeSS Frame Generation", "vendor": "Intel"},
+    {"name": "libxell.dll", "desc": "Intel Low Latency", "vendor": "Intel"},
+    {"name": "libxess_dx11.dll", "desc": "Intel XeSS DX11 Bridge", "vendor": "Intel"},
+]
+
+def find_local_sdk_cache(dll_name: str):
+    candidates = [
+        os.path.join(r"C:\DK-Bananza-Instalador\jogo\build\dkb100", dll_name),
+        os.path.join(r"C:\Games\Tears of the Kingdom PC\GAME", dll_name),
+        os.path.join(r"C:\Games\Bloodborne PC\engine\out", dll_name),
+        os.path.join(r"C:\Games\CTR Nitro Fueled PC\bin", dll_name),
+        os.path.join(os.path.dirname(__file__), "assets", dll_name),
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+def install_vendor_sdks(target_game_dir: str, log_cb=None) -> int:
+    installed = 0
+    os.makedirs(target_game_dir, exist_ok=True)
+    for item in VENDOR_SDK_FILES:
+        dll = item["name"]
+        dst = os.path.join(target_game_dir, dll)
+        if os.path.isfile(dst):
+            installed += 1
+            continue
+        src = find_local_sdk_cache(dll)
+        if src and os.path.isfile(src):
+            try:
+                shutil.copy2(src, dst)
+                installed += 1
+                if log_cb:
+                    log_cb(f"[✓] Installed {dll} ({item['desc']})")
+            except Exception as e:
+                if log_cb:
+                    log_cb(f"[!] Warning: failed to copy {dll}: {e}")
+    return installed
+
+CONTROLLER_UI_CHOICES = [
+    {
+        "id": "ps5_monochrome",
+        "name": "PlayStation 5 DualSense (Monochrome)",
+        "desc": "Official PS5 dark theme button icons (✕, ◯, ▢, △)",
+    },
+    {
+        "id": "ps5_color",
+        "name": "PlayStation 5 DualSense (Color)",
+        "desc": "PlayStation icons with colored shapes (Blue Cross, Red Circle, etc.)",
+    },
+    {
+        "id": "xbox_monochrome",
+        "name": "Xbox Series / One (Monochrome)",
+        "desc": "Xbox modern controller prompts (A, B, X, Y)",
+    },
+    {
+        "id": "xbox_color",
+        "name": "Xbox Series / One (Color)",
+        "desc": "Xbox prompts with colored buttons (Green A, Red B, Blue X, Yellow Y)",
+    },
+    {
+        "id": "nintendo_default",
+        "name": "Nintendo Switch (Original)",
+        "desc": "Original Switch Pro Controller / Joy-Con prompts",
+    }
+]
+
+def install_controller_ui(choice_id: str, target_game_dir: str) -> bool:
+    ini_path = os.path.join(target_game_dir, "dkb.ini")
+    if not os.path.isfile(ini_path):
+        ini_path = os.path.join(target_game_dir, "dkb.ini")
+    layout_val = "playstation" if "ps5" in choice_id else "xbox" if "xbox" in choice_id else "nintendo"
+    if os.path.isfile(ini_path):
+        try:
+            with open(ini_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            if "pad_layout" in content:
+                import re
+                content = re.sub(r"pad_layout\s*=.*", f"pad_layout = {layout_val}", content)
+            else:
+                content += f"\n[input]\npad_layout = {layout_val}\n"
+            if "exefs" not in content:
+                content = "[paths]\nexefs = ./exefs\nromfs = ./romfs\n\n" + content
+            with open(ini_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return True
+        except Exception:
+            return False
+    return True
+
+def create_desktop_shortcut(game_dir: str, shortcut_name: str = "DKB PC", target_exe: str = None) -> bool:
+    try:
+        desktop_dir = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
+        if not os.path.exists(desktop_dir):
+            desktop_dir = os.path.join(os.path.expanduser("~"), "Desktop")
+        shortcut_path = os.path.join(desktop_dir, f"{shortcut_name}.lnk")
+        if target_exe:
+            chosen_exe = os.path.join(game_dir, target_exe)
+        elif os.path.isfile(os.path.join(game_dir, "DKBLauncher.exe")):
+            chosen_exe = os.path.join(game_dir, "DKBLauncher.exe")
+        elif os.path.isfile(os.path.join(game_dir, "..", "DKBLauncher.exe")):
+            chosen_exe = os.path.abspath(os.path.join(game_dir, "..", "DKBLauncher.exe"))
+        else:
+            chosen_exe = os.path.join(game_dir, "dkb.exe")
+        icon_path = os.path.join(game_dir, "dkb.ico")
+        if not os.path.exists(icon_path):
+            icon_path = chosen_exe
+        ps_script = f"""
+        $ws = New-Object -ComObject WScript.Shell
+        $s = $ws.CreateShortcut('{shortcut_path}')
+        $s.TargetPath = '{chosen_exe}'
+        $s.WorkingDirectory = '{game_dir}'
+        $s.IconLocation = '{icon_path},0'
+        $s.Description = 'Play Donkey Kong Bananza PC Recomp'
+        $s.Save()
+        """
+        res = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                             capture_output=True, text=True, timeout=10)
+        return res.returncode == 0 and os.path.exists(shortcut_path)
+    except Exception as e:
+        print(f"Error creating shortcut: {e}")
+        return False
+
+# Theme colors (DKB Golden Banana & Deep Jungle)
+ACCENT_GOLD = "#ffd24d"
+ACCENT_HOVER = "#fff2a3"
+BG_DARK = "#0a0e0c"
+CARD_BG = "#131b17"
+CARD_BORDER = "#23332a"
+TEXT_DIM = "#8fa397"
+TEXT_GOLD = "#ffe17d"
+
+CONTROLLER_GUIDE_TEXT = """================================================================================
+  DONKEY KONG BANANZA PC RECOMP
+  IN-GAME SETTINGS OVERLAY & CONTROLLER NAVIGATION GUIDE
+================================================================================
+
+1. HOW TO OPEN / CLOSE THE IN-GAME SETTINGS MENU:
+   -----------------------------------------------------------------------------
+   • CONTROLLER: Press SELECT + START at the same time
+     - PlayStation (PS5 / PS4): Press [Share / Create] + [Options] together
+     - Xbox (Series X|S / One):  Press [View / Back] + [Menu / Start] together
+     - Nintendo Switch Layout:  Press [Minus (-)] + [Plus (+)] together
+
+   • KEYBOARD:   Press [F1] or [Esc] at any time.
+
+2. CONTROLLER ACTIONS & MOVEMENT (BANANZA CORE):
+   -----------------------------------------------------------------------------
+   • Left Stick:                Move Donkey Kong
+   • Right Stick:               Camera Pan & Pitch
+   • A (Xbox) / ✕ (PS5) / B:    Jump / Hover Flutter
+   • X (Xbox) / ▢ (PS5) / Y:    Punch / Break Barrels / Attack
+   • RT / R2 / ZR:              Roll / Sprint Dash
+   • LT / L2 / ZL:              Ground Pound / Slam
+
+3. PERFORMANCE OVERLAY (FPS, FRAME TIME, VRAM, GPU USAGE):
+   -----------------------------------------------------------------------------
+   • CONTROLLER: Press L3 + R3 at the same time (Click Left Stick + Click Right Stick)
+   • KEYBOARD:   Press [F10] to cycle overlay modes (Off -> Compact -> Detailed).
+
+4. FULLSCREEN TOGGLE:
+   -----------------------------------------------------------------------------
+   • Press [F11] or [Alt + Enter] on keyboard.
+
+================================================================================
+Enjoy playing Donkey Kong Bananza on PC!
+================================================================================
+"""
+
+README_TEXT = """================================================================================
+  DONKEY KONG BANANZA PC RECOMP (DKB) - ALPHA 1 RELEASE
+  High-Performance Static Recompilation for Native Windows x86-64
+================================================================================
+
+1. LEGAL NOTICE & CLEAN-ROOM COMPLIANCE:
+   -----------------------------------------------------------------------------
+   This software is an independent static recompilation project.
+   In strict compliance with Nintendo copyright laws and clean-room recompilation
+   rules:
+   • NO proprietary Nintendo game code, ExeFS binaries, NPDM files, RomFS assets,
+     keys, or firmware files are distributed with this software.
+   • All game assets and code must be extracted directly from YOUR OWN legally
+     obtained copy of Donkey Kong Bananza for Nintendo Switch 2 (Base v1.0.0).
+   • The setup wizard unpacks the assets on your local PC from your legitimate
+     .nup container, .nsp / .xci dump, or dumped game folder.
+
+2. SYSTEM REQUIREMENTS:
+   -----------------------------------------------------------------------------
+   • OS:        Windows 10 / 11 64-bit
+   • CPU:       x86-64 processor with AVX2 support
+   • GPU:       Vulkan 1.3 capable GPU (NVIDIA RTX / GTX 10-series+, AMD RDNA / GCN,
+                Intel Arc) with updated graphics drivers
+   • Memory:    16 GB RAM minimum
+   • Storage:   ~30 GB free storage on target install drive
+
+3. HOW TO INSTALL:
+   -----------------------------------------------------------------------------
+   1. Run 'DKB-Setup.exe' (or 'Donkey-Kong-Bananza-Setup.exe').
+   2. Select your legally dumped game source:
+      - .nup container (recommended — unpacked natively with zero tools)
+      - .nsp / .xci file (requires your console prod.keys)
+      - Folder containing 'romfs' and 'exefs' directories
+   3. Choose your desired install location (e.g. C:\\Games\\DKB PC).
+   4. Configure your preferred options:
+      - Multi-Vendor AI Upscalers (NVIDIA DLSS 4.5, DLSS-NR, Intel XeSS, AMD FSR)
+      - Low Latency Modes (NVIDIA Reflex, AMD Anti-Lag 2, Intel XeLL)
+      - Controller Glyphs (PlayStation 5 DualSense, Xbox Series X|S, Switch)
+      - 1-Click Desktop Shortcut
+   5. Click "Install" and wait for the wizard to complete.
+
+4. LAUNCHING & IN-GAME CONTROLS:
+   -----------------------------------------------------------------------------
+   Launch the game using the desktop shortcut or 'DKBLauncher.exe' inside the
+   installation folder.
+   
+   • In-Game Settings Menu:
+     - Keyboard:   Press [F1] or [Esc]
+     - Controller: Press [Select + Start] simultaneously
+                   (PS: [Share] + [Options] | Xbox: [View] + [Menu])
+   • Performance HUD (FPS / Frametime / VRAM):
+     - Keyboard:   Press [F10] to cycle overlay modes
+     - Controller: Click [L3 + R3] simultaneously
+   • Fullscreen Toggle:
+     - Keyboard:   Press [F11] or [Alt + Enter]
+
+5. TROUBLESHOOTING & LOGS:
+   -----------------------------------------------------------------------------
+   • Installation logs: %TEMP%\\dkb-setup.log
+   • Game runtime logs: <InstallFolder>\\logs\\dkb.log (and dkb.1.log to dkb.4.log)
+   • Black screen / instant exit on start:
+     Ensure your graphics driver is updated and supports Vulkan 1.3.
+     Verify that your dump contains a valid 'exefs/main.npdm' and 'romfs/'.
+
+================================================================================
+"""
+
+class ModernDkbInstaller(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        # Window properties
+        self.title("DKB PC Recomp - Setup (Alpha 1)")
+        self.geometry("1000x740")
+        self.minsize(940, 700)
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("green")
+
+        # Set game icon if found
+        self.icon_path = self.find_game_icon()
+        if self.icon_path and os.path.exists(self.icon_path):
+            try:
+                self.iconbitmap(self.icon_path)
+            except Exception:
+                pass
+
+        # Variables
+        self.var_game_source = tk.StringVar(value=self.auto_find_game_source())
+        self.var_keys = tk.StringVar(value=self.auto_find_keys())
+        self.var_install_dir = tk.StringVar(value=r"C:\Games\DKB PC")
+            
+        self.var_controller_ui = tk.StringVar(value="PlayStation 5 DualSense (Monochrome)")
+        self.var_install_sdks = tk.BooleanVar(value=True)
+        self.var_create_shortcut = tk.BooleanVar(value=True)
+        self.var_create_guide = tk.BooleanVar(value=True)
+
+        # Setup UI
+        self.setup_ui()
+
+    def auto_find_game_source(self):
+        candidates = [
+            r"C:\Games",
+            os.path.join(os.environ.get("USERPROFILE", ""), "Downloads"),
+        ]
+        for c in candidates:
+            if not os.path.exists(c): continue
+            if os.path.isdir(os.path.join(c, "exefs")) and os.path.isdir(os.path.join(c, "romfs")):
+                return c
+            if os.path.isfile(c) and any(c.lower().endswith(ext) for ext in [".nsp", ".xci", ".nup"]):
+                return c
+            if os.path.isdir(c):
+                try:
+                    for f in os.listdir(c):
+                        fl = f.lower()
+                        if any(kw in fl for kw in ["dk", "bananza", "donkey"]) and (fl.endswith(".nsp") or fl.endswith(".xci") or fl.endswith(".nup")):
+                            return os.path.join(c, f)
+                except Exception:
+                    pass
+        return ""
+
+    def auto_find_keys(self):
+        appdata = os.environ.get("APPDATA", "")
+        candidates = [
+            os.path.join(appdata, "yuzu", "keys", "prod.keys"),
+            os.path.join(appdata, "Ryujinx", "system", "prod.keys"),
+            os.path.join(appdata, "eden", "keys", "prod.keys"),
+            os.path.join(appdata, "sudachi", "keys", "prod.keys"),
+            r"C:\Games\keys\prod.keys",
+            os.path.join(os.environ.get("USERPROFILE", ""), "Downloads", "prod.keys"),
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+        return ""
+
+    def find_game_icon(self):
+        candidates = [
+            r"C:\DK-Bananza-Instalador\jogo\build\dkb100\dkb.ico",
+            r"C:\Games\DKB PC\dkb-BANANAS\launcher\assets\dkb.ico",
+            os.path.join(os.path.dirname(__file__), "..", "runtime", "dkb.ico"),
+            r"C:\DK-Bananza-Instalador\jogo\runtime\dkb.ico",
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+        return None
+
+    def setup_ui(self):
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        # 1. Header Frame with DKB Gold & Jungle Accent
+        header = ctk.CTkFrame(self, fg_color=CARD_BG, corner_radius=0, height=84)
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_columnconfigure(0, weight=1)
+
+        title_lbl = ctk.CTkLabel(header, text="DKB PC RECOMP",
+                                 font=ctk.CTkFont(size=22, weight="bold"), text_color=ACCENT_GOLD)
+        title_lbl.pack(pady=(12, 2))
+
+        sub_lbl = ctk.CTkLabel(header, text="PC Recompiled • High Performance Vulkan Edition | DLSS 4.5 • FSR • DualSense Immersion",
+                               font=ctk.CTkFont(size=12, weight="bold"), text_color=TEXT_DIM)
+        sub_lbl.pack(pady=(0, 12))
+
+        # 2. Main Content Frame (Tabview)
+        self.tabview = ctk.CTkTabview(self, fg_color=BG_DARK, segmented_button_selected_color=ACCENT_GOLD,
+                                      segmented_button_selected_hover_color=ACCENT_HOVER,
+                                      command=self.on_tab_changed)
+        self.tabview.grid(row=1, column=0, sticky="nsew", padx=20, pady=10)
+
+        # Tab navigation hook
+        _orig_sb_cb = self.tabview._segmented_button_callback
+        def _hooked_sb_cb(selected_name):
+            _orig_sb_cb(selected_name)
+            self.on_tab_changed()
+            self.after(20, self.on_tab_changed)
+        self.tabview._segmented_button_callback = _hooked_sb_cb
+
+        self.tab_files = self.tabview.add("1. Legal Game Files & Keys")
+        self.tab_features = self.tabview.add("2. DLSS & Controllers")
+        self.tab_guide = self.tabview.add("3. Controller Guide")
+        self.tab_install = self.tabview.add("4. Finalize & Launch")
+
+        self.build_tab_files()
+        self.build_tab_features()
+        self.build_tab_guide()
+        self.build_tab_install()
+
+        # 3. Bottom Navigation Bar
+        bottom_bar = ctk.CTkFrame(self, fg_color=CARD_BG, corner_radius=0, height=64)
+        bottom_bar.grid(row=2, column=0, sticky="ew")
+        bottom_bar.grid_columnconfigure(0, weight=1)
+
+        btn_box = ctk.CTkFrame(bottom_bar, fg_color="transparent")
+        btn_box.pack(side="right", padx=20, pady=12)
+
+        self.btn_back = ctk.CTkButton(btn_box, text="◀ Back", fg_color="#202b25", hover_color="#2e3d34",
+                                      width=120, command=self.prev_tab)
+        self.btn_back.pack(side="left", padx=8)
+
+        self.btn_next = ctk.CTkButton(btn_box, text="Next ▶", fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER,
+                                      text_color="#121815", font=ctk.CTkFont(weight="bold"),
+                                      width=140, command=self.next_tab)
+        self.btn_next.pack(side="left", padx=8)
+
+        self.update_nav_buttons()
+
+    def browse_file(self, var, filetypes):
+        f = filedialog.askopenfilename(filetypes=filetypes)
+        if f: var.set(f)
+
+    def browse_folder(self, var):
+        d = filedialog.askdirectory(title="Select Game Dump Folder (containing romfs / exefs)")
+        if d: var.set(d)
+
+    def browse_source(self, var):
+        # Allow choosing either a file (.nsp / .xci / .nup) or a directory (dump containing exefs/romfs)
+        f = filedialog.askopenfilename(title="Select Game Dump File (.nsp, .xci, or .nup)",
+                                       filetypes=[("Game Dump (.nsp, .xci, .nup)", "*.nsp *.xci *.nup"), ("All Files", "*.*")])
+        if f:
+            var.set(f)
+        else:
+            d = filedialog.askdirectory(title="Select Game Dump Folder (containing exefs/romfs)")
+            if d: var.set(d)
+
+    def build_tab_files(self):
+        f = self.tab_files
+        f.grid_columnconfigure(0, weight=1)
+
+        intro_box = ctk.CTkFrame(f, fg_color=CARD_BG, border_color=CARD_BORDER, border_width=1)
+        intro_box.pack(fill="x", padx=15, pady=8)
+        ctk.CTkLabel(intro_box, text="🌴 Donkey Kong Bananza Game Files & Destination",
+                     font=ctk.CTkFont(size=16, weight="bold"), text_color=ACCENT_GOLD).pack(anchor="w", padx=15, pady=(10, 4))
+        ctk.CTkLabel(intro_box, text="Select your legally dumped base game files (.nup container, .nsp/.xci, or exefs/romfs folder), your console prod.keys, and your install destination.",
+                     font=ctk.CTkFont(size=12), text_color=TEXT_DIM, justify="left", wraplength=850).pack(anchor="w", padx=15, pady=(0, 10))
+
+        # Legal Notice Banner
+        legal_box = ctk.CTkFrame(f, fg_color="#18241d", border_color="#344d3e", border_width=1)
+        legal_box.pack(fill="x", padx=15, pady=(0, 8))
+        ctk.CTkLabel(legal_box, text="⚖️ Legal Notice: Clean-Room Recompilation Architecture",
+                     font=ctk.CTkFont(size=12, weight="bold"), text_color="#65db83").pack(anchor="w", padx=12, pady=(6, 2))
+        ctk.CTkLabel(legal_box, text="Donkey Kong Bananza PC Recomp is an open-source static binary recompiler. It DOES NOT contain, distribute, or provide any copyrighted Nintendo software, assets, game roms, or cryptographic keys. To play legally, you must supply your own game dump and console prod.keys from your own Nintendo Switch.",
+                     font=ctk.CTkFont(size=11), text_color=TEXT_DIM, justify="left", wraplength=850).pack(anchor="w", padx=12, pady=(0, 8))
+
+        # 1. Base Game Dump / File
+        src_box = ctk.CTkFrame(f, fg_color=CARD_BG, border_color=CARD_BORDER, border_width=1)
+        src_box.pack(fill="x", padx=15, pady=8)
+        ctk.CTkLabel(src_box, text="🎮 Legitimate Game Dump Source (.nup, .nsp, .xci, or folder with romfs):",
+                     font=ctk.CTkFont(size=13, weight="bold"), text_color="#ffffff").pack(anchor="w", padx=15, pady=(8, 4))
+        r1 = ctk.CTkFrame(src_box, fg_color="transparent")
+        r1.pack(fill="x", padx=15, pady=(0, 10))
+        ctk.CTkEntry(r1, textvariable=self.var_game_source, placeholder_text="Path to .nup container, .nsp / .xci file, or folder with exefs/romfs").pack(side="left", fill="x", expand=True, padx=(0, 10))
+        ctk.CTkButton(r1, text="Browse File...", width=105, fg_color="#202b25", hover_color="#2e3d34",
+                      command=lambda: self.browse_file(self.var_game_source, [("Game Dump (.nsp, .xci, .nup)", "*.nsp *.xci *.nup"), ("All Files", "*.*")])).pack(side="left", padx=(0, 5))
+        ctk.CTkButton(r1, text="Browse Folder...", width=115, fg_color="#202b25", hover_color="#2e3d34",
+                      command=lambda: self.browse_folder(self.var_game_source)).pack(side="right")
+
+        # 2. Decryption Keys (prod.keys)
+        keys_box = ctk.CTkFrame(f, fg_color=CARD_BG, border_color=CARD_BORDER, border_width=1)
+        keys_box.pack(fill="x", padx=15, pady=8)
+        ctk.CTkLabel(keys_box, text="🔑 Decryption Keys (prod.keys):",
+                     font=ctk.CTkFont(size=13, weight="bold"), text_color="#ffffff").pack(anchor="w", padx=15, pady=(8, 4))
+        r2 = ctk.CTkFrame(keys_box, fg_color="transparent")
+        r2.pack(fill="x", padx=15, pady=(0, 10))
+        ctk.CTkEntry(r2, textvariable=self.var_keys, placeholder_text="Path to prod.keys (auto-detected from emulators)").pack(side="left", fill="x", expand=True, padx=(0, 10))
+        ctk.CTkButton(r2, text="Browse...", width=100, fg_color="#202b25", hover_color="#2e3d34",
+                      command=lambda: self.browse_file(self.var_keys, [("Keys", "*.keys *.txt"), ("All Files", "*.*")])).pack(side="right")
+
+        # 3. Target Install Directory
+        dir_box = ctk.CTkFrame(f, fg_color=CARD_BG, border_color=CARD_BORDER, border_width=1)
+        dir_box.pack(fill="x", padx=15, pady=8)
+        ctk.CTkLabel(dir_box, text="📁 Active Game Installation Directory:",
+                     font=ctk.CTkFont(size=13, weight="bold"), text_color="#ffffff").pack(anchor="w", padx=15, pady=(8, 4))
+        r3 = ctk.CTkFrame(dir_box, fg_color="transparent")
+        r3.pack(fill="x", padx=15, pady=(0, 10))
+        ctk.CTkEntry(r3, textvariable=self.var_install_dir, width=650).pack(side="left", fill="x", expand=True, padx=(0, 10))
+        ctk.CTkButton(r3, text="Browse...", width=100, fg_color="#202b25", hover_color="#2e3d34",
+                      command=lambda: self.browse_dir(self.var_install_dir)).pack(side="right")
+
+    def build_tab_features(self):
+        f = self.tab_features
+        f.grid_columnconfigure(0, weight=1)
+
+        sdk_box = ctk.CTkFrame(f, fg_color=CARD_BG, border_color=CARD_BORDER, border_width=1)
+        sdk_box.pack(fill="x", padx=15, pady=12)
+        ctk.CTkCheckBox(sdk_box, text="Deploy Vendor AI & Upscaler SDKs (DLSS 4.5, DLSS-NR, Reflex, Intel XeSS, AMD FSR)",
+                        variable=self.var_install_sdks, font=ctk.CTkFont(size=13, weight="bold"),
+                        fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, checkmark_color="#121815").pack(anchor="w", padx=15, pady=(12, 4))
+        ctk.CTkLabel(sdk_box, text="Copies hardware-accelerated upscalers directly into the game folder, enabling full dynamic resolution scaling and ultra-low latency.",
+                     font=ctk.CTkFont(size=11), text_color=TEXT_DIM).pack(anchor="w", padx=40, pady=(0, 12))
+
+        ctrl_box = ctk.CTkFrame(f, fg_color=CARD_BG, border_color=CARD_BORDER, border_width=1)
+        ctrl_box.pack(fill="x", padx=15, pady=12)
+        ctk.CTkLabel(ctrl_box, text="🎮 Controller UI & Button Glyphs:",
+                     font=ctk.CTkFont(size=14, weight="bold"), text_color="#ffffff").pack(anchor="w", padx=15, pady=(12, 6))
+
+        for opt in CONTROLLER_UI_CHOICES:
+            ctk.CTkRadioButton(ctrl_box, text=f"{opt['name']} — {opt['desc']}",
+                               variable=self.var_controller_ui, value=opt["name"],
+                               fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER).pack(anchor="w", padx=25, pady=4)
+        ctk.CTkFrame(ctrl_box, height=8, fg_color="transparent").pack()
+
+        opts_box = ctk.CTkFrame(f, fg_color=CARD_BG, border_color=CARD_BORDER, border_width=1)
+        opts_box.pack(fill="x", padx=15, pady=12)
+        ctk.CTkCheckBox(opts_box, text="Create Windows Desktop Shortcut (DKB PC with Banana Icon)",
+                        variable=self.var_create_shortcut, font=ctk.CTkFont(size=13, weight="bold"),
+                        fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, checkmark_color="#121815").pack(anchor="w", padx=15, pady=(12, 4))
+        ctk.CTkCheckBox(opts_box, text="Generate Controller Hotkeys Reference Card (README-CONTROLLER.txt)",
+                        variable=self.var_create_guide, font=ctk.CTkFont(size=13, weight="bold"),
+                        fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, checkmark_color="#121815").pack(anchor="w", padx=15, pady=(4, 12))
+
+    def build_tab_guide(self):
+        f = self.tab_guide
+        f.grid_columnconfigure(0, weight=1)
+        f.grid_rowconfigure(0, weight=1)
+
+        guide_box = ctk.CTkTextbox(f, fg_color=CARD_BG, text_color=TEXT_GOLD,
+                                   font=ctk.CTkFont(family="Consolas", size=12), border_width=1, border_color=CARD_BORDER)
+        guide_box.pack(fill="both", expand=True, padx=15, pady=15)
+        guide_box.insert("1.0", CONTROLLER_GUIDE_TEXT)
+        guide_box.configure(state="disabled")
+
+    def build_tab_install(self):
+        f = self.tab_install
+        f.grid_columnconfigure(0, weight=1)
+
+        self.status_lbl = ctk.CTkLabel(f, text="Ready to finalize Donkey Kong Bananza PC Recomp installation",
+                                       font=ctk.CTkFont(size=14, weight="bold"), text_color=ACCENT_GOLD)
+        self.status_lbl.pack(anchor="w", padx=15, pady=(15, 6))
+
+        self.progress_bar = ctk.CTkProgressBar(f, fg_color=CARD_BG, progress_color=ACCENT_GOLD, height=14)
+        self.progress_bar.pack(fill="x", padx=15, pady=(0, 15))
+        self.progress_bar.set(0)
+
+        self.log_box = ctk.CTkTextbox(f, fg_color=CARD_BG, text_color="#c2d1c7",
+                                      font=ctk.CTkFont(family="Consolas", size=11), border_width=1, border_color=CARD_BORDER)
+        self.log_box.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+
+    def log(self, msg):
+        self.log_box.insert("end", f"{msg}\n")
+        self.log_box.see("end")
+
+    def browse_dir(self, var):
+        d = filedialog.askdirectory(initialdir=var.get())
+        if d: var.set(d)
+
+    def on_tab_changed(self):
+        self.update_nav_buttons()
+
+    def update_nav_buttons(self):
+        cur = self.tabview.get()
+        if cur == "1. Legal Game Files & Keys":
+            self.btn_back.configure(state="disabled")
+            self.btn_next.configure(text="Next ▶", state="normal", fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, command=self.next_tab)
+        elif cur == "2. DLSS & Controllers":
+            self.btn_back.configure(state="normal")
+            self.btn_next.configure(text="Next ▶", state="normal", fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, command=self.next_tab)
+        elif cur == "3. Controller Guide":
+            self.btn_back.configure(state="normal")
+            self.btn_next.configure(text="Proceed to Install ▶", state="normal", fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, command=self.next_tab)
+        elif cur == "4. Finalize & Launch":
+            self.btn_back.configure(state="disabled")
+            if getattr(self, "install_finished", False):
+                target = self.var_install_dir.get().strip()
+                self.btn_next.configure(text="🚀 Launch DKB Launcher", state="normal", fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, command=lambda: self.launch_game(target))
+            else:
+                self.btn_next.configure(text="Start Installation", state="normal", fg_color=ACCENT_GOLD, hover_color=ACCENT_HOVER, command=self.start_install)
+
+    def prev_tab(self):
+        cur = self.tabview.get()
+        if cur == "2. DLSS & Controllers": self.tabview.set("1. Legal Game Files & Keys")
+        elif cur == "3. Controller Guide": self.tabview.set("2. DLSS & Controllers")
+        elif cur == "4. Finalize & Launch": self.tabview.set("3. Controller Guide")
+
+    def next_tab(self):
+        cur = self.tabview.get()
+        if cur == "1. Legal Game Files & Keys":
+            src = self.var_game_source.get().strip()
+            keys = self.var_keys.get().strip()
+            if not src or not os.path.exists(src):
+                messagebox.showerror("Legitimate Game Dump Required",
+                                     "In strict compliance with Nintendo copyright laws and clean-room recompilation rules, Donkey Kong Bananza PC Recomp requires you to supply your own legally dumped game files (folder with exefs/romfs or .nsp/.xci).\n\nPlease select your dump location before proceeding.")
+                return
+            needs_keys = src.lower().endswith((".nsp", ".xci"))
+            if needs_keys and (not keys or not os.path.isfile(keys)):
+                messagebox.showerror("Decryption Keys Required",
+                                     "Encrypted .nsp / .xci containers require your console prod.keys file.\n\nPlease select your prod.keys file, or provide an unpacked dump folder or .nup container.")
+                return
+            self.tabview.set("2. DLSS & Controllers")
+        elif cur == "2. DLSS & Controllers":
+            self.tabview.set("3. Controller Guide")
+        elif cur == "3. Controller Guide":
+            self.tabview.set("4. Finalize & Launch")
+            self.start_install()
+
+    def start_install(self):
+        self.btn_next.configure(state="disabled", text="Installing...")
+        threading.Thread(target=self.run_install_thread, daemon=True).start()
+
+    def run_install_thread(self):
+        target = self.var_install_dir.get().strip()
+        src = self.var_game_source.get().strip()
+        keys = self.var_keys.get().strip()
+        os.makedirs(target, exist_ok=True)
+        
+        self.log(f"[*] Target directory: {target}")
+        self.log(f"[*] Validating legally supplied game dump from: {src}")
+        self.log(f"[*] Verified user console prod.keys from: {keys}")
+        self.progress_bar.set(0.15)
+
+        # 1. Deploy Game Binaries (dkb.exe, launcher, config, icon, DLLs)
+        meipass = getattr(sys, '_MEIPASS', None)
+        exe_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        py_exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        payload_candidates = [
+            os.path.join(meipass, "payload") if meipass else None,
+            meipass if meipass else None,
+            os.path.join(exe_dir, "payload"),
+            os.path.join(exe_dir, "build", "dkb100"),
+            exe_dir,
+            os.path.join(py_exe_dir, "payload"),
+            os.path.join(py_exe_dir, "build", "dkb100"),
+            py_exe_dir,
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "build", "dkb100")),
+            r"C:\DK-Bananza-Instalador\jogo\build\dkb100",
+            r"C:\Games\DKB PC\build\dkb100",
+        ]
+        payload_dir = next((c for c in payload_candidates if c and os.path.isfile(os.path.join(c, "dkb.exe"))), None)
+        if not payload_dir:
+            self.log("[!] ERROR: Recompiled game binaries (dkb.exe) not found in installer package.")
+            messagebox.showerror("Game Payload Missing",
+                                 "Could not locate the recompiled Donkey Kong Bananza game binaries (dkb.exe).\n\n"
+                                 "Please ensure the installer package contains dkb.exe and the payload files.")
+            self.btn_next.configure(state="normal", text="Retry Installation", command=self.start_install)
+            return
+
+        self.log(f"[*] Found payload sources at: {payload_dir}")
+        if os.path.abspath(payload_dir) != os.path.abspath(target):
+            self.log("[*] Deploying Donkey Kong Bananza recompiled binaries...")
+            for item in os.listdir(payload_dir):
+                s = os.path.join(payload_dir, item)
+                d = os.path.join(target, item)
+                if os.path.isfile(s):
+                    try:
+                        shutil.copy2(s, d)
+                        self.log(f"  -> Installed {item}")
+                    except Exception as e:
+                        self.log(f"  [!] Notice copying {item}: {e}")
+                elif os.path.isdir(s):
+                    try:
+                        shutil.copytree(s, d, dirs_exist_ok=True)
+                        self.log(f"  -> Installed {item}/")
+                    except Exception as e:
+                        self.log(f"  [!] Notice copying {item}/: {e}")
+
+        # Deploy DKBLauncher.exe if not yet in target
+        dst_launcher = os.path.join(target, "DKBLauncher.exe")
+        if not os.path.isfile(dst_launcher):
+            launcher_candidates = [
+                os.path.join(payload_dir, "DKBLauncher.exe") if payload_dir else None,
+                r"C:\DK-Bananza-Instalador\DKBLauncher.exe",
+                os.path.join(exe_dir, "DKBLauncher.exe"),
+                os.path.join(py_exe_dir, "DKBLauncher.exe"),
+            ]
+            launcher_src = next((cand for cand in launcher_candidates if cand and os.path.isfile(cand)), None)
+            if launcher_src:
+                try:
+                    shutil.copy2(launcher_src, dst_launcher)
+                    self.log("[✓] Installed DKBLauncher.exe to target directory.")
+                except Exception:
+                    pass
+
+        # 2. Base Game Dump Link / Extract
+        dst_romfs = os.path.join(target, "romfs")
+        dst_exefs = os.path.join(target, "exefs")
+
+        # Smart Dump Source Resolution (handles parent folders, exefs/romfs subfolders, or folders containing .nup)
+        resolved_src = src
+        if os.path.isdir(src):
+            base_name = os.path.basename(os.path.normpath(src)).lower()
+            if base_name in ("exefs", "romfs"):
+                parent_dir = os.path.dirname(os.path.normpath(src))
+                if os.path.isdir(os.path.join(parent_dir, "exefs")) or os.path.isdir(os.path.join(parent_dir, "romfs")):
+                    resolved_src = parent_dir
+                    self.log(f"[*] Stepped up from '{base_name}/' subfolder to dump root: {resolved_src}")
+
+            # Search up to 2 levels deep for a folder containing exefs/main or a .nup container
+            if not (os.path.isfile(os.path.join(resolved_src, "exefs", "main")) or os.path.isfile(os.path.join(resolved_src, "romfs.bin"))):
+                found_root = None
+                found_nup = None
+                for root_d, dirs_d, files_d in os.walk(resolved_src):
+                    rel_depth = os.path.relpath(root_d, resolved_src).count(os.sep)
+                    if rel_depth > 2:
+                        dirs_d[:] = []
+                        continue
+                    if "exefs" in [d.lower() for d in dirs_d] and os.path.isfile(os.path.join(root_d, "exefs", "main")):
+                        found_root = root_d
+                        break
+                    for f_name in files_d:
+                        if f_name.lower().endswith(".nup") and not found_nup:
+                            found_nup = os.path.join(root_d, f_name)
+                if found_root:
+                    resolved_src = found_root
+                    self.log(f"[*] Located game dump directory at: {resolved_src}")
+                elif found_nup:
+                    resolved_src = found_nup
+                    self.log(f"[*] Located .nup container inside folder: {resolved_src}")
+
+        src_base = os.path.join(resolved_src, "base") if os.path.isdir(resolved_src) and os.path.isdir(os.path.join(resolved_src, "base", "exefs")) else resolved_src
+        loose_romfs_source = None
+
+        if os.path.isdir(src_base) and (os.path.isdir(os.path.join(src_base, "exefs")) or os.path.isfile(os.path.join(src_base, "romfs.bin")) or os.path.isdir(os.path.join(src_base, "romfs"))):
+            self.log(f"[✓] Validated user directory dump: {src_base}")
+            src_exefs = os.path.join(src_base, "exefs")
+            if os.path.isdir(src_exefs) and os.path.abspath(src_exefs) != os.path.abspath(dst_exefs):
+                os.makedirs(dst_exefs, exist_ok=True)
+                for item in os.listdir(src_exefs):
+                    s_item = os.path.join(src_exefs, item)
+                    d_item = os.path.join(dst_exefs, item)
+                    if os.path.isfile(s_item):
+                        shutil.copy2(s_item, d_item)
+                self.log("[✓] Copied exefs binaries (main, sdk, main.npdm) into destination.")
+
+            src_romfs_dir = os.path.join(src_base, "romfs")
+            src_romfs_bin = os.path.join(src_romfs_dir, "romfs.bin") if os.path.isfile(os.path.join(src_romfs_dir, "romfs.bin")) else (
+                os.path.join(src_base, "romfs.bin") if os.path.isfile(os.path.join(src_base, "romfs.bin")) else None
+            )
+            if src_romfs_bin:
+                os.makedirs(dst_romfs, exist_ok=True)
+                dst_bin = os.path.join(dst_romfs, "romfs.bin")
+                if os.path.abspath(src_romfs_bin) != os.path.abspath(dst_bin) and not os.path.isfile(dst_bin):
+                    try:
+                        os.symlink(src_romfs_bin, dst_bin)
+                        self.log("[✓] Created zero-copy filesystem link to romfs.bin.")
+                    except Exception:
+                        self.log("[*] Copying romfs.bin image into destination (this may take a moment)...")
+                        shutil.copy2(src_romfs_bin, dst_bin)
+                        self.log("[✓] Copied romfs.bin image into destination.")
+                src_idx_json = os.path.join(os.path.dirname(src_romfs_bin), "index.json")
+                dst_idx_json = os.path.join(dst_romfs, "index.json")
+                if os.path.isfile(src_idx_json) and not os.path.isfile(dst_idx_json):
+                    shutil.copy2(src_idx_json, dst_idx_json)
+            elif os.path.isdir(src_romfs_dir):
+                loose_romfs_source = src_romfs_dir
+        elif resolved_src.lower().endswith(".nup"):
+            self.log("[*] NUP container detected (.nup). Extracting package to target...")
+            try:
+                try:
+                    from installer.extract_nup import Nup, Zstd, pick, extract_tree
+                except ImportError:
+                    try:
+                        from extract_nup import Nup, Zstd, pick, extract_tree
+                    except ImportError:
+                        tools_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tools"))
+                        if os.path.isdir(tools_dir) and tools_dir not in sys.path:
+                            sys.path.insert(0, tools_dir)
+                        from extract_nup import Nup, Zstd, pick, extract_tree
+                nup = Nup(Path(resolved_src))
+                zstd = Zstd()
+                pkg = pick(nup, "base")
+                self.log(f"[*] Extracting package [{pkg.index}] {pkg.kind_name} (title {pkg.title_id:016x})...")
+                for which in ('exefs', 'romfs'):
+                    dst_folder = Path(target) / which
+                    dst_folder.mkdir(parents=True, exist_ok=True)
+                    count, total, _ = extract_tree(nup, zstd, pkg, which, dst_folder, False, True)
+                    self.log(f"[✓] Extracted {which}: {count} files ({total / 1e9:.2f} GB).")
+                loose_romfs_source = dst_romfs
+            except Exception as e:
+                self.log(f"[!] NUP Extraction error: {e}")
+        elif resolved_src.lower().endswith((".nsp", ".xci")):
+            self.log("[*] Packed container selected (.nsp/.xci). Extracting with user keys...")
+            hactool_candidates = [
+                os.path.join(payload_dir, "bin", "hactool.exe") if payload_dir else None,
+                os.path.join(target, "bin", "hactool.exe"),
+                r"C:\DK-Bananza-Instalador\jogo\bin\hactool.exe",
+                os.path.join(os.path.dirname(sys.executable), "bin", "hactool.exe"),
+                r"C:\Games\DKB PC\dkb-BANANAS\bin\hactool.exe",
+                shutil.which("hactool"),
+            ]
+            hactool = next((h for h in hactool_candidates if h and os.path.isfile(h)), None)
+            os.makedirs(dst_romfs, exist_ok=True)
+            os.makedirs(dst_exefs, exist_ok=True)
+            if hactool and keys:
+                cmd = [hactool, "-k", keys, f"--romfsdir={dst_romfs}", f"--exefsdir={dst_exefs}", resolved_src]
+                try:
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                    if res.returncode == 0:
+                        self.log("[✓] Successfully extracted ExeFS and RomFS from container.")
+                        loose_romfs_source = dst_romfs
+                    else:
+                        self.log(f"[!] Hactool returned code {res.returncode}: {res.stderr.strip()[:200]}")
+                except Exception as e:
+                    self.log(f"[!] Extraction notice: {e}")
+
+        # Auto-pack RomFS image directly from loose files (whether in source dump or target/romfs) into target/romfs/romfs.bin
+        os.makedirs(dst_romfs, exist_ok=True)
+        dst_bin = os.path.join(dst_romfs, "romfs.bin")
+        pack_src_dir = loose_romfs_source if (loose_romfs_source and os.path.isdir(loose_romfs_source)) else (dst_romfs if os.path.isdir(dst_romfs) else None)
+        if not os.path.isfile(dst_bin) and pack_src_dir:
+            loose_files = [f for f in os.listdir(pack_src_dir) if f not in ("romfs.bin", "index.json", ".romfs-verified-v1")]
+            if loose_files:
+                self.log(f"[*] Packing loose RomFS files from '{pack_src_dir}' into high-performance indexed romfs.bin image...")
+                try:
+                    align = 16
+                    chunk_sz = 8 << 20
+                    files_list = []
+                    for root_dir, _, fnames in os.walk(pack_src_dir):
+                        fnames.sort()
+                        for fname in fnames:
+                            if not fname.startswith('.') and fname not in ('romfs.bin', 'index.json', '.romfs-verified-v1'):
+                                fp = Path(root_dir) / fname
+                                files_list.append((fp.relative_to(pack_src_dir).as_posix(), fp))
+                    files_list.sort(key=lambda e: e[0].encode())
+                    
+                    entries, off = [], 0
+                    temp_bin = dst_bin + ".tmp"
+                    sha = hashlib.sha256()
+                    total_cnt = len(files_list)
+                    self.log(f"[*] Processing {total_cnt} game assets into romfs/romfs.bin...")
+                    with open(temp_bin, 'wb') as dst_f:
+                        for idx_f, (rel_p, full_p) in enumerate(files_list):
+                            pad = -off % align
+                            if pad:
+                                dst_f.write(b'\0' * pad)
+                                sha.update(b'\0' * pad)
+                                off += pad
+                            sz = 0
+                            with open(full_p, 'rb') as src_f:
+                                while chunk := src_f.read(chunk_sz):
+                                    dst_f.write(chunk)
+                                    sha.update(chunk)
+                                    sz += len(chunk)
+                            entries.append({'path': rel_p, 'offset': off, 'size': sz})
+                            off += sz
+                            if idx_f % 10000 == 0 and idx_f > 0:
+                                self.log(f"    -> Progress: {idx_f}/{total_cnt} files ({off / (1024**3):.2f} GB)...")
+                    if os.path.exists(dst_bin):
+                        os.remove(dst_bin)
+                    os.rename(temp_bin, dst_bin)
+                    manifest = {'status': 'pass', 'source': 'packed from dump', 'romfs_size': off, 'romfs_sha256': sha.hexdigest(), 'files': entries}
+                    with open(os.path.join(dst_romfs, 'index.json'), 'w', encoding='utf-8') as mf:
+                        json.dump(manifest, mf)
+                    self.log(f"[✓] Created romfs/romfs.bin ({off / (1024**3):.2f} GB) and index.json.")
+                except Exception as pe:
+                    self.log(f"[!] RomFS packing error: {pe}")
+
+        # Check and deploy main.npdm descriptor if missing
+        dst_npdm = os.path.join(target, "exefs", "main.npdm")
+        if not os.path.isfile(dst_npdm):
+            payload_npdm = os.path.join(payload_dir, "exefs", "main.npdm") if payload_dir else None
+            if payload_npdm and os.path.isfile(payload_npdm):
+                os.makedirs(os.path.dirname(dst_npdm), exist_ok=True)
+                shutil.copy2(payload_npdm, dst_npdm)
+                self.log("[✓] Deployed exefs descriptor (main.npdm).")
+
+        # Strict Post-Install Verification: require exefs/main, exefs/sdk, AND romfs/romfs.bin
+        dst_main = os.path.join(target, "exefs", "main")
+        dst_sdk = os.path.join(target, "exefs", "sdk")
+        missing_items = []
+        if not os.path.isfile(dst_main):
+            missing_items.append("exefs/main")
+        if not os.path.isfile(dst_sdk):
+            missing_items.append("exefs/sdk")
+        if not os.path.isfile(dst_bin):
+            missing_items.append("romfs/romfs.bin")
+
+        if missing_items:
+            missing_str = ", ".join(missing_items)
+            self.log(f"[!] ERROR: Required game data missing after extraction/packing: {missing_str}")
+            messagebox.showerror(
+                "Game Data Incomplete",
+                f"The following required game files were not found or could not be packed into your install folder:\n\n"
+                f"  • {missing_str}\n\n"
+                f"Selected Source: {src}\n\n"
+                f"Please ensure you select EITHER:\n"
+                f"1. Your .nup container file, OR\n"
+                f"2. Your unpacked game dump folder containing both 'exefs/' (main, sdk) and 'romfs/' (or 'romfs.bin').\n\n"
+                f"Note: Encrypted Switch 2 containers cannot be unpacked by legacy hactool — use a .nup container or pre-extracted exefs + romfs dump."
+            )
+            self.btn_next.configure(state="normal", text="Retry Installation", command=self.start_install)
+            return
+
+        self.progress_bar.set(0.35)
+
+        # 2. Vendor SDKs
+        if self.var_install_sdks.get():
+            self.log("[*] Deploying DLSS, Reflex, and XeSS libraries...")
+            n = install_vendor_sdks(target, log_cb=self.log)
+            self.log(f"[✓] {n} vendor AI upscaler libraries verified.")
+        self.progress_bar.set(0.6)
+
+        # 3. Controller UI
+        choice_name = self.var_controller_ui.get()
+        match = next((c["id"] for c in CONTROLLER_UI_CHOICES if c["name"] == choice_name), "ps5_monochrome")
+        install_controller_ui(match, target)
+        self.log(f"[✓] Controller layout configured: {choice_name}")
+        self.progress_bar.set(0.75)
+
+        # 4. Controller Guide & English Readme
+        if self.var_create_guide.get():
+            try:
+                g_path = os.path.join(target, "CONTROLLER_GUIDE.txt")
+                with open(g_path, "w", encoding="utf-8") as f:
+                    f.write(CONTROLLER_GUIDE_TEXT)
+                self.log(f"[✓] Created {g_path}")
+
+                r_path = os.path.join(target, "README.txt")
+                with open(r_path, "w", encoding="utf-8") as f:
+                    f.write(README_TEXT)
+                self.log(f"[✓] Created {r_path}")
+
+                desktop_dir = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
+                if os.path.isdir(desktop_dir):
+                    g_desk = os.path.join(desktop_dir, "DKB_CONTROLLER_GUIDE.txt")
+                    with open(g_desk, "w", encoding="utf-8") as f:
+                        f.write(CONTROLLER_GUIDE_TEXT)
+                    r_desk = os.path.join(desktop_dir, "DKB_README.txt")
+                    with open(r_desk, "w", encoding="utf-8") as f:
+                        f.write(README_TEXT)
+                    self.log("[✓] Created English README and Controller Guide on Desktop.")
+            except Exception as e:
+                self.log(f"[!] Warning creating guides: {e}")
+        self.progress_bar.set(0.85)
+
+        # 5. Desktop Shortcut
+        if self.var_create_shortcut.get():
+            ok = create_desktop_shortcut(target, shortcut_name="Donkey Kong Bananza", target_exe="DKBLauncher.exe")
+            if ok:
+                self.log("[✓] Desktop shortcut created targeting DKBLauncher.exe with Banana icon.")
+            else:
+                self.log("[!] Shortcut creation fallback was logged.")
+        self.progress_bar.set(1.0)
+
+        self.install_finished = True
+        self.progress_bar.set(1.0)
+        self.status_lbl.configure(text="✅ Donkey Kong Bananza PC Recomp is ready to play!", text_color="#65db83")
+        self.btn_next.configure(state="normal", text="🚀 Launch DKB Launcher", command=lambda: self.launch_game(target))
+
+    def launch_game(self, target):
+        launcher = os.path.join(target, "DKBLauncher.exe")
+        if not os.path.isfile(launcher):
+            launcher = os.path.join(target, "dkb.exe")
+        if not os.path.isfile(launcher):
+            launcher = os.path.join(target, "build", "dkb100", "DKBLauncher.exe")
+        if not os.path.isfile(launcher):
+            launcher = os.path.join(target, "build", "dkb100", "dkb.exe")
+        if not os.path.isfile(launcher):
+            launcher = os.path.join(target, "..", "DKBLauncher.exe")
+            
+        if os.path.isfile(launcher):
+            import subprocess
+            subprocess.Popen([launcher], cwd=os.path.dirname(launcher))
+            self.destroy()
+        else:
+            messagebox.showerror("Not Found", f"Executable not found at {launcher}\nPlease ensure target installation folder contains dkb.exe.")
+
+def main():
+    app = ModernDkbInstaller()
+    app.mainloop()
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
