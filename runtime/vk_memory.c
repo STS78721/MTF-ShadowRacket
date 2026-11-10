@@ -2022,6 +2022,18 @@ void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDevic
                               f & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT ? " LAZY" : "");
     }
     rt_log("%s", line);
+    uint64_t rebar_mib = 0;
+    for (uint32_t i = 0; i < m->memoryTypeCount; i++) {
+        VkMemoryPropertyFlags f = m->memoryTypes[i].propertyFlags;
+        if ((f & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) !=
+            (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+            continue;
+        uint64_t mib = m->memoryHeaps[m->memoryTypes[i].heapIndex].size >> 20;
+        if (mib > rebar_mib) rebar_mib = mib;
+    }
+    if (discrete)
+        rt_log("mem: rebar %s (%llu MiB DEVICE_LOCAL|HOST_VISIBLE)",
+               rebar_mib >= 512 ? "full" : (rebar_mib ? "aperture" : "none"), (unsigned long long)rebar_mib);
     mirror_mode(discrete);
 }
 
@@ -2205,34 +2217,60 @@ void vk_upload_end(void) { plat_rmutex_unlock(&cmd_lock); }
 #define STG_MIN_BLOCKS 2
 static VmaPool stg_pool;
 static int stg_pool_tried;
+static VmaPool stg_up_pool;
+static int stg_up_pool_tried;
+static VmaPool stg_wc_pool;
+static int stg_wc_pool_tried;
 
-void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
+static uint64_t mem_rebar_mib(const VkPhysicalDeviceMemoryProperties *m) {
+    uint64_t best = 0;
+    for (uint32_t i = 0; i < m->memoryTypeCount; i++) {
+        VkMemoryPropertyFlags f = m->memoryTypes[i].propertyFlags;
+        if ((f & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) !=
+            (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+            continue;
+        uint64_t mib = m->memoryHeaps[m->memoryTypes[i].heapIndex].size >> 20;
+        if (mib > best) best = mib;
+    }
+    return best;
+}
+
+static void *staging_alloc(VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage mem_usage,
+                           VmaAllocationCreateFlags flags, VmaPool *pool_p, int *tried_p, const char *label,
+                           VkBuffer *buf, VmaAllocation *alloc) {
     VkCtx *c = vk_ctx();
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size ? size : 16,
-                             .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
-    VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
-                                   .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
-    if (!__atomic_load_n(&stg_pool_tried, __ATOMIC_ACQUIRE)) {
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size ? size : 16, .usage = usage};
+    VmaAllocationCreateInfo aci = {.usage = mem_usage, .flags = flags};
+    if (!__atomic_load_n(tried_p, __ATOMIC_ACQUIRE)) {
         plat_once(&cmd_once, cmd_init, NULL);
         plat_rmutex_lock(&cmd_lock);
-        if (!stg_pool_tried) {
+        if (!*tried_p) {
             uint32_t type;
             VmaPoolCreateInfo pi = {.blockSize = STG_BLOCK, .minBlockCount = STG_MIN_BLOCKS};
             if (vmaFindMemoryTypeIndexForBufferInfo(c->vma, &bi, &aci, &type) == VK_SUCCESS) {
                 pi.memoryTypeIndex = type;
-                if (vmaCreatePool(c->vma, &pi, &stg_pool) != VK_SUCCESS) stg_pool = NULL;
+                if (vmaCreatePool(c->vma, &pi, pool_p) != VK_SUCCESS) *pool_p = NULL;
+                rt_log("vk: %s pool %s (mem type %u, %d blocks of %llu MiB)", label,
+                       *pool_p ? "created" : "unavailable: default pool", type, STG_MIN_BLOCKS,
+                       (unsigned long long)(STG_BLOCK >> 20));
+            } else {
+                rt_log("vk: %s pool unavailable: default pool", label);
             }
-            rt_log("vk: staging pool %s (%d blocks of %llu MiB kept)", stg_pool ? "created" : "unavailable: default pool",
-                   STG_MIN_BLOCKS, (unsigned long long)(STG_BLOCK >> 20));
-            __atomic_store_n(&stg_pool_tried, 1, __ATOMIC_RELEASE);
+            __atomic_store_n(tried_p, 1, __ATOMIC_RELEASE);
         }
         plat_rmutex_unlock(&cmd_lock);
     }
-    if (stg_pool && bi.size <= STG_BLOCK / 2) aci.pool = stg_pool;
+    if (*pool_p && bi.size <= STG_BLOCK / 2) aci.pool = *pool_p;
     VmaAllocationInfo info;
     VkBuffer b;
     VmaAllocation a;
     VkResult r = vmaCreateBuffer(c->vma, &bi, &aci, &b, &a, &info);
+    if (r != VK_SUCCESS && aci.pool) {
+        // VRAM/ReBAR pool exhausted or fragmented: fall back to host staging so uploads still succeed.
+        aci.pool = NULL;
+        aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+        r = vmaCreateBuffer(c->vma, &bi, &aci, &b, &a, &info);
+    }
     if (r != VK_SUCCESS) rt_fatal("vk: staging buffer of %llu bytes failed (%d)", (unsigned long long)size, (int)r);
     plat_add64(&up_bytes, (int64_t)bi.size);
     *buf = b;
@@ -2242,6 +2280,30 @@ void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
         open_b.stg[open_b.nstg++] = (Staging){b, a};
     }
     return info.pMappedData;
+}
+
+void *vk_staging_upload(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
+    VkCtx *c = vk_ctx();
+    const VkPhysicalDeviceMemoryProperties *m = NULL;
+    vmaGetMemoryProperties(c->vma, &m);
+    uint64_t rebar_mib = m ? mem_rebar_mib(m) : 0, used = 0, budget = 0;
+    int exact = 0;
+    int use_rebar = rebar_mib >= 512 && (!vk_mem_vram(&used, &budget, &exact) || !budget || used < budget / 5 * 4);
+    VmaMemoryUsage u = use_rebar ? VMA_MEMORY_USAGE_AUTO : VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+    return staging_alloc(size,
+                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                         u, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                         use_rebar ? &stg_up_pool : &stg_wc_pool,
+                         use_rebar ? &stg_up_pool_tried : &stg_wc_pool_tried,
+                         use_rebar ? "upload rebar/wc" : "upload wc", buf, alloc);
+}
+
+void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
+    if (!alloc) return vk_staging_upload(size, buf, NULL);
+    return staging_alloc(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                         VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                         VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                         &stg_pool, &stg_pool_tried, "staging", buf, alloc);
 }
 
 uint64_t vk_upload_flush(int wait) {
@@ -2368,6 +2430,12 @@ void vk_mem_shutdown(void) {
     if (stg_pool) vmaDestroyPool(c->vma, stg_pool);   // after retire: no staging buffer is left in it
     stg_pool = NULL;
     stg_pool_tried = 0;
+    if (stg_up_pool) vmaDestroyPool(c->vma, stg_up_pool);
+    stg_up_pool = NULL;
+    stg_up_pool_tried = 0;
+    if (stg_wc_pool) vmaDestroyPool(c->vma, stg_wc_pool);
+    stg_wc_pool = NULL;
+    stg_wc_pool_tried = 0;
     plat_rmutex_unlock(&cmd_lock);
     plat_mutex_lock(&pool_lock);
     for (int i = 0; i < pool_index.n; i++) destroy_rec(c, pool_index.e[i].buf);

@@ -1,0 +1,52 @@
+// Switch 2 Tegra Block-Linear (GOB 64x8) -> linear buffer deswizzle on GPU compute, one invocation per 4-byte aligned word.
+// Matches runtime/tex_deswizzle.c gob_off() / nvn_bl_offset() bit-for-bit (Switch 2 native tiling with GOB bits 5 and 6 swapped).
+// Compiled to runtime/gob_deswizzle_spv.h by tools/build_shaders.py; vk_astc.c records the dispatch.
+#version 450
+
+layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InBl { uint bl_in[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer OutLin { uint lin_out[]; };
+
+layout(push_constant) uniform Params {
+    uint bl_word_base;
+    uint lin_word_base;
+    uint row_bytes;      // bytes per block row (multiple of 4)
+    uint lin_row_words;  // row_bytes / 4
+    uint rows;           // block rows
+    uint slices;         // 3D slices (or 1)
+    uint th;             // log2 GOB height in block
+    uint td;             // log2 GOB depth in block
+} pc;
+
+void main() {
+    uint w4 = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    uint z = gl_GlobalInvocationID.z;
+    if (w4 >= pc.lin_row_words || y >= pc.rows || z >= pc.slices) return;
+
+    uint x = w4 * 4u;
+    uint bh = 1u << pc.th;
+    uint bd = 1u << pc.td;
+    uint gobs_x = (pc.row_bytes + 63u) >> 6;
+    uint bh8 = bh << 3;
+    uint blocks_y = (pc.rows + bh8 - 1u) / bh8;
+    uint block_bytes = 512u << (pc.th + pc.td);
+
+    uint z_in_blk = z & (bd - 1u);
+    uint y_in_blk = y & (bh8 - 1u);
+    uint gob = ((z_in_blk << pc.th) + (y_in_blk >> 3)) * 512u;
+
+    uint xm = x & 63u;
+    uint ym = y & 7u;
+    uint gob_off = ((xm >> 5) << 8) + ((ym >> 2) << 7) + (((xm & 31u) >> 4) << 6)
+                 + (((ym & 3u) >> 1) << 5) + ((ym & 1u) << 4) + (xm & 15u);
+
+    uint byte_off = (z >> pc.td) * gobs_x * blocks_y * block_bytes
+                  + (y / bh8) * gobs_x * block_bytes
+                  + (x >> 6) * block_bytes
+                  + gob + gob_off;
+
+    uint dst = pc.lin_word_base + (z * pc.rows + y) * pc.lin_row_words + w4;
+    lin_out[dst] = bl_in[pc.bl_word_base + (byte_off >> 2)];
+}

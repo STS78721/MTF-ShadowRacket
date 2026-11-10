@@ -978,6 +978,8 @@ static void tab_advanced(float scale) {
     opt_toggle("NS2_TEX_ALIAS", UI_MENU_TEX_ALIAS, UI_MENU_TEX_ALIAS_DESC);
     opt_slider("NS2_TEX_VRAM_PRESSURE", UI_MENU_TEX_VRAM_PRESSURE, 0, 100, UI_MENU_TEX_VRAM_PRESSURE_DESC, 1, "%.0f%%");
     opt_toggle("NS2_ASTC_BC", UI_MENU_ASTC_BC, UI_MENU_ASTC_BC_DESC);
+    opt_toggle_text("NS2_GPU_DESWIZZLE", "GPU Compute Deswizzle",
+                    "Offloads Tegra Switch 2 block-linear (GOB) texture deswizzling onto Vulkan compute shaders and chains ASTC/BC3 decode directly in VRAM.");
 
     opt_group(UI_MENU_GROUP_FIXES);
     opt_toggle("NS2_LOD_GUARD", UI_MENU_LOD_GUARD, UI_MENU_LOD_GUARD_DESC);

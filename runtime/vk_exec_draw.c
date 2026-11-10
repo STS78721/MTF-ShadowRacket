@@ -2386,10 +2386,11 @@ static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const Gf
     // Legitimate 3D world meshes (skybox, cave walls, terrain) use per-vertex attributes (divisor == 0).
     if (count > 0 && count <= 6) {
         int all_instanced = 1, active_streams = 0;
-        for (int l = 0; l < 16; l++) {
+        for (int l = 0; l < 32; l++) {
             if (!(used >> l & 1)) continue;
             va_st va = {0};
-            memcpy(&va, &ex->pipe.vattr[l], sizeof va);
+            uint32_t w = vk_pipe_vattr_word(&ex->pipe, l);
+            memcpy(&va, &w, sizeof va);
             if (!va.fmt || va.stream >= 16) continue;
             active_streams++;
             if (ex->pipe.vstream[va.stream].divisor == 0) {
@@ -3192,9 +3193,14 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     }
     case OP_BIND_VATTR: {
         const p_bind_vattr *b = payload;
-        if (b->first < 0 || b->n < 0 || b->first + b->n > 16) break;
+        if (b->first < 0 || b->n < 0 || b->first + b->n > 32) break;
         memset(ex->pipe.vattr, 0, sizeof ex->pipe.vattr);   // MNG: the new list replaces the old one
-        memcpy(&ex->pipe.vattr[b->first], b->st, sizeof(uint32_t) * (size_t)b->n);
+        memset(ex->pipe.vattr_hi, 0, sizeof ex->pipe.vattr_hi);
+        for (int i = 0; i < b->n; i++) {
+            int loc = b->first + i;
+            if (loc < 16) ex->pipe.vattr[loc] = b->st[i];
+            else ex->pipe.vattr_hi[loc - 16] = b->st[i];
+        }
         break;
     }
     case OP_BIND_VSTREAM: {

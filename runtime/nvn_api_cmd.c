@@ -648,7 +648,7 @@ NVN_API(nvnCommandBufferSetAlphaRef) {
 NVN_API(nvnCommandBufferBindVertexAttribState) {
     cmd_t *o = cmd_of(c);
     int n = (int)arg_x(c, 1);
-    if (n < 0 || n > 16) { rt_log("nvn: BindVertexAttribState n %d", n); return; }
+    if (n < 0 || n > 32) { rt_log("nvn: BindVertexAttribState n %d", n); return; }
     p_bind_vattr *r = RECN(o, OP_BIND_VATTR, p_bind_vattr, st, n);
     r->first = 0;
     r->n = n;
@@ -659,11 +659,18 @@ NVN_API(nvnCommandBufferBindVertexAttribState) {
 NVN_API(nvnCommandBufferBindVertexStreamState) {
     cmd_t *o = cmd_of(c);
     int n = (int)arg_x(c, 1);
-    if (n < 0 || n > 16) { rt_log("nvn: BindVertexStreamState n %d", n); return; }
+    if (n < 0 || n > 32) { rt_log("nvn: BindVertexStreamState n %d", n); return; }
+    const vs_st *st = arg_p(c, 2);
+    if (n > 16) {
+        static int logged;
+        for (int i = 16; i < n && !logged; i++)
+            if (st[i].stride) { logged = 1; rt_log("nvn: BindVertexStreamState n %d (streams 16..31 ignored)", n); }
+        n = 16;
+    }
     p_bind_vstream *r = RECN(o, OP_BIND_VSTREAM, p_bind_vstream, st, n);
     r->first = 0;
     r->n = n;
-    memcpy(r->st, arg_p(c, 2), 8 * (size_t)n);
+    memcpy(r->st, st, 8 * (size_t)n);
     hw_fix(o, 4 * (16 + (size_t)n));
 }
 static void bind_vertex_buffers(cmd_t *o, int first, int n, const NVNbufferRange *rg) {
