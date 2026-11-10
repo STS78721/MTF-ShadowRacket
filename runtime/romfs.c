@@ -720,9 +720,15 @@ int romfs_list_dir(const char *path, int (*cb)(const char *name, int kind, uint6
     while (*rel == '/') rel++;
     char prefix[4096];
     size_t plen = 0;
-    if (*rel) {
-        if (!romfs_path_valid_relative(rel)) return PLAT_FS_NOT_FOUND;
-        int n = snprintf(prefix, sizeof prefix, "%s/", rel);
+    size_t rlen = strlen(rel);
+    while (rlen > 0 && rel[rlen - 1] == '/') rlen--;
+    if (rlen > 0) {
+        char rel_clean[4096];
+        if (rlen >= sizeof rel_clean) return PLAT_FS_NOT_FOUND;
+        memcpy(rel_clean, rel, rlen);
+        rel_clean[rlen] = 0;
+        if (!romfs_path_valid_relative(rel_clean)) return PLAT_FS_NOT_FOUND;
+        int n = snprintf(prefix, sizeof prefix, "%s/", rel_clean);
         if (n < 0 || n >= (int)sizeof prefix) return PLAT_FS_NOT_FOUND;
         plen = (size_t)n;
         if (!folder_exists(prefix)) return PLAT_FS_NOT_FOUND;

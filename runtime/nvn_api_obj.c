@@ -97,8 +97,11 @@ NVN_API(nvnTextureBuilderSetLevels) { TB(c)->d.levels = (uint32_t)arg_x(c, 1); }
 NVN_API(nvnTextureBuilderSetFormat) { TB(c)->d.format = (int)arg_x(c, 1); }
 // The back end samples the depth plane; stencil-plane sampling stops.
 NVN_API(nvnTextureBuilderSetDepthStencilMode) {
-    if ((uint32_t)arg_x(c, 1) != NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH)
-        rt_fatal("nvn: stencil-plane texture sampling is not implemented");
+    uint32_t m = (uint32_t)arg_x(c, 1);
+    if (m > NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL)
+        rt_fatal("nvn: invalid texture depth-stencil mode %u", m);
+    TB(c)->d.dsmode = m;
+    TB(c)->d.set_dsmode = 1;
 }
 NVN_API(nvnTextureBuilderSetSwizzle) {
     uint32_t s[4] = {(uint32_t)arg_x(c, 1), (uint32_t)arg_x(c, 2), (uint32_t)arg_x(c, 3), (uint32_t)arg_x(c, 4)};

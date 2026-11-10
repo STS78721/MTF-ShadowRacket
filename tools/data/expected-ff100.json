@@ -1,0 +1,15 @@
+{
+  "_comment": "Fast Fusion (1.0.0) ExeFS. Hashes only; no game data.",
+  "short_name": "ff",
+  "display_name": "Fast Fusion",
+  "title_id": "040041E0212AE000",
+  "display_version": "1.0.0",
+  "exefs_sha256": {
+    "main": "6e3db69fc599bb4d36b2b30bbbe8e97566a9d3c6b3ee6ece593501cc6b2d404c",
+    "main.npdm": "a5de425939c21d629408c7ce715fe21ce833be60fd4f6e1d58303ab8f7f9df79",
+    "rtld": "cb1f1e0f304027bb43104c263a31ca30e77e0f27257480748e21f422dce16ba6",
+    "sdk": "5ae9d673c00685712f14595c05307060fcd362d424352c7ed26f2d51a98f9554",
+    "subsdk0": "c3733f0a1d7c5a7a30f79ca0f67fbecb8690e6d832523e71c530c8b71665abe9",
+    "subsdk1": "e9e20a716a20923d38b4182c06427fec766de35d1389f210aa60e2727bda4fb8"
+  }
+}

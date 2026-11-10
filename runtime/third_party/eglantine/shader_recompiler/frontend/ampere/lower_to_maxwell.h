@@ -855,16 +855,15 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
             if (dimension != 1 && dimension != 5) return fail(index, "native gradient texture dimension");
             if (binding >= 18) return fail(index, "native gradient texture binding");
             if (offset > 0x1fff) return fail(index, "native gradient texture offset");
-            if ((dest & 1) || dest >= 248) return fail(index, "native gradient texture destination pair");
-            if (channel_mask != 15 && channel_mask != 7) return fail(index, "native gradient texture channel mask");
-            const u32 high_channel_mask = channel_mask & 0xc;
-            // With all four channels requested the third and fourth may be discarded (high == RZ), which lowered
-            // before; only the three-channel form needs a real register for the third channel.
-            if (high_channel_mask && !(channel_mask == 15 && high == 255)) {
+            u32 active_count = 0;
+            for (u32 c = 0; c < 4; ++c) active_count += (channel_mask >> c) & 1U;
+            if (active_count == 0) return fail(index, "native gradient texture channel mask");
+            if (dest >= 248 || (active_count >= 2 && dest + 1 >= 248))
+                return fail(index, "native gradient texture destination pair");
+            if (active_count >= 3 && !(channel_mask == 15 && high == 255)) {
                 if (high == 255 || high >= 248)
                     return fail(index, "native gradient texture high destination register");
-                if ((high_channel_mask == 0xc && (high & 1)) ||
-                    ((high_channel_mask & 0x8) && high + 1 >= 248))
+                if (active_count == 4 && high + 1 >= 248)
                     return fail(index, "native gradient texture high destination pair");
             }
             if (coordinates >= 248) return fail(index, "native gradient texture coordinate pair");
@@ -872,22 +871,20 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
             if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
                 return fail(index, "native texture descriptor buffer conflict");
             result.required_texture_buffer = binding;
-            // Maxwell writes four consecutive registers: when the second pair is elsewhere (Splatoon
-            // Raiders: R12/R18, R18/R44), write them to scratch and move each pair into place.
-            const bool consecutive = high == dest + 2;
+            // Maxwell writes dense results into consecutive pairs starting at an aligned register. If aligned and
+            // contiguous (or <=2 channels in an aligned pair), emit directly; otherwise stage through R248..R251.
+            const bool consecutive = !(dest & 1U) && ((active_count <= 2 && high == 255) || (active_count >= 3 && high == dest + 2));
             const u64 target = consecutive ? dest : 248;
             emit(0xde00000000000000ULL | predicate | target | (u64{coordinates} << 8) |
                  (u64{derivatives} << 20) | (u64{dimension == 5 ? 3U : 2U} << 28) |
                  (u64{offset} << 36) | (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) |
                  (u64{channel_mask} << 31));
             if (!consecutive) {
-                for (u32 i = 0; i < 2; ++i) {
-                    if (channel_mask & (1U << i))
-                        emit(0x5c98000000000000ULL | predicate | (dest + i) | (u64{15} << 39) |
-                             (u64{248 + i} << 20));
-                    if (high != 255 && (channel_mask & (1U << (i + 2))))
-                        emit(0x5c98000000000000ULL | predicate | (high + i) | (u64{15} << 39) |
-                             (u64{250 + i} << 20));
+                for (u32 s = 0; s < active_count; ++s) {
+                    const u32 out_reg = (s < 2) ? (dest + s) : (high == 255 ? 255U : high + (s - 2));
+                    if (out_reg != 255U)
+                        emit(0x5c98000000000000ULL | predicate | out_reg | (u64{15} << 39) |
+                             (u64{248 + s} << 20));
                 }
             }
             break;
@@ -1538,17 +1535,36 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
             }
             break;
         }
-        case 0xb6f: { // TXQ texture dimensions, two packed scalar outputs.
-            if (insn.Bits(59, 5) || insn.Bits(64, 8) != 255 || insn.Bits(72, 4) == 0 || insn.Bits(72, 4) > 3 ||
-                insn.Bits(76, 14) || insn.Bits(91, 1) || insn.Bits(54, 5) >= 18 ||
-                insn.Bits(40, 14) > 0x1fff || (insn.Bits(72, 4) == 3 && (dest & 1)) || dest >= 254)
+        case 0xb6f: { // TXQ texture dimensions, one or two packed pairs across Rd / Rd2.
+            const u32 mask = insn.Bits(72, 4);
+            const u32 second_dest = insn.Bits(64, 8);
+            const u32 lo_mask = mask & 0x3U;
+            const u32 hi_mask = mask & 0xCU;
+            u32 src_a = insn.Bits(24, 8);
+            if (insn.Bits(59, 5) || mask == 0 || (hi_mask && second_dest == 255) ||
+                (!hi_mask && second_dest != 255) || insn.Bits(76, 14) || insn.Bits(91, 1) ||
+                insn.Bits(54, 5) >= 18 || insn.Bits(40, 14) > 0x1fff ||
+                (lo_mask && dest >= 255) || (lo_mask == 3 && ((dest & 1) || dest >= 254)) ||
+                (hi_mask == 0xCU && ((second_dest & 1) || second_dest >= 254)))
                 return fail(index, "native texture dimension query mode");
             if (result.required_texture_buffer != ~0U && result.required_texture_buffer != insn.Bits(54, 5))
                 return fail(index, "native texture descriptor buffer conflict");
             result.required_texture_buffer = insn.Bits(54, 5);
-            emit(0xdf48000000000000ULL | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
-                 (u64{1} << 22) | (u64{insn.Bits(72, 4)} << 31) | (u64{insn.Bits(40, 14)} << 36) |
-                 (u64{insn.Bits(90, 1)} << 49));
+            // If both halves emit and the first TXQ writes over src_a, preserve src_a in R250 first.
+            if (lo_mask && hi_mask && src_a != 255 && (src_a == dest || (lo_mask == 3 && src_a == dest + 1))) {
+                emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{src_a} << 20));
+                src_a = 250;
+            }
+            if (lo_mask) {
+                emit(0xdf48000000000000ULL | predicate | dest | (u64{src_a} << 8) |
+                     (u64{1} << 22) | (u64{lo_mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
+                     (u64{insn.Bits(90, 1)} << 49));
+            }
+            if (hi_mask) {
+                emit(0xdf48000000000000ULL | predicate | second_dest | (u64{src_a} << 8) |
+                     (u64{1} << 22) | (u64{hi_mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
+                     (u64{insn.Bits(90, 1)} << 49));
+            }
             break;
         }
         case 0xb66: { // TLD.SCR.LZ, direct texel fetch

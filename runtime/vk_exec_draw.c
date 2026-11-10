@@ -565,7 +565,9 @@ static VkComponentSwizzle swz_of(uint8_t s) {
 // translator declares every sampled image float and the shader takes the raw bits, as for integer formats (nxnative
 // nvn_mtl.m).
 VkImageAspectFlags vk_exec_view_aspect(const VkTexImage *img, const view_t *v, int hv) {
-    if (hv && v->set_dsmode && v->dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL && (img->aspect & VK_IMAGE_ASPECT_STENCIL_BIT))
+    int use_stencil = (hv && v->set_dsmode) ? (v->dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL)
+                                            : (img->dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);
+    if (use_stencil && (img->aspect & VK_IMAGE_ASPECT_STENCIL_BIT))
         return VK_IMAGE_ASPECT_STENCIL_BIT;
     return img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT     ? VK_IMAGE_ASPECT_DEPTH_BIT
            : img->aspect & VK_IMAGE_ASPECT_STENCIL_BIT ? VK_IMAGE_ASPECT_STENCIL_BIT

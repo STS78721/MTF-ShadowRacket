@@ -730,7 +730,7 @@ def cmd_init(args):
         print(f"Created empty patch table {patches_path}")
 
     if args.romfs and not (args.romfs / "index.json").is_file() and args.pack_out:
-        packer = ROOT / "tools" / "mtf_pack_romfs.py"
+        packer = ROOT / "tools" / "dkb_pack_romfs.py"
         if packer.is_file():
             subprocess.run([sys.executable, str(packer), "--dir", str(args.romfs), "--out", str(args.pack_out)], check=True)
 

@@ -677,7 +677,11 @@ HOST_OVERRIDE("_ZN2nn3hid6detail19GetTouchScreenStateILm16EEENS_6ResultEPNS0_16T
 HOST_OVERRIDE("_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_EEEi", ov_touch_states16_public);
 HOST_OVERRIDE("_ZN2nn3hid6detail20GetTouchScreenStatesILm16EEENS_6ResultEPiPNS0_16TouchScreenStateIXT_EEEi", ov_touch_states16_detail);
 HOST_OVERRIDE("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", ov_joy_assignment);
+HOST_OVERRIDE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKj", ov_joy_assignment);
+HOST_OVERRIDE("_ZN2nn3hid6detail30SetNpadJoyAssignmentModeSingleERKj", ov_hid_zero);
 HOST_OVERRIDE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKjNS0_17NpadJoyDeviceTypeE", ov_joy_assignment);
+HOST_OVERRIDE("_ZN2nn3hid21StartLrAssignmentModeEv", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid20StopLrAssignmentModeEv", ov_hid_noop);
 HOST_OVERRIDE("_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_", ov_joy_assignment);
 
 HOST_OVERRIDE("_ZN2nn3hid14InitializeNpadEv", ov_initialize_npad);

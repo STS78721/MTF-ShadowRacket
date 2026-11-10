@@ -454,6 +454,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     p->bound = e->bound_to != NULL;
     p->block_views = (uint8_t)block_views;
     p->fb_usage = (uint8_t)fb_usage;
+    p->dsmode = (uint8_t)(d->set_dsmode ? d->dsmode : NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH);
 
     if (!defer_init) {
         init_image(e, vk_upload_begin());

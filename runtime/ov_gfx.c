@@ -136,8 +136,27 @@ static void ov_refresh_rate(Cpu *c) {
     if (vrr) *vrr = 0;
     ret_x(c, 0);
 }
+static void ov_refresh_rate_2(Cpu *c) {
+    float *rate = arg_p(c, 0);
+    if (rate) *rate = 60.0f;
+    ret_x(c, 0);
+}
+// Result QueryDisplayBufferMaxResolution(BufferMaxResolution *out, const Display *): hook into live display target
+static void ov_display_max_res(Cpu *c) {
+    int32_t *out = arg_p(c, 0);
+    unsigned wh[2] = {1920, 1080};
+    res_wanted(wh);
+    if (out) { out[0] = (int32_t)wh[0]; out[1] = (int32_t)wh[1]; }
+    ret_x(c, 0);
+}
+static void ov_vi_void(Cpu *c) { (void)c; }
 
 HOST_OVERRIDE("_ZN2nn2vi30QueryDisplayCurrentRefreshRateEPNS0_11RefreshRateEPbPKNS0_7DisplayE", ov_refresh_rate);
+HOST_OVERRIDE("_ZN2nn2vi30QueryDisplayCurrentRefreshRateEPNS0_11RefreshRateEPKNS0_7DisplayE", ov_refresh_rate_2);
+HOST_OVERRIDE("_ZN2nn2vi31QueryDisplayBufferMaxResolutionEPNS0_19BufferMaxResolutionEPKNS0_7DisplayE", ov_display_max_res);
+HOST_OVERRIDE("_ZN2nn2vi12CloseDisplayEPNS0_7DisplayE", ov_vi_void);
+HOST_OVERRIDE("_ZN2nn2vi12DestroyLayerEPNS0_5LayerE", ov_vi_void);
+HOST_OVERRIDE("_ZN2nn2vi8FinalizeEv", ov_vi_void);
 HOST_OVERRIDE("_ZN2nn2vi35SetLayerNextHdrContentGamutMetadataEPNS0_5LayerENS0_15HdrContentGamutE", ov_vi_accept);
 HOST_OVERRIDE("_ZN2nn2vi36SetDisplay120HzRefreshRateCapabilityEPNS0_7DisplayEb", ov_vi_accept);
 HOST_OVERRIDE("_ZN2nn2vi39SetLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerENS0_14HdrToneMappingE", ov_vi_accept);
