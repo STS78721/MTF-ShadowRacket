@@ -1341,6 +1341,10 @@ static void probe_paths(void) {
     failures += bad > 0;
     CHECK(!romfs_path_relative(NULL, "rom:/a") && !romfs_path_relative("", ":/a") && !romfs_path_relative("rom", NULL),
           "romfs_path_relative accepts an empty mount or path");
+    char norm[64];
+    CHECK(romfs_path_norm("rom", "rom:/a//b", norm, sizeof norm) && !strcmp(norm, "a/b") &&
+              !romfs_path_norm("rom", "rom:/a//b/", norm, sizeof norm),
+          "romfs_path_norm handles consecutive slashes");
     printf("paths: %u romfs_path.h normalisation cases: %s\n", (unsigned)(sizeof cases / sizeof *cases),
            bad ? "FAIL" : "ok");
 }

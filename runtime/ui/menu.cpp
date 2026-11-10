@@ -688,7 +688,7 @@ static void tab_screen(float scale) {
     bool is_fsr = !strcmp(up, "fsr");
     if (is_smrs) {
         static const struct { const char *name, *label, *scale; } p[] = {
-            {"native", "Native / DLAA (Docked)", "100"},
+            {"native", "Native (Docked)", "100"},
             {"quality", "Quality (Docked 67%)", "67"},
             {"balanced", "Balanced (Handheld 58%)", "58"},
             {"performance", "Performance (Handheld 50%)", "50"},
@@ -720,13 +720,12 @@ static void tab_screen(float scale) {
     }
     opt_toggle("NS2_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
 
-    // Frame Generation / Super Motion (Nodix Super Motion and DLSS MFG)
+    // Frame Generation / Super Motion (Nodix Super Motion, FSR 3.1 FG, XeSS FG)
     opt_group_text("Frame Generation (Nodix Super Motion & MFG)");
-    static const char *const fg_gen_vals[] = {"off", "msm_fg", "dlss_fg", "fsr3_fg", "xefg"};
+    static const char *const fg_gen_vals[] = {"off", "msm_fg", "fsr3_fg", "xefg"};
     static const char *const fg_gen_names[] = {
         "Off",
         "Nodix Super Motion (SMFG 1.3)",
-        "DLSS MFG (NVIDIA RTX)",
         "AMD FSR 3.1 FG (Universal)",
         "XeSS MFG (Intel Universal)"
     };
@@ -734,14 +733,12 @@ static void tab_screen(float scale) {
     const char *cur_fg = cfg_value("NS2_FG_MODE");
     if (!strcmp(cur_fg, "msm_fg")) {
         fg_note = "Nodix Super Motion DirectML / Compute Active";
-    } else if (!strcmp(cur_fg, "dlss_fg")) {
-        fg_note = vk_gpu_is_nvidia() ? "NVIDIA Hardware Optical Flow Active" : "Requires NVIDIA RTX GPU";
     } else if (!strcmp(cur_fg, "fsr3_fg")) {
         fg_note = "AMD FidelityFX FSR 3.1 Frame Generation Active";
     } else if (!strcmp(cur_fg, "xefg")) {
         fg_note = "Intel XeSS Frame Generation Active";
     }
-    opt_choice_list("NS2_FG_MODE", UI_MENU_FG_MODE, fg_gen_vals, fg_gen_names, 5, UI_MENU_FG_MODE_DESC, -1, fg_note);
+    opt_choice_list("NS2_FG_MODE", UI_MENU_FG_MODE, fg_gen_vals, fg_gen_names, 4, UI_MENU_FG_MODE_DESC, -1, fg_note);
 
     if (strcmp(cur_fg, "off") != 0) {
         static const char *const mode_vals[] = {"fixed", "adaptive"};
@@ -756,17 +753,6 @@ static void tab_screen(float scale) {
             "x6 (6x Multiplier)"
         };
         opt_choice_list("NS2_FG_MULT", UI_MENU_FG_MULT, mult_vals, mult_names, 4, UI_MENU_FG_MULT_DESC);
-
-        if (!strcmp(cur_fg, "dlss_fg")) {
-            static const char *const dpreset_vals[] = {"drivers_choice", "preset_c", "preset_b", "preset_a"};
-            static const char *const dpreset_names[] = {
-                "Driver's choice",
-                "Performance · Preset C",
-                "Quality · Preset B (Optical Flow)",
-                "Balanced · Preset A (Transformer)"
-            };
-            opt_choice_list("NS2_FG_PRESET", UI_MENU_FG_PRESET, dpreset_vals, dpreset_names, 4, UI_MENU_FG_PRESET_DESC);
-        }
 
         opt_toggle("NS2_FG_STILL", UI_MENU_LOD_GUARD, UI_MENU_LOD_GUARD_DESC); // Still Pixels / HUD Guard
         opt_slider("NS2_FG_FLOW", UI_MENU_FG_FLOW, 10, 100, UI_MENU_FG_FLOW_DESC, 5, "%.0f %%");
@@ -787,9 +773,6 @@ static void tab_screen(float scale) {
             // Guarantee no conflict: disable AMD/Intel low-latency
             cfg_set("NS2_ANTILAG2", "off");
             cfg_set("NS2_XELL", "off");
-            if (!strcmp(cfg_value("NS2_REFLEX"), "off") && !strcmp(cfg_value("NS2_FG_MODE"), "dlss_fg")) {
-                cfg_set("NS2_FG_MODE", "off");
-            }
             cfg_save();
         }
     } else if (vk_has_amd_antilag()) {
@@ -1266,7 +1249,6 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
             if (fgm > 1) {
                 const char *fgm_mode = cfg_value("NS2_FG_MODE");
                 const char *fgt = !strcmp(fgm_mode, "msm_fg") ? "MSM-FG"
-                                : (!strcmp(fgm_mode, "dlss_fg") && vk_gpu_is_nvidia()) ? "DLSS FG"
                                 : !strcmp(fgm_mode, "xefg") ? "XeFG"
                                 : "FSR3 FG";
                 snprintf(g_perf_fg_badge, sizeof g_perf_fg_badge, "%s %dx", fgt, fgm);
@@ -1317,7 +1299,7 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
                 const char *p = cfg_value("NS2_UPSCALER_PRESET");
                 const char *op = cfg_value("NS2_OPERATION_MODE");
                 bool is_hh = (op && !strcmp(op, "handheld"));
-                const char *plabel = !strcmp(p, "native") ? "Native DLAA (1620p)"
+                const char *plabel = !strcmp(p, "native") ? "Native (1620p)"
                                    : !strcmp(p, "quality") ? "Quality (1620p)"
                                    : !strcmp(p, "balanced") ? "Balanced (1080p)"
                                    : !strcmp(p, "performance") ? "Perf (1080p)"
@@ -1447,7 +1429,6 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     const char *fg_m = cfg_value("NS2_FG_MODE");
     if (fg_mult > 1 && fg_m && strcmp(fg_m, "off") != 0) {
         const char *gen = !strcmp(fg_m, "msm_fg") ? "Nodix Super Motion"
-                        : !strcmp(fg_m, "dlss_fg") ? "DLSS MFG"
                         : !strcmp(fg_m, "fsr3_fg") ? "FSR 3.1 FG"
                         : !strcmp(fg_m, "xefg") ? "XeSS MFG" : "Super Motion";
         snprintf(v[5], sizeof v[5], "%s (%dx Active)", gen, fg_mult);

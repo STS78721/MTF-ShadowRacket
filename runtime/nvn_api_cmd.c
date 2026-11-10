@@ -955,6 +955,33 @@ NVN_API(nvnCommandBufferDownsample) {
     if (o->dst) o->dr = (NVNcopyRegion){0, 0, 0, (int)o->dst->d.width, (int)o->dst->d.height, 1};
     o->flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;
 }
+void nvn_cmd_copy_tex_blit(NVNcommandBuffer *cmd, const NVNtexture *src, const NVNtextureView *sv,
+                           int sx, int sy, int sw, int sh,
+                           const NVNtexture *dst, const NVNtextureView *dv,
+                           int dx, int dy, int dw, int dh) {
+    if (!cmd || !src || !dst) return;
+    if (((const tex_t *)src)->magic != NVN_TEX_MAGIC || ((const tex_t *)dst)->magic != NVN_TEX_MAGIC) return;
+    const tex_t *s = tex_pin(src), *d = tex_pin(dst);
+    if (!s || !d) return;
+    int full_sw = (int)s->d.width - sx;
+    int full_sh = (int)s->d.height - sy;
+    int full_dw = (int)d->d.width - dx;
+    int full_dh = (int)d->d.height - dy;
+    if (sw <= 0 || sw > full_sw) sw = full_sw;
+    if (sh <= 0 || sh > full_sh) sh = full_sh;
+    if (dw <= 0 || dw > full_dw) dw = full_dw;
+    if (dh <= 0 || dh > full_dh) dh = full_dh;
+    if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
+    if (s == d && sx == dx && sy == dy && sw == dw && sh == dh && sv == dv) return;
+    p_copy_t2t *o = REC((cmd_t *)cmd, OP_COPY_T2T, p_copy_t2t);
+    o->src = s;
+    o->dst = d;
+    copy_view(&o->sv, &o->has_sv, sv);
+    copy_view(&o->dv, &o->has_dv, dv);
+    o->sr = (NVNcopyRegion){sx, sy, 0, sw, sh, 1};
+    o->dr = (NVNcopyRegion){dx, dy, 0, dw, dh, 1};
+    o->flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;
+}
 // void nvnCommandBufferSetCopyRowStride(NVNcommandBuffer *cmd, ptrdiff_t stride)
 NVN_API(nvnCommandBufferSetCopyRowStride) { REC(cmd_of(c), OP_COPY_STRIDE, p_copy_stride)->stride = (int64_t)arg_x(c, 1); }
 // void nvnCommandBufferSetBlendColor(NVNcommandBuffer *cmd, const float *rgba)

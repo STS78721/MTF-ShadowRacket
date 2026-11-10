@@ -119,3 +119,8 @@ void nvn_pool_invalidate(const pool_t *p, uint64_t off, uint64_t size);
 // MemoryPoolFlushMappedRange: the CPU wrote [mem + off, mem + off + size). Weak no-op in nvn_ext.c; a back end that keeps
 // device-side copies of pool memory (vk_memory.c's VRAM mirror) defines it and copies the range again.
 void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size);
+// Records a linear-filtered texture copy/blit for NVN2 passthrough paths (e.g. bare-bones nvnCommandBufferEvaluateDlss).
+void nvn_cmd_copy_tex_blit(NVNcommandBuffer *cmd, const NVNtexture *src, const NVNtextureView *sv,
+                           int sx, int sy, int sw, int sh,
+                           const NVNtexture *dst, const NVNtextureView *dv,
+                           int dx, int dy, int dw, int dh);

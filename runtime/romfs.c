@@ -598,8 +598,9 @@ uint32_t romfs_mount(const char *name) {
 uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     fs_trace("rom", path);
     if (!out || mode != FS_OPEN_READ) return FS_R_UNSUPPORTED_OPEN;
+    char norm[4096];
     const char *mname = romfs_find_mount(path, NULL);
-    const char *p = mname ? romfs_path_relative(mname, path) : NULL;
+    const char *p = mname ? romfs_path_norm(mname, path, norm, sizeof norm) : NULL;
     if (!p) return FS_R_PATH_NOT_FOUND;
     uint64_t i = file_index(p);
     if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
@@ -696,8 +697,9 @@ void romfs_close(uint64_t h) {
 
 uint32_t romfs_entry_type(int *out, const char *path) {
     if (!out) return FS_R_INVALID;
+    char norm[4096];
     const char *mname = romfs_find_mount(path, NULL);
-    const char *p = mname ? romfs_path_relative(mname, path) : NULL;
+    const char *p = mname ? romfs_path_norm(mname, path, norm, sizeof norm) : NULL;
     if (!p) return FS_R_PATH_NOT_FOUND;
     if (file_index(p) != UINT64_MAX) {
         *out = FS_ENTRY_FILE;
@@ -724,9 +726,13 @@ int romfs_list_dir(const char *path, int (*cb)(const char *name, int kind, uint6
     while (rlen > 0 && rel[rlen - 1] == '/') rlen--;
     if (rlen > 0) {
         char rel_clean[4096];
-        if (rlen >= sizeof rel_clean) return PLAT_FS_NOT_FOUND;
-        memcpy(rel_clean, rel, rlen);
-        rel_clean[rlen] = 0;
+        size_t cn = 0;
+        for (size_t k = 0; k < rlen; k++) {
+            if (rel[k] == '/' && k + 1 < rlen && rel[k + 1] == '/') continue;
+            if (cn + 1 >= sizeof rel_clean) return PLAT_FS_NOT_FOUND;
+            rel_clean[cn++] = rel[k];
+        }
+        rel_clean[cn] = 0;
         if (!romfs_path_valid_relative(rel_clean)) return PLAT_FS_NOT_FOUND;
         int n = snprintf(prefix, sizeof prefix, "%s/", rel_clean);
         if (n < 0 || n >= (int)sizeof prefix) return PLAT_FS_NOT_FOUND;

@@ -66,33 +66,18 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_FSR3] = "AMD FSR 3.1",
     [UI_MENU_UPSCALER_FSR3_DESC] = "AMD FidelityFX Super Resolution 3.1 with decoupled temporal upscaling and frame pacing.",
     [UI_MENU_UPSCALER_BILINEAR] = "Bilinear",
-    [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
-    [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; nvngx_dlss.dll next to dkb.exe): smoother "
-                          "edges and higher frame rates with AI reconstruction.",
-    [UI_MENU_DLSS] = "DLSS mode",
-    [UI_MENU_DLSS_DESC] = "DLAA draws the 3D scene at full resolution. Quality, Balanced, Performance and Ultra "
-                          "Performance draw it at 67, 58, 50 and 33 % and let DLSS scale it up, which saves GPU time.",
-    [UI_MENU_DLSS_DLAA] = "DLAA (native)", [UI_MENU_DLSS_QUALITY] = "Quality", [UI_MENU_DLSS_BALANCED] = "Balanced",
-    [UI_MENU_DLSS_PERFORMANCE] = "Performance", [UI_MENU_DLSS_ULTRA] = "Ultra Performance",
     [UI_MENU_UPSCALE_PRESET] = "Upscaler quality preset",
-    [UI_MENU_UPSCALE_PRESET_DESC] = "Picks the 3D render scale for the upscaler (DLSS or AMD FSR): Quality 67 %, Balanced 58 %, "
+    [UI_MENU_UPSCALE_PRESET_DESC] = "Picks the 3D render scale for the upscaler: Quality 67 %, Balanced 58 %, "
                                     "Performance 50 %, Ultra Performance 33 %, Native 100 %.",
     [UI_MENU_FG_MODE] = "Frame Generation",
     [UI_MENU_FG_MODE_DESC] = "Generates interpolated frames between rendered frames to multiply smoothness. "
-                             "NVIDIA DLSS MFG supports Presets A / B / C with hardware optical flow. "
-                             "Intel XeSS MFG and Nodix MSM-FG 1.1 provide GPU compute motion interpolation across all hardware.",
-    [UI_MENU_FG_PRESET] = "DLSS Frame Gen preset",
-    [UI_MENU_FG_PRESET_DESC] = "Selects the NVIDIA DLSS Frame Generation neural profile: Preset A (Transformer optical "
-                               "flow, sharpest HUD & motion stability), Preset B (Balanced optical flow for fast camera "
-                               "pans), or Preset C (Low motion blur / ultra-clean disocclusion).",
+                             "Intel XeSS MFG, AMD FSR 3.1 FG, and Nodix MSM-FG provide GPU compute motion interpolation across hardware.",
     [UI_MENU_FG_MULT] = "Frame Gen multiplier",
     [UI_MENU_FG_MULT_DESC] = "Number of presented frames per rendered frame. 2x and 3x are universally supported across "
-                             "all Super Motion modes. 4x and 6x Multi-Frame Generation (MFG) are accelerated on NVIDIA "
-                             "GeForce RTX 50 Series (Blackwell) and supported via compute on modern GPUs.",
+                             "all Super Motion modes, and 4x/6x are supported via compute on modern GPUs.",
     [UI_MENU_REFLEX] = "NVIDIA Reflex Low Latency",
     [UI_MENU_REFLEX_DESC] = "Synchronises CPU simulation and GPU submission via VK_NV_low_latency2 to eliminate the "
-                            "render queue and minimize input lag. Automatically guided to On + Boost when DLSS Frame "
-                            "Generation is enabled.",
+                            "render queue and minimize input lag.",
     [UI_MENU_ANTILAG2] = "AMD Anti-Lag 2",
     [UI_MENU_ANTILAG2_DESC] = "Synchronises CPU frame pacing with GPU execution via VK_AMD_anti_lag to minimize click-to-photon "
                               "latency on AMD Radeon GPUs.",
@@ -104,7 +89,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                   "Quality (1.7x), Balanced (2.0x), Performance (2.3x), Ultra Performance (3.0x), or Native AA (1.0x). "
                                   "Accelerated by XMX AI matrix engines on Intel Arc, or universal DP4a vector neural instructions on other GPUs.",
     [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
-    [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
+    [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little.",
     [UI_MENU_SMAA] = "SMAA 1x Anti-Aliasing",
     [UI_MENU_SMAA_DESC] = "Subpixel Morphological Anti-Aliasing. High-quality morphological edge smoothing with zero temporal blur or ghosting.",
     [UI_MENU_AO] = "Ambient Occlusion",
@@ -114,22 +99,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_AO_HBAO] = "HBAO (Accurate)",
     [UI_MENU_AO_INTENSITY] = "Ambient Occlusion Intensity",
     [UI_MENU_AO_INTENSITY_DESC] = "Controls the darkness and strength of the ambient occlusion contact shadows.",
-    [UI_MENU_DLSS_MODEL] = "DLSS model",
-    [UI_MENU_DLSS_MODEL_DESC] = "Selects the neural model generation and preset. DLSS 4 (Preset K / J) is tuned for "
-                                "Native / Quality / Balanced; DLSS 4.5 (Preset M / L) is tuned for Performance (50 %) "
-                                "and Ultra Performance (33 %).",
     [UI_MENU_LOW_LATENCY] = "Low-latency mode",
     [UI_MENU_LOW_LATENCY_DESC] = "Reduces render queue latency with NVIDIA Reflex, AMD Anti-Lag 2, or Intel XeLL.",
-    [UI_MENU_FRAME_GEN] = "AI frame generation",
-    [UI_MENU_FRAME_GEN_DESC] = "Enables frame interpolation with DLSS-G or XeSS Frame Generation.",
-    [UI_MENU_DLSS_PRESET] = "DLSS model",
-    [UI_MENU_DLSS_PRESET_DESC] = "Which DLSS model runs.",
-    [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatic", [UI_MENU_DLSS_PRESET_K] = "K (sharpest)",
-    [UI_MENU_DLSS_PRESET_J] = "J (less ghosting)",
-    [UI_MENU_DLSS_CHARS] = "DLSS character trails",
-    [UI_MENU_DLSS_CHARS_DESC] = "Reduces faint trails behind moving characters.",
-    [UI_MENU_DLSS_CHARS_OFF] = "Off", [UI_MENU_DLSS_CHARS_LIGHT] = "Light", [UI_MENU_DLSS_CHARS_MEDIUM] = "Medium",
-    [UI_MENU_DLSS_CHARS_FULL] = "Full",
+    [UI_MENU_FRAME_GEN] = "Frame generation",
+    [UI_MENU_FRAME_GEN_DESC] = "Enables frame interpolation with Nodix Super Motion, FSR 3.1 FG, or XeSS Frame Generation.",
     [UI_MENU_ASPECT] = "Fit picture to window",
     [UI_MENU_ASPECT_DESC] = "When the window's shape differs from the game resolution's (a 16:9 picture on a 21:9 "
                             "screen): keep the picture's shape with black bars, or stretch it over the window. "
@@ -666,8 +639,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_OV_SCALE_BILINEAR] = "билинейное",
     [UI_MENU_LOW_LATENCY] = "Режим низкой задержки",
     [UI_MENU_LOW_LATENCY_DESC] = "Снижает задержку очереди рендеринга с NVIDIA Reflex, AMD Anti-Lag 2 или Intel XeLL.",
-    [UI_MENU_FRAME_GEN] = "Генерация кадров ИИ",
-    [UI_MENU_FRAME_GEN_DESC] = "Включает генерацию кадров DLSS-G или XeSS.",
+    [UI_MENU_FRAME_GEN] = "Генерация кадров",
+    [UI_MENU_FRAME_GEN_DESC] = "Включает генерацию кадров Nodix Super Motion, FSR 3.1 или XeSS.",
 };
 
 #define SWKBD_ONLY(name, ...) static const char *const name[UI_TEXT_COUNT] = {SWKBD(__VA_ARGS__)}

@@ -36,7 +36,7 @@ static const char *const known[] = {
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
-    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA", "COLOR_PRESET", "COLOR_SATURATION", "CORE_DIAG", "CRIT", "CRIT_OUT", "DESC_TEMPLATE", "DEVICE_PROFILE", "DLAA", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET",
+    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA", "COLOR_PRESET", "COLOR_SATURATION", "CORE_DIAG", "CRIT", "CRIT_OUT", "DESC_TEMPLATE", "DEVICE_PROFILE",
     "DRAW_BISECT", "DUALSENSE", "DUALSENSE_AUDIO", "DUALSENSE_AUDIO_MODE", "DUALSENSE_HAPTICS", "DUALSENSE_TRIGGERS", "DUALSENSE_TRIGGER_STRENGTH", "DUALSENSE_VOL",
     "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG", "DUMP_SKIP_RUNS", "DUMP_TEX", "DUMP_UBO",
     "EXEFS", "EXPERIMENTAL_GEOMETRY", "FEEDBACK", "FIX_C0", "FIX_INDIRECT_RESET", "FIX_VS_FAULT", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES", "FLIGHT_SPIKE_MS",
@@ -57,7 +57,6 @@ static const char *const known[] = {
     "ANTILAG2",
     "FG_MODE",
     "FG_MULT",
-    "FG_PRESET",
     "FG_FLOW",
     "FG_STILL",
     "FG_TYPE",
@@ -66,14 +65,7 @@ static const char *const known[] = {
     "SSAO",
     "HBAO",
     "XELL",
-    "XESS_QUALITY",
-    "DLSS_NR",
-    "DLSS_NR_COLOR",
-    "DLSS_NR_MODEL",
-    "DLSS_NR_PRESET",
-    "DLSS_NR_SCALE",
-    "DLSS_NR_SHARPNESS",
-    "DLSS_NR_TRANSFER",};
+    "XESS_QUALITY",};
 
 // The dkb.ini section a key cfg_set may write goes to when the file lacks it (dkb.ini.example's sections).
 static const struct { const char *key, *section; } sections[] = {
@@ -81,7 +73,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"REALTIME", "frame rate"}, {"CLOTH_REALTIME", "frame rate"}, {"HIGHFPS_FIX", "frame rate"},
     {"FULLSCREEN", "display"}, {"WINDOW_SIZE", "display"}, {"PERF_OVERLAY", "display"}, {"VK_PRESENT", "display"},
     {"GPU_INDEX", "display"}, {"OUTPUT_RES", "display"}, {"RENDER_SCALE", "display"}, {"UPSCALER", "display"},
-    {"DLAA", "display"}, {"DLSS", "display"}, {"DLSS_PRESET", "display"}, {"DLSS_CHAR_MASK", "display"}, {"UPSCALER_PRESET", "display"}, {"REFLEX", "display"},
+    {"UPSCALER_PRESET", "display"}, {"REFLEX", "display"},
     {"LOW_LATENCY", "display"}, {"FRAME_GEN", "display"}, {"XESS_PRESET", "display"},
     {"SHARPNESS", "display"}, {"ASPECT", "display"}, {"FOV", "display"}, {"RES_HOOK", "display"}, {"OPERATION_MODE", "display"},
     {"VK_NOOPT", "display"}, {"COLOR_PRESET", "display"},
@@ -116,7 +108,6 @@ static const struct { const char *key, *section; } sections[] = {
     {"NVN2_MODE_TRACE", "diagnostics"},
     {"NVN2_MODE_TRACE_START_MS", "diagnostics"}, {"NVN2_MODE_TRACE_DURATION_MS", "diagnostics"},
     {"FG_MODE", "display"},
-    {"FG_PRESET", "display"},
     {"FG_FLOW", "display"},
     {"FG_STILL", "display"},
     {"FG_TYPE", "display"},
@@ -127,9 +118,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"AO", "display"},
     {"AO_INTENSITY", "display"},
     {"XELL", "display"},
-    {"XESS_QUALITY", "display"},
-    {"DLSS_NR", "display"},
-    {"DLSS_NR_PRESET", "display"},};
+    {"XESS_QUALITY", "display"},};
 
 // The settings the menu shows: the value in effect when the key is unset, and what the key accepts. The only place a
 // default lives: consumers read cfg_value / cfg_int / cfg_double / cfg_bool. A row with an empty default has no fixed
@@ -146,16 +135,12 @@ static const CfgMeta metas[] = {
     {"VK_NOOPT", "0", "0|1", RESTART},
     {"UPSCALER", "smrs", "smrs|fsr|bilinear|off", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
     {"UPSCALER_PRESET", "quality", "native|ultra_quality|quality|balanced|performance|ultra_performance", LIVE},
-    {"DLSS_PRESET", "preset_k", "preset_k|preset_j|preset_m|preset_l|preset_e|preset_c|default", LIVE},
-    {"DLSS_CHAR_MASK", "65", "0|35|65|100", LIVE},
-    {"DLAA", "0", "0|1", RESTART}, {"DLSS", "dlaa", "dlaa|quality|balanced|performance|ultra_performance", RESTART},
     {"REFLEX", "boost", "off|on|boost", LIVE},
     {"LOW_LATENCY", "boost", "auto|boost|on|off", LIVE},
     {"FRAME_GEN", "1", "0|1", LIVE},
-    {"FG_MODE", "msm_fg", "off|msm_fg|dlss_fg|fsr3_fg|xefg", LIVE},
+    {"FG_MODE", "msm_fg", "off|msm_fg|fsr3_fg|xefg", LIVE},
     {"FG_MULT", "2x", "2x|3x|4x|6x", LIVE},
     {"FG_TYPE", "fixed", "fixed|adaptive", LIVE},
-    {"FG_PRESET", "drivers_choice", "drivers_choice|preset_c|preset_b|preset_a", LIVE},
     {"FG_STILL", "1", "0|1", LIVE},
     {"FG_FLOW", "80", "10..100", LIVE},
     {"XESS_PRESET", "quality", "native|quality|balanced|performance|ultra_performance", RESTART},
@@ -221,9 +206,7 @@ static const CfgMeta metas[] = {
     {"FXAA", "1", "0|1", LIVE},
     {"SMAA", "0", "0|1", LIVE},
     {"AO", "off", "off|ssao|hbao", LIVE},
-    {"AO_INTENSITY", "1.0", "0.0..3.0", LIVE},
-    {"DLSS_NR", "0", "0|1", LIVE},
-    {"DLSS_NR_PRESET", "preset_b", "preset_a|preset_b|preset_c|preset_d|preset_e|preset_f|preset_g", LIVE},};
+    {"AO_INTENSITY", "1.0", "0.0..3.0", LIVE},};
 
 static int is_known(const char *key) {
     for (size_t i = 0; i < sizeof known / sizeof *known; i++)
