@@ -187,7 +187,9 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
     }
     if (!F.logged) {
         F.logged = 1;
-        rt_log("vk: FSR upscales %dx%d to %ux%u (sharpness %d)", cw, ch, dw, dh, sharp);
+        rt_log("vk: FSR %s %dx%d to %ux%u (sharpness %d)",
+               (dw == (uint32_t)cw && dh == (uint32_t)ch) ? "RCAS native sharpen" : "upscales",
+               cw, ch, dw, dh, sharp);
     }
     const VkPipelineStageFlags2 CS = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, XF = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     // the game's writes to the source become visible to the compute read; the earlier frame's reads of the
@@ -198,17 +200,25 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
         barrier(cb, F.img[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, CS | XF, 0, CS,
                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     uint32_t gx = (dw + 15) / 16, gy = (dh + 15) / 16;
-    float easu[8] = {(float)cw, (float)ch, (float)sw, (float)sh, (float)dw, (float)dh, (float)crop[0], (float)crop[1]};
-    bind_pass(cb, F.easu, F.src_view[slot], F.view[0], easu);
-    vkCmdDispatch(cb, gx, gy, 1);
     int last = 0;
-    if (sharp > 0) {
-        barrier(cb, F.img[0], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                CS, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    if (dw == (uint32_t)cw && dh == (uint32_t)ch) {
+        // Native 1:1 sharpening: skip EASU spatial filter entirely, run RCAS directly on src
         float rcas[8] = {(float)dw, (float)dh, (float)(100 - sharp) / 50.0f, 0, 0, 0, 0, 0};
-        bind_pass(cb, F.rcas, F.view[0], F.view[1], rcas);
+        bind_pass(cb, F.rcas, F.src_view[slot], F.view[0], rcas);
         vkCmdDispatch(cb, gx, gy, 1);
-        last = 1;
+        last = 0;
+    } else {
+        float easu[8] = {(float)cw, (float)ch, (float)sw, (float)sh, (float)dw, (float)dh, (float)crop[0], (float)crop[1]};
+        bind_pass(cb, F.easu, F.src_view[slot], F.view[0], easu);
+        vkCmdDispatch(cb, gx, gy, 1);
+        if (sharp > 0) {
+            barrier(cb, F.img[0], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    CS, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            float rcas[8] = {(float)dw, (float)dh, (float)(100 - sharp) / 50.0f, 0, 0, 0, 0, 0};
+            bind_pass(cb, F.rcas, F.view[0], F.view[1], rcas);
+            vkCmdDispatch(cb, gx, gy, 1);
+            last = 1;
+        }
     }
     barrier(cb, F.img[last], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
             XF, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -219,7 +229,7 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
                           .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                           .dstOffsets = {{out[0], out[1], 0}, {out[0] + (int)dw, out[1] + (int)dh, 1}}};
     vkCmdBlitImage(cb, F.img[last], VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region,
-                   VK_FILTER_NEAREST);
+                   VK_FILTER_LINEAR);
     return 1;
 }
 

@@ -404,7 +404,7 @@ extern void __real_f_700011ff04(Cpu *c) __attribute__((weak));
 extern void __real_f_700011ff1c(Cpu *c) __attribute__((weak));
 extern void __real_f_7000075cc0(Cpu *c) __attribute__((weak));
 
-static void ff_get_target_resolutions(uint32_t *canvas_w, uint32_t *canvas_h, uint32_t *scene_w, uint32_t *scene_h) {
+void ff_get_target_resolutions(uint32_t *canvas_w, uint32_t *canvas_h, uint32_t *scene_w, uint32_t *scene_h) {
     const char *o = cfg_value("TOTK_OUTPUT_RES");
     const char *s = cfg_value("TOTK_RENDER_SCALE");
     if (!o || !*o) o = "3840x2160";

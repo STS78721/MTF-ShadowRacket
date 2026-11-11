@@ -251,3 +251,37 @@ Read AGENTS.md and docs\UNIVERSAL_NS2_TO_PC_PLAYBOOK.md first. Follow these stri
       - Injects prebuilt pipelines directly into the host GPU driver's disk cache (NVIDIA NV_Cache/DXCache, AMD, Intel) and `pipeline-cache.bin`.
       - Writes `shader-prepared.bin` for instant prebuild on subsequent game boots (0 fast-link stutters during gameplay).
   - Integrated into `tools/build_game.py` via `--prepare-shaders` flag.
+
+### 5.8. Pristine Native 4K Clarity & Grain Elimination (FSR 1:1 Bypass, DLSS Optimal Settings Sync, & Post-Process Neutralization)
+- **Symptom:** The rendered game image appears noticeably grainy, noisy, or pixelated during gameplay, particularly on surfaces, road textures, and vehicle edges ("super grainy / pixelated, might be just the game").
+- **Root Causes Discovered:**
+  1. **FSR 1 EASU Running at 1:1 Native Resolution:**
+     - In `runtime/vk_fsr.c`, if `sharpness > 0` (e.g. `sharpness = 40` or `10`), the recompiler executed the FSR 1 Edge Adaptive Spatial Upscaling (EASU) compute pass even when destination dimensions matched source dimensions ($3840\times 2160 \to 3840\times 2160$).
+     - EASU is an edge-reconstruction spatial interpolator designed for upscaling lower-resolution inputs. Running it at 1:1 softens native subpixel details and introduces ringing artifacts, which the subsequent Robust Contrast Adaptive Sharpening (RCAS) pass aggressively sharpens, turning soft edges into stark pixel halos.
+     - The intermediate texture was then transferred to the swapchain using `VK_FILTER_NEAREST`, magnifying any subpixel offset into harsh pixelation.
+  2. **NVN2 DLSS Optimal Settings Downsampling:**
+     - Fast Fusion relies on NVN2 DLSS APIs (`nvnDlssNetworkBuilderSetOutputResolution` and `nvnDlssNetworkBuilderGetOptimalSettings`).
+     - In `runtime/nvn_api_nvn2.c`, the DLSS builder mock accepted hardcoded Switch 2 docked sizes (`1920x1080`) from guest game code and returned `optimal = (1920, 1080)`.
+     - In response, the engine's dynamic resolution scaling (DRS) system frequently downsampled internal 3D scene rendering mid-game (e.g. to `1266x712` or `2226x1252`), leading to severe resolution drops and noticeable pixel crawl.
+  3. **High Frame Generation Multiplier (6x Optical Flow Noise):**
+     - When `fg_mult = 6x` is configured, Nodix Super Motion (SMFG 1.3) computes 5 synthetic frames for every 1 physically rendered frame.
+     - At high vehicle speeds ($600+\text{ km/h}$), optical flow vector estimation on stochastic dither patterns produces warping grain and crawling noise.
+  4. **Post-Processing Color & Contrast Exaggeration:**
+     - Fast Fusion utilizes stochastic blue noise / Bayer dithering for alpha testing, soft shadows, and ambient occlusion, designed to be temporally accumulated.
+     - Setting `color_preset = custom` with elevated contrast (`110`), saturation (`125`), and low gamma (`0.95`) amplified tiny dither dots into prominent high-contrast grain.
+- **Architectural Fixes Implemented:**
+  1. **`runtime/nvn_api_nvn2.c`:**
+     - Query `ff_get_target_resolutions(&cw, &ch, &sw, &sh)` in `nvnDlssNetworkBuilderSetOutputResolution`, `GetOutputResolution`, and `GetOptimalSettings`.
+     - When output resolution is 4K ($3840\times 2160$), override `out_w/out_h` to $3840\times 2160$ and return `(sw, sh, sw, sh, sw, sh)` as optimal/min/max settings. This locks the game's internal render pipeline to full native resolution ($3840\times 2160$) and prevents DRS downsampling drops.
+     - Added logging in `nvnCommandBufferEvaluateDlss` to verify blit extents.
+  2. **`runtime/vk_fsr.c`:**
+     - If `dw == cw && dh == ch`:
+       - If `sharpness <= 0`: Bypass FSR completely (`return 0`), letting `gfx_present.c` perform a clean direct linear blit to the swapchain.
+       - If `sharpness > 0`: Skip the EASU pass entirely! Dispatch RCAS directly from `src_view` to `view[0]`, providing pure contrast-adaptive sharpening without spatial blurring or ringing.
+     - Switched final swapchain blit from `VK_FILTER_NEAREST` to `VK_FILTER_LINEAR` for smooth presentation.
+  3. **`ff.ini` Optimal Presentation Configuration:**
+     - `upscaler = off` & `sharpness = 0`: Pristine 1:1 presentation with zero artificial sharpening noise.
+     - `color_preset = default`: True neutral colors (brightness=0, contrast=100, saturation=100, gamma=1.0) preventing dither amplification.
+     - `frame_gen = 0` / `fg_mult = off` (or clean `2x`): Eliminates high-multiplier optical flow noise.
+     - `render_scale = 2x` (or `100` / `200`): Delivers razor-sharp Native 4K ($3840\times 2160$) internal 3D rendering.
+

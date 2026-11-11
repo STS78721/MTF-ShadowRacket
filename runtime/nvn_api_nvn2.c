@@ -301,13 +301,24 @@ NVN_API(nvnDlssNetworkBuilderSetFlags) { dlss_builder_t *b = dlss_builder_of(arg
 NVN_API(nvnDlssNetworkBuilderGetFlags) { dlss_builder_t *b = dlss_builder_of(arg_p(c, 0), 0); ret_x(c, b ? b->flags : 0); }
 NVN_API(nvnDlssNetworkBuilderSetOutputResolution) {
     dlss_builder_t *b = dlss_builder_of(arg_p(c, 0), 0);
-    if (b) { b->out_w = (uint32_t)arg_x(c, 1); b->out_h = (uint32_t)arg_x(c, 2); }
-    rt_log("dlss: SetOutputResolution %ux%u (lr=%#llx)", (unsigned)arg_x(c, 1), (unsigned)arg_x(c, 2), (unsigned long long)c->x[30]);
+    uint32_t in_w = (uint32_t)arg_x(c, 1);
+    uint32_t in_h = (uint32_t)arg_x(c, 2);
+    uint32_t cw = 0, ch = 0;
+    ff_get_target_resolutions(&cw, &ch, NULL, NULL);
+    if (b) {
+        b->out_w = (cw > 0) ? cw : in_w;
+        b->out_h = (ch > 0) ? ch : in_h;
+    }
+    rt_log("dlss: SetOutputResolution %ux%u -> %ux%u (lr=%#llx)", in_w, in_h, b ? b->out_w : 0, b ? b->out_h : 0, (unsigned long long)c->x[30]);
 }
 NVN_API(nvnDlssNetworkBuilderGetOutputResolution) {
     dlss_builder_t *b = dlss_builder_of(arg_p(c, 0), 0);
-    dlss_write_u32(c, 1, b ? b->out_w : 0);
-    dlss_write_u32(c, 2, b ? b->out_h : 0);
+    uint32_t cw = 0, ch = 0;
+    ff_get_target_resolutions(&cw, &ch, NULL, NULL);
+    uint32_t w = (b && b->out_w) ? b->out_w : cw;
+    uint32_t h = (b && b->out_h) ? b->out_h : ch;
+    dlss_write_u32(c, 1, w);
+    dlss_write_u32(c, 2, h);
 }
 NVN_API(nvnDlssNetworkBuilderSetMethod) { dlss_builder_t *b = dlss_builder_of(arg_p(c, 0), 0); if (b) b->method = (uint32_t)arg_x(c, 1); }
 NVN_API(nvnDlssNetworkBuilderGetMethod) { dlss_builder_t *b = dlss_builder_of(arg_p(c, 0), 0); ret_x(c, b ? b->method : 0); }
@@ -315,9 +326,12 @@ NVN_API(nvnDlssNetworkBuilderSetPreset) { dlss_builder_t *b = dlss_builder_of(ar
 NVN_API(nvnDlssNetworkBuilderGetPreset) { dlss_builder_t *b = dlss_builder_of(arg_p(c, 0), 0); ret_x(c, b ? b->preset : 0); }
 NVN_API(nvnDlssNetworkBuilderGetOptimalSettings) {
     dlss_builder_t *b = dlss_builder_of(arg_p(c, 0), 0);
-    uint32_t w = (b && b->out_w) ? b->out_w : 1920u;
-    uint32_t h = (b && b->out_h) ? b->out_h : 1080u;
-    rt_log("dlss: GetOptimalSettings out=%ux%u method=%u preset=%u (lr=%#llx)", w, h, b ? b->method : 0, b ? b->preset : 0, (unsigned long long)c->x[30]);
+    uint32_t cw = 0, ch = 0, sw = 0, sh = 0;
+    ff_get_target_resolutions(&cw, &ch, &sw, &sh);
+    uint32_t w = (sw > 0) ? sw : ((b && b->out_w) ? b->out_w : 1920u);
+    uint32_t h = (sh > 0) ? sh : ((b && b->out_h) ? b->out_h : 1080u);
+    rt_log("dlss: GetOptimalSettings out=%ux%u optimal_scene=%ux%u method=%u preset=%u (lr=%#llx)",
+           b ? b->out_w : cw, b ? b->out_h : ch, w, h, b ? b->method : 0, b ? b->preset : 0, (unsigned long long)c->x[30]);
     dlss_write_u32(c, 1, w);
     dlss_write_u32(c, 2, h);
     dlss_write_u32(c, 3, w);
@@ -433,6 +447,13 @@ NVN_API(nvnCommandBufferEvaluateDlss) {
     dlss_net_t *n = dlss_net_of(arg_p(c, 1), 0);
     dlss_params_t *p = dlss_params_of(arg_p(c, 2), 0);
     if (!cmd || !p || !p->in_color.tex || !p->out_color.tex) return;
+    static int logged = 0;
+    if (!logged) {
+        logged = 1;
+        rt_log("dlss: EvaluateDlss in=(%d,%d %dx%d) out=(%d,%d %dx%d)",
+               (int)p->in_color_x, (int)p->in_color_y, (int)p->in_w, (int)p->in_h,
+               (int)p->out_x, (int)p->out_y, n ? (int)n->out_w : 0, n ? (int)n->out_h : 0);
+    }
     nvn_cmd_copy_tex_blit(cmd, p->in_color.tex, p->in_color.view,
                           (int)p->in_color_x, (int)p->in_color_y, (int)p->in_w, (int)p->in_h,
                           p->out_color.tex, p->out_color.view,
