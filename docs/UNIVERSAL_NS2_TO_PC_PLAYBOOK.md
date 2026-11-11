@@ -201,16 +201,28 @@ Read AGENTS.md and docs\UNIVERSAL_NS2_TO_PC_PLAYBOOK.md first. Follow these stri
 - **Root Cause #2 (Dual-Aspect Blit in `copy_t2t`):** Fast Fusion performs texture-to-texture depth copies (`copy_t2t` in `runtime/vk_exec_xfer.c`) on format `0x35` (`DEPTH32F_STENCIL8`). In Vulkan, blitting or resolving combined depth/stencil images requires separate aspect masks (`VK_IMAGE_ASPECT_DEPTH_BIT` and `VK_IMAGE_ASPECT_STENCIL_BIT`). If a combined `DEPTH_BIT | STENCIL_BIT` mask is passed to `vkCmdBlitImage` or if `sub_resolve()` doesn't split aspects (`allow_mode = 2`), the blit command fails or produces invalid/stale depth data. Skybox depth tests then discard all sky fragments against 0.0 depth.
 - **Solution:** In `runtime/vk_exec_xfer.c` (`copy_t2t`), enable `allow_mode = 2` for format `0x35` (`DEPTH32F_STENCIL8`), splitting dual-aspect blits into separate depth and stencil passes.
 
-### 5.6. High-Resolution Scaling Hooks (4K / Custom Resolutions in Engine)
-- **Symptom:** Setting `output_res = 3840x2160` and `render_scale = 100` in `.ini` displays the window in 4K, but the 3D scene remains locked to native Switch 2 resolution (960x540 / 1080p canvas), or is stretched/cropped.
-- **Root Cause:** Games often hardcode display buffer resolutions in internal functions or register constants (e.g. `0x780` = 1920, `0x438` = 1080 in Fast Fusion `f_700010f328` and `f_700011fde4`). Guest calls to `nvnWindowSetCrop` clamp surfaces to 1920x1080 even when allocated at 3840x2160. Additionally, screenshots in `boot.c` had hardcoded resolution overrides (`w == 3840 && h == 2160` clamping to `1706x960`).
-- **Solution:**
+### 5.6. High-Resolution & Emulator-Style Internal Resolution Scaling Hooks (1x, 2x, 3x, 4x -> 4K, 6K, 8K)
+- **Symptom:** Setting `output_res = 3840x2160` and `render_scale = 100` or `200` in `.ini` displays the window in 4K, but the 3D scene remains locked to native Switch 2 resolution (1080p canvas with 960x540 internal 3D scene), or produces distorted/halved viewport extents.
+- **Root Cause & Engine Architecture (Fast Fusion & NS2 Titles):**
+  1. The Switch 2 display configuration singleton resides at `*(uint64_t*)0x700071beb8`.
+  2. The game separates canvas composition and 3D scene rendering:
+     - `f_700011ff04` writes Output Canvas width and height into `disp_cfg + 0x7068` and `disp_cfg + 0x706c` (docked shipped: 3840x2160, handheld: 1920x1080).
+     - `f_700011ff1c` writes Internal 3D Scene width and height into `disp_cfg + 0x7070` and `disp_cfg + 0x7074` (docked shipped: 1920x1080, handheld: 1280x720).
+     - Non-canvas callers also call `f_700011ff04` for other objects (e.g. `*(uint64_t*)0x70006ab418` passing `x1 = 1, x2 = 0` mode flags). Unconditionally overriding all calls corrupts secondary structs and inflates passes to invalid dimensions (e.g. `8180x1505`).
+  3. `f_70001218cc` reads `disp_cfg + 0x7070` to allocate internal 3D render targets via `nvnTextureInitialize`. If `f_700011ff1c` is not scaled, render targets remain 1080p.
+  4. In `main_0002.c:33045` (`f_7000075cc0`), the engine applies dynamic resolution downsampling (`*scale_x` and `*scale_y` at `x21 + 0xb0` and `x21 + 0xb4`), dropping the 1080p buffer down to $0.5\times$ (960x540) before upscaling.
+- **Solution & Multiplier Scaling:**
   1. In `runtime/resolution.c`:
-     - `res_apply_live()` synchronizes `NS2_WINDOW_SIZE` to `NS2_OUTPUT_RES` on initial startup.
+     - Allow `SCENE_MAX` up to 16384 (PC GPU texture limits).
+     - Support emulator-style multiplier scaling (`1x`, `2x`, `3x`, `4x`) and percentage scaling (`50`, `100`, `200`, `300`, `400`):
+       - `1x` (100) = 1920x1080 (Native Switch 2 1080p)
+       - `2x` (200, native, 4k) = 3840x2160 (**Native 4K Internal 3D Rendering**)
+       - `3x` (300) = 5760x3240 (6K Supersampling)
+       - `4x` (400, 8k) = 7680x4320 (8K Supersampling)
      - Add guest wrappers:
-       - `__wrap_f_700011ff04`: Intercepts docked canvas size setter and applies `want[0] x want[1]` (e.g. 3840x2160).
-       - `__wrap_f_700011ff1c`: Intercepts handheld canvas size setter and applies half output resolution.
-       - `__wrap_f_7000075cc0`: Intercepts 3D scene manager, dynamically setting internal horizontal and vertical render scale factors (`1.0f` for 100%, `0.5f` for 50%) at `scene_mgr + 0xb0` and `scene_mgr + 0xb4`.
+       - `__wrap_f_700011ff04`: Guards against non-resolution callers (`c->x[0] == disp_cfg` and `c->x[1] >= 640 && c->x[2] >= 360`), setting output canvas to target display resolution (`output_res`, default 3840x2160).
+       - `__wrap_f_700011ff1c`: Slices internal 3D scene resolution to target multiplier (`scene_w x scene_h`), directing `f_70001218cc` to allocate 4K/6K/8K 3D render targets.
+       - `__wrap_f_7000075cc0`: Locks `*scale_x = 1.0f` and `*scale_y = 1.0f` so the 3D scene renders to 100% of the internal render target extent without downsampling.
   2. In `runtime/nvn_api_obj.c` (`nvnWindowSetCrop`):
      - Unclamp crop `v = (0, 0, width, height)` when the underlying surface was allocated at output resolution (`3840x2160`).
   3. In `runtime/boot.c` (`save_shot`):

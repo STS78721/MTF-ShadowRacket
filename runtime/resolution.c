@@ -43,7 +43,7 @@
 #define SCENE_W 1600
 #define SCENE_H 900
 #define DTA_KIB 113664u      // DynamicTextureAllocatorMem, shipped
-#define SCENE_MAX 4096       // per side, as MacNativeGames' TOTK_RENDER_RES
+#define SCENE_MAX 16384      // per side, up to 16K on modern PC GPUs
 
 static struct {
     int decided;
@@ -97,15 +97,21 @@ static void decide(void) {
         rt_log("resolution: TOTK_OUTPUT_RES=%s is not <width>x<height> in 1280x720..7680x4320; 1920x1080", o);
     }
 
-    double k = 5.0 / 6.0;
+    double k = 1.0;
     if (strcmp(s, "game")) {
-        char *end;
-        double pct = strtod(s, &end);
-        if (end != s && !*end && pct >= 25 && pct <= 400) {
-            k = pct / 100.0;
+        char *end = NULL;
+        double val = strtod(s, &end);
+        if (end && (*end == 'x' || *end == 'X')) {
+            k = (R.ow >= 3840) ? (val * 0.5) : val; // 1x = 1080p, 2x = 4K, 3x = 6K, 4x = 8K
+            R.scene_set = 1;
+        } else if (val >= 1.0 && val <= 8.0 && val == (int)val && end != s && !*end) {
+            k = (R.ow >= 3840) ? (val * 0.5) : val;
+            R.scene_set = 1;
+        } else if (end != s && !*end && val >= 25 && val <= 800) {
+            k = val / 100.0;
             R.scene_set = 1;
         } else {
-            rt_log("resolution: TOTK_RENDER_SCALE=%s is not game or a percentage 25..400; using game", s);
+            rt_log("resolution: TOTK_RENDER_SCALE=%s is not game or a percentage/multiplier; using game", s);
         }
     }
     double sw = R.ow * k, sh = R.oh * k;
@@ -390,18 +396,75 @@ void res_live_snapshot(unsigned win_sz[2], unsigned crop_sz[2], unsigned out_tgt
 }
 
 // ---- Fast Fusion Resolution Scaling Hooks
+// Fast Fusion uses a Display/Configuration singleton at *(uint64_t*)0x700071beb8.
+// - f_700011ff04 sets the Output Canvas resolution (shipped 3840x2160 docked, 1920x1080 handheld)
+// - f_700011ff1c sets the Internal 3D scene rendering resolution (shipped 1920x1080 docked, 1280x720 handheld)
+// - f_7000075cc0 sets the dynamic sub-viewport projection scale (1.0 = full render target)
 extern void __real_f_700011ff04(Cpu *c) __attribute__((weak));
 extern void __real_f_700011ff1c(Cpu *c) __attribute__((weak));
 extern void __real_f_7000075cc0(Cpu *c) __attribute__((weak));
 
+static void ff_get_target_resolutions(uint32_t *canvas_w, uint32_t *canvas_h, uint32_t *scene_w, uint32_t *scene_h) {
+    const char *o = cfg_value("TOTK_OUTPUT_RES");
+    const char *s = cfg_value("TOTK_RENDER_SCALE");
+    if (!o || !*o) o = "3840x2160";
+    if (!s || !*s) s = "200";
+
+    uint32_t cw = 3840, ch = 2160;
+    unsigned w = 0, h = 0;
+    char tail;
+    if (sscanf(o, "%ux%u%c", &w, &h, &tail) == 2 && w >= 640 && h >= 360 && w <= 16384 && h <= 16384) {
+        cw = w & ~1u;
+        ch = h & ~1u;
+    }
+
+    // Determine scale multiplier:
+    // Emulator-style: 1x = 1080p, 2x = 3840x2160 (Native 4K), 3x = 5760x3240, 4x = 7680x4320 (8K).
+    // Percentage-style: 50 = 1080p, 100 = Native 4K (or 1080p if output 1080p), 200 = 2x Native 4K, etc.
+    double mult = 2.0; // default to native 4K
+    if (!strcmp(s, "game")) {
+        mult = 1.0;
+    } else if (!strcmp(s, "native") || !strcmp(s, "4k") || !strcmp(s, "4K")) {
+        mult = 2.0; // 2x of 1080p = 3840x2160
+    } else {
+        char *end = NULL;
+        double val = strtod(s, &end);
+        if (end && (*end == 'x' || *end == 'X')) {
+            mult = val;
+        } else if (val >= 1.0 && val <= 8.0 && val == (int)val) {
+            mult = val;
+        } else if (val >= 25.0 && val <= 800.0) {
+            if (cw >= 3840 && val == 100.0) mult = 2.0; // 100% of 4K canvas = 4K scene
+            else if (val == 200.0) mult = 2.0;          // 200 = 2x = 4K scene
+            else if (val == 300.0) mult = 3.0;          // 300 = 3x = 6K scene
+            else if (val == 400.0) mult = 4.0;          // 400 = 4x = 8K scene
+            else mult = (val / 100.0) * (cw >= 3840 ? 2.0 : 1.0);
+        }
+    }
+
+    if (mult < 0.25) mult = 0.25;
+    if (mult > 8.0) mult = 8.0;
+
+    uint32_t sw = (uint32_t)(1920.0 * mult + 0.5) & ~1u;
+    uint32_t sh = (uint32_t)(1080.0 * mult + 0.5) & ~1u;
+
+    if (canvas_w) *canvas_w = cw;
+    if (canvas_h) *canvas_h = ch;
+    if (scene_w) *scene_w = sw;
+    if (scene_h) *scene_h = sh;
+}
+
 void __wrap_f_700011ff04(Cpu *c) {
-    unsigned want[2] = {0};
-    res_wanted(want);
-    if (want[0] && want[1]) {
-        rt_log("ff: resolution hook: docked canvas %ux%u (was %ux%u)",
-               want[0], want[1], (unsigned)c->x[1], (unsigned)c->x[2]);
-        c->x[1] = want[0];
-        c->x[2] = want[1];
+    uint64_t *disp_cfg_ptr = (uint64_t *)(uintptr_t)0x700071beb8;
+    uint64_t disp_cfg = disp_cfg_ptr ? *disp_cfg_ptr : 0;
+    int is_res_call = (disp_cfg && c->x[0] == disp_cfg) || (c->x[1] >= 640 && c->x[2] >= 360);
+
+    if (is_res_call) {
+        uint32_t cw = 0, ch = 0;
+        ff_get_target_resolutions(&cw, &ch, NULL, NULL);
+        rt_log("ff: resolution hook: canvas set to %ux%u (was %ux%u)", cw, ch, (unsigned)c->x[1], (unsigned)c->x[2]);
+        c->x[1] = cw;
+        c->x[2] = ch;
     }
     if (__real_f_700011ff04) __real_f_700011ff04(c);
     else {
@@ -411,15 +474,16 @@ void __wrap_f_700011ff04(Cpu *c) {
 }
 
 void __wrap_f_700011ff1c(Cpu *c) {
-    unsigned want[2] = {0};
-    res_wanted(want);
-    if (want[0] && want[1]) {
-        uint32_t hw = (want[0] >= 3840) ? 1920 : (want[0] >= 2560 ? 1280 : want[0] / 2);
-        uint32_t hh = (want[1] >= 2160) ? 1080 : (want[1] >= 1440 ? 720 : want[1] / 2);
-        rt_log("ff: resolution hook: handheld canvas %ux%u (was %ux%u)",
-               hw, hh, (unsigned)c->x[1], (unsigned)c->x[2]);
-        c->x[1] = hw;
-        c->x[2] = hh;
+    uint64_t *disp_cfg_ptr = (uint64_t *)(uintptr_t)0x700071beb8;
+    uint64_t disp_cfg = disp_cfg_ptr ? *disp_cfg_ptr : 0;
+    int is_res_call = (disp_cfg && c->x[0] == disp_cfg) || (c->x[1] >= 640 && c->x[2] >= 360);
+
+    if (is_res_call) {
+        uint32_t sw = 0, sh = 0;
+        ff_get_target_resolutions(NULL, NULL, &sw, &sh);
+        rt_log("ff: resolution hook: internal 3D scene set to %ux%u (was %ux%u)", sw, sh, (unsigned)c->x[1], (unsigned)c->x[2]);
+        c->x[1] = sw;
+        c->x[2] = sh;
     }
     if (__real_f_700011ff1c) __real_f_700011ff1c(c);
     else {
@@ -433,20 +497,12 @@ void __wrap_f_7000075cc0(Cpu *c) {
     if (x21) {
         float *scale_x = (float *)(uintptr_t)(x21 + 0xb0);
         float *scale_y = (float *)(uintptr_t)(x21 + 0xb4);
-        float target_scale = 1.0f;
-        const char *s = cfg_value("TOTK_RENDER_SCALE");
-        if (s && strcmp(s, "game") != 0) {
-            float pct = (float)atof(s);
-            if (pct >= 25.0f && pct <= 400.0f) target_scale = pct / 100.0f;
-        } else if (s && !strcmp(s, "game")) {
-            target_scale = 0.5f;
-        }
-        *scale_x = target_scale;
-        *scale_y = target_scale;
+        *scale_x = 1.0f;
+        *scale_y = 1.0f;
         static int logged = 0;
         if (!logged) {
             logged = 1;
-            rt_log("ff: resolution hook: 3D scene scale set to %.2fx (RENDER_SCALE=%s)", target_scale, s ? s : "default");
+            rt_log("ff: resolution hook: 3D scene scale locked to 1.0x (full native resolution)");
         }
     }
     if (__real_f_7000075cc0) __real_f_7000075cc0(c);
