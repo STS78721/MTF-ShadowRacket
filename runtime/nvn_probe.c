@@ -163,6 +163,12 @@ static void probe_buffers(void) {
     CHECK(CALL(nvnBufferGetSize, U(&buf)) == 0x200 && CALL(nvnBufferGetMemoryOffset, U(&buf)) == 0x100 &&
               CALL(nvnBufferGetMemoryPool, U(&buf)) == U(&pool), "buffer size, offset and pool");
     CALL(nvnBufferFlushMappedRange, U(&buf), 0, 0x200);
+    // NVN 55 fastpath: inline guest code reads/patches NVNbuffer +0x18 (memory offset) without touching +0x20 (size).
+    *(int64_t *)((uint8_t *)&buf + 0x18) = 0x300;
+    CHECK(CALL(nvnBufferGetMemoryOffset, U(&buf)) == 0x300 && CALL(nvnBufferGetSize, U(&buf)) == 0x200 &&
+              CALL(nvnBufferGetAddress, U(&buf)) == U(pmem) + 0x300 && CALL(nvnBufferMap, U(&buf)) == U(pmem) + 0x300,
+          "NVN 55 NVNbuffer +0x18 fastpath offset");
+    *(int64_t *)((uint8_t *)&buf + 0x18) = 0x100;
 
     CALL(nvnBufferBuilderSetStorage, U(&bufb), U(&pool), I(PROBE_POOL_SIZE - 0x100), 0x200);
     CHECK((uint8_t)CALL(nvnBufferInitialize, U(&buf), U(&bufb)) == 0, "a buffer past the end of its pool is refused");

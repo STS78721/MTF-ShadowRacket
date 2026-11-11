@@ -435,7 +435,7 @@ NVN_API(nvnBufferInitialize) {
         ret_x(c, 0);
         return;
     }
-    *o = (buf_t){BUF_MAGIC, s->pool, s->off, s->size};
+    *o = (buf_t){BUF_MAGIC, 0, s->dev, s->pool, s->off, s->size};
     ret_x(c, 1);
 }
 // void nvnBufferFinalize(NVNbuffer *b)

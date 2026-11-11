@@ -26,6 +26,7 @@
 #include "game_profile.h"
 #include "host.h"
 #include "ov.h"
+#include "ov_pl_ext_font.h"
 #include "platform/platform.h"
 #include "sha256.h"
 
@@ -874,11 +875,13 @@ static void ov_user_difference(Cpu *c) {
 // as in MNG. The load state is always Loaded: the game spins until it is, so missing files stop with a named fatal at
 // Address/Size instead of a hang. TOTK_SHARED_FONTS=<dir> overrides <romfs>/../../firmware/shared-fonts.
 #define SHARED_FONT_TYPES 6
+#define SHARED_FONT_SLOTS 7
 #define BFTTF_MAGIC 0x7f9a0218u
-static const char *const font_files[SHARED_FONT_TYPES] = {
+static const char *const font_files[SHARED_FONT_SLOTS] = {
     "0-standard.bfttf", "1-chinese-simplified.bfttf", "2-chinese-simplified-extension.bfttf",
-    "3-chinese-traditional.bfttf", "4-korean.bfttf", "5-nintendo-extension.bfttf"};
-static struct { PlatMutex lock; const uint8_t *file[SHARED_FONT_TYPES]; uint64_t size[SHARED_FONT_TYPES]; } fonts;
+    "3-chinese-traditional.bfttf", "4-korean.bfttf", "5-nintendo-extension.bfttf",
+    "6-nintendo-extension-2.bfttf"};
+static struct { PlatMutex lock; const uint8_t *file[SHARED_FONT_SLOTS]; uint64_t size[SHARED_FONT_SLOTS]; } fonts;
 
 const char *ov_shared_font_dir(char *buf, size_t n) {
     const char *e = cfg_get("TOTK_SHARED_FONTS");
@@ -909,7 +912,7 @@ static const char *font_type_name(int64_t t) { return font_files[t] + 2; }
 
 static int64_t font_type(Cpu *c, const char *fn) {
     int64_t t = (int32_t)arg_x(c, 0);
-    if (t < 0 || t >= SHARED_FONT_TYPES) rt_fatal("nn::pl::%s: invalid shared font type %lld", fn, (long long)t);
+    if (t < 0 || t >= SHARED_FONT_SLOTS) rt_fatal("nn::pl::%s: invalid shared font type %lld", fn, (long long)t);
     return t;
 }
 static void ov_font_request_load(Cpu *c) { font_type(c, "RequestSharedFontLoad"); }
@@ -960,6 +963,25 @@ static const uint8_t *font_data(Cpu *c, const char *fn, int64_t t) {
         if (!f) {
             const char *explicit_dir = cfg_get("TOTK_SHARED_FONTS");
             char fb_path[PLAT_PATH_MAX];
+            if (!(explicit_dir && *explicit_dir) && (t == 5 || t == 6)) {
+                size_t ext_len = 0;
+                uint8_t *ext = ov_build_nintendo_ext_ttf(&ext_len);
+                if (ext && ext_len >= 12) {
+                    uint8_t *p = mem_kernel_alloc((uint64_t)ext_len + 8, 16);
+                    uint32_t m = BFTTF_MAGIC, sz = (uint32_t)ext_len;
+                    p[0] = (uint8_t)(m >> 24); p[1] = (uint8_t)(m >> 16); p[2] = (uint8_t)(m >> 8); p[3] = (uint8_t)m;
+                    p[4] = (uint8_t)(sz >> 24); p[5] = (uint8_t)(sz >> 16); p[6] = (uint8_t)(sz >> 8); p[7] = (uint8_t)sz;
+                    memcpy(p + 8, ext, ext_len);
+                    free(ext);
+                    fonts.size[t] = (uint64_t)ext_len;
+                    __atomic_store_n(&fonts.file[t], p, __ATOMIC_RELEASE);
+                    rt_log("pl: shared font %lld (%s) missing at %s; synthesized Nintendo extended PUA font (%llu bytes)",
+                           (long long)t, font_type_name(t), path, (unsigned long long)ext_len);
+                    plat_mutex_unlock(&fonts.lock);
+                    return p;
+                }
+                free(ext);
+            }
             if (!(explicit_dir && *explicit_dir) && find_fallback_font(t, fb_path, sizeof fb_path)) {
                 FILE *ff = fopen(fb_path, "rb");
                 if (ff) {

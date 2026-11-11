@@ -1313,6 +1313,8 @@ static uint64_t ubo_ptr(const VkExec *ex, int st, const GfxShaderRes *r) {
     uint64_t off = (uint64_t)r->handle * 4, a = 0;
     VkMemSpan sp;
     if (!u->addr || u->size < off + 8 || upd_read(ex, u->addr + off, &a, 8)) return a;
+    const uint8_t *sb = vk_usnap_bytes(u->addr + off, 8);
+    if (sb) { memcpy(&a, sb, 8); return a; }
     if (vk_mem_resolve(u->addr + off, 8, &sp)) memcpy(&a, (const void *)(uintptr_t)(u->addr + off), 8);
     return a;
 }
@@ -1519,19 +1521,28 @@ static int geometry_feedback_safe(VkExec *ex, const GfxShader *vs, const GfxShad
 }
 
 // Before the pipeline lookup of a draw with fragment shader fs: learns and restarts as the mode says. Returns the
-// sampled attachments in the feedback layout (the pipeline's feedback flag and feedback_barrier).
+// sampled attachments in the feedback layout (the pipeline's feedback flag and feedback_barrier). Even when no draw in
+// the open pass has written the attachment yet (fb_dirty == 0, e.g. read-only depth decals while depth is bound as an
+// attachment in GENERAL), Vulkan requires ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT and the pipeline feedback flag whenever
+// a shader samples an attachment of the active render pass (VUID-vkCmdDraw-None-09000), otherwise Hi-Z/ZCULL or DCC
+// compression on discrete GPUs can return stale or uncompressed values.
 static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
     int mode = vk_ctx()->feedback;
     if (mode == VK_FEEDBACK_OFF || !fs || !ex->in_pass) return 0;
     uint32_t m = feedback_scan(ex, fs);
     uint32_t d = m & ex->fb_dirty;
     if (d) vk_exec_frame.fb_draws++;
-    if (d & ~(mode == VK_FEEDBACK_LAYOUT ? ex->fbl_mask : 0)) {
-        if (mode == VK_FEEDBACK_LAYOUT)
-            for (uint32_t i = 0; i < 9; i++) {
-                const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
-                if ((d >> i & 1) && t->img && t->img->fb_usage) ((VkTexImage *)t->img)->fb_learned = 1;
+    uint32_t learn = 0;
+    if (mode == VK_FEEDBACK_LAYOUT && (m & ~ex->fbl_mask)) {
+        for (uint32_t i = 0; i < 9; i++) {
+            const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
+            if (((m & ~ex->fbl_mask) >> i & 1) && t->img && t->img->fb_usage) {
+                ((VkTexImage *)t->img)->fb_learned = 1;
+                learn |= 1u << i;
             }
+        }
+    }
+    if (learn || (d & ~(mode == VK_FEEDBACK_LAYOUT ? ex->fbl_mask : 0))) {
         vk_exec_pass_end(ex);
         vk_exec_pass_begin(ex);   // learned targets now in the feedback layout; the full barrier cleared fb_dirty
         vk_exec_frame.fb_restarts++;

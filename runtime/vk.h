@@ -247,7 +247,12 @@ void vk_mem_pick(VkMemSpan *sp);
 #define VK_MEM_PICK(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_pick(&(sp)); } while (0)
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
 // Uniform blocks as of the submit call (vk_usnap.c): vk_exec_record copies the uniform ranges a submission binds before
-// it records, ubo bindings take the copy (0: not copied, bind memory), GPU writes of the replay drop the copies they touch.
+// it records (or vk_usnap_take captures them on the submitting thread when TOTK_REPLAY_ASYNC=1), ubo bindings take the
+// copy (0: not copied, bind memory), GPU writes of the replay drop the copies they touch.
+typedef struct VkUsnap VkUsnap;
+VkUsnap *vk_usnap_take(const uint64_t *handles, int n);
+void vk_usnap_install(VkUsnap *snap);
+void vk_usnap_discard(VkUsnap *snap);
 void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
 void vk_usnap_end(uint64_t fence);
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);

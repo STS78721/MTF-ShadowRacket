@@ -30,8 +30,18 @@ static inline int nvn_gpu_only(uint64_t a) { return a - RT_GPU_VA_BASE < RT_GPU_
 // game_mem the game's storage (never touched), span the reserved window bytes, host NULL. Every other pool: mem is the
 // game's storage, the GPU address equals the guest address.
 
-typedef struct { NVNdevice *dev; pool_t *pool; int64_t off; uint64_t size; } buf_builder_t;   FITS(buf_builder_t, NVNbufferBuilder);
-typedef struct { uint32_t magic; pool_t *pool; int64_t off; uint64_t size; } buf_t;           FITS(buf_t, NVNbuffer);
+// NVN 55 fastpath layout (sdk+0x5c2c70..0x5c2df0): +0x08 dev, +0x10 pool, +0x18 off, +0x20 size.
+// Middleware using nvn_fastpath (e.g. agl dynamic uniform rings) reads and patches NVNbuffer +0x18 directly.
+typedef struct { uint64_t pad; NVNdevice *dev; pool_t *pool; int64_t off; uint64_t size; } buf_builder_t;
+typedef struct { uint32_t magic, pad; NVNdevice *dev; pool_t *pool; int64_t off; uint64_t size; } buf_t;
+FITS(buf_builder_t, NVNbufferBuilder);
+FITS(buf_t, NVNbuffer);
+_Static_assert(__builtin_offsetof(buf_builder_t, dev) == 0x08 && __builtin_offsetof(buf_builder_t, pool) == 0x10 &&
+               __builtin_offsetof(buf_builder_t, off) == 0x18 && __builtin_offsetof(buf_builder_t, size) == 0x20,
+               "NVN 55 NVNbufferBuilder fastpath layout");
+_Static_assert(__builtin_offsetof(buf_t, dev) == 0x08 && __builtin_offsetof(buf_t, pool) == 0x10 &&
+               __builtin_offsetof(buf_t, off) == 0x18 && __builtin_offsetof(buf_t, size) == 0x20,
+               "NVN 55 NVNbuffer fastpath layout");
 typedef struct {                                           // NVNmappingRequest as main passes it (0x28 bytes)
     const NVNmemoryPool *physical_pool;                    // NULL unmaps
     int64_t physical_offset, virtual_offset;
