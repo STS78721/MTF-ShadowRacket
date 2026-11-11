@@ -275,6 +275,149 @@ def _is_exefs_dir(d: Path) -> bool:
     return d.is_dir() and (d / "main").is_file() and ((d / "sdk").is_file() or (d / "main.npdm").is_file())
 
 
+def _parse_pfs0_entries(f, base: int) -> list[tuple[str, int, int]]:
+    f.seek(base)
+    hdr = f.read(16)
+    if len(hdr) < 16 or hdr[:4] != b"PFS0":
+        return []
+    _, n, str_sz, _ = struct.unpack("<4sIII", hdr)
+    entries = [struct.unpack("<QQII", f.read(24)) for _ in range(n)]
+    strs = f.read(str_sz)
+    data_base = base + 16 + 24 * n + str_sz
+    out = []
+    for off, sz, str_off, _ in entries:
+        end = strs.find(b"\0", str_off)
+        name = strs[str_off:end if end >= 0 else len(strs)].decode("ascii", "ignore")
+        if name and not name.startswith("."):
+            out.append((name, data_base + off, sz))
+    return out
+
+
+def _parse_hfs0_entries(f, base: int) -> list[tuple[str, int, int]]:
+    f.seek(base)
+    hdr = f.read(16)
+    if len(hdr) < 16 or hdr[:4] != b"HFS0":
+        return []
+    _, n, str_sz, _ = struct.unpack("<4sIII", hdr)
+    entries = [struct.unpack("<QQIIQ", f.read(32)) + (f.read(32),) for _ in range(n)]
+    strs = f.read(str_sz)
+    data_base = base + 16 + 64 * n + str_sz
+    out = []
+    for off, sz, str_off, _, _, _ in entries:
+        end = strs.find(b"\0", str_off)
+        name = strs[str_off:end if end >= 0 else len(strs)].decode("ascii", "ignore")
+        if name:
+            out.append((name, data_base + off, sz))
+    return out
+
+
+def _try_extract_plaintext_container_exefs(container: Path, out_exefs: Path) -> bool:
+    """Extract ExeFS from an already-unencrypted plaintext .xci or .nsp container (no decryption/keys)."""
+    with container.open("rb") as f:
+        magic0 = f.read(4)
+        nca_candidates = []
+        if magic0 == b"PFS0":
+            for name, off, sz in _parse_pfs0_entries(f, 0):
+                if name.endswith(".nca") and not name.endswith(".cnmt.nca"):
+                    nca_candidates.append((off, sz))
+        else:
+            f.seek(0x100)
+            if f.read(4) == b"HEAD":
+                f.seek(0x130)
+                root_off = struct.unpack("<Q", f.read(8))[0]
+                for pname, poff, _ in _parse_hfs0_entries(f, root_off):
+                    if pname == "secure":
+                        for name, off, sz in _parse_hfs0_entries(f, poff):
+                            if name.endswith(".nca") and not name.endswith(".cnmt.nca"):
+                                nca_candidates.append((off, sz))
+        for nca_off, _ in nca_candidates:
+            f.seek(nca_off)
+            hdr = f.read(0xC00)
+            if len(hdr) == 0xC00 and hdr[0x200:0x204] == b"NCA3" and hdr[0x205] == 0:
+                s0_start, _ = struct.unpack_from("<II", hdr, 0x240)
+                pfs_rel = struct.unpack_from("<Q", hdr, 0x440)[0]
+                pfs_entries = _parse_pfs0_entries(f, nca_off + s0_start * 512 + pfs_rel)
+                names = {n for n, _, _ in pfs_entries}
+                if "main" in names and ("sdk" in names or "main.npdm" in names):
+                    out_exefs.mkdir(parents=True, exist_ok=True)
+                    for fn, foff, fsz in pfs_entries:
+                        f.seek(foff)
+                        (out_exefs / fn).write_bytes(f.read(fsz))
+                    print(f"Extracted plaintext ExeFS from {container.name} -> {out_exefs}")
+                    return True
+    return False
+
+
+def nro_to_nso(nro: bytes, want_sha256: str | None = None) -> bytes:
+    """Convert an uncompressed NRO0 module image into an NSO0 binary for static lifting and runtime loading."""
+    if len(nro) < 0x80 or nro[0x10:0x14] != b"NRO0":
+        raise ValueError("Input buffer does not carry a valid NRO0 header at +0x10")
+    t_off, t_sz = struct.unpack_from("<II", nro, 0x20)
+    r_off, r_sz = struct.unpack_from("<II", nro, 0x28)
+    d_off, d_sz = struct.unpack_from("<II", nro, 0x30)
+    bss_sz = struct.unpack_from("<I", nro, 0x38)[0]
+    build_id = nro[0x40:0x60]
+    segs = [nro[t_off:t_off + t_sz], nro[r_off:r_off + r_sz], nro[d_off:d_off + d_sz]]
+    shas = b"".join(hashlib.sha256(s).digest() for s in segs)
+
+    candidates = []
+    for flags_hash in (0x00, 0x38):
+        for with_shas in (False, True):
+            hdr = bytearray(0x100)
+            struct.pack_into("<4sIII", hdr, 0x00, b"NSO0", 0, 0, flags_hash if with_shas else 0)
+            struct.pack_into("<IIII", hdr, 0x10, 0x100, t_off, t_sz, 0)
+            struct.pack_into("<IIII", hdr, 0x20, 0x100 + t_sz, r_off, r_sz, 0)
+            struct.pack_into("<IIII", hdr, 0x30, 0x100 + t_sz + r_sz, d_off, d_sz, bss_sz)
+            hdr[0x40:0x60] = build_id
+            struct.pack_into("<III", hdr, 0x60, t_sz, r_sz, d_sz)
+            if with_shas:
+                hdr[0xA0:0x100] = shas
+            candidates.append(bytes(hdr) + b"".join(segs))
+
+    if lz4_block is not None:
+        csegs = [lz4_block.compress(s, store_size=False) for s in segs]
+        for flags_val in (0x3F, 0x07):
+            hdr = bytearray(0x100)
+            struct.pack_into("<4sIII", hdr, 0x00, b"NSO0", 0, 0, flags_val)
+            c0 = 0x100
+            c1 = c0 + len(csegs[0])
+            c2 = c1 + len(csegs[1])
+            struct.pack_into("<IIII", hdr, 0x10, c0, t_off, t_sz, 1)
+            struct.pack_into("<IIII", hdr, 0x20, c1, r_off, r_sz, 1)
+            struct.pack_into("<IIII", hdr, 0x30, c2, d_off, d_sz, bss_sz)
+            hdr[0x40:0x60] = build_id
+            struct.pack_into("<III", hdr, 0x60, len(csegs[0]), len(csegs[1]), len(csegs[2]))
+            if flags_val & 0x38:
+                hdr[0xA0:0x100] = shas
+            candidates.append(bytes(hdr) + b"".join(csegs))
+
+    if want_sha256:
+        for cand in candidates:
+            if hashlib.sha256(cand).hexdigest() == want_sha256:
+                return cand
+    return candidates[1]
+
+
+def _match_tracked_expected(exefs: Path, title_id: str) -> dict | None:
+    data_dir = ROOT / "tools" / "data"
+    if not data_dir.is_dir():
+        return None
+    main_sha = hashlib.sha256((exefs / "main").read_bytes()).hexdigest() if (exefs / "main").is_file() else ""
+    tid_match = None
+    for p in sorted(data_dir.glob("expected-*.json")):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        ver = p.stem.removeprefix("expected-")
+        ex_shas = d.get("exefs_sha256", {})
+        if main_sha and ex_shas.get("main") == main_sha:
+            return {"ver": ver, "data": d}
+        if title_id and d.get("title_id", "").upper() == title_id.upper():
+            tid_match = {"ver": ver, "data": d}
+    return tid_match
+
+
 def discover_game_folder(folder: Path) -> dict:
     """Auto-discover ExeFS, RomFS (packed or loose), short name, display name, and version key from a game directory."""
     root = folder.resolve()
@@ -303,11 +446,22 @@ def discover_game_folder(folder: Path) -> dict:
                     exefs = sub / "exefs"
                     break
     if exefs is None:
+        for pkg in sorted(list(root.glob("*.xci")) + list(root.glob("*.nsp"))):
+            if _try_extract_plaintext_container_exefs(pkg, root / "exefs"):
+                exefs = root / "exefs"
+                break
+    if exefs is None:
         sys.exit(f"Could not find an ExeFS directory (with 'main' + 'sdk'/'main.npdm') under {root}")
 
     search_roots = [exefs.parent, root] if exefs.parent != root else [root]
     romfs = None
+    romfs_loose = None
     for sr in search_roots:
+        for rname in ("romfs", "ExtractedRomFS", "base/romfs"):
+            cand = sr / rname
+            if cand.is_dir() and any(True for _ in cand.iterdir()):
+                romfs_loose = cand
+                break
         for rname in ("romfs_packed", "romfs", "ExtractedRomFS", "base/romfs"):
             cand = sr / rname
             if cand.is_dir():
@@ -316,6 +470,9 @@ def discover_game_folder(folder: Path) -> dict:
                     break
         if romfs is not None:
             break
+
+    title_id = extract_title_id(exefs) or "0400000000000000"
+    matched = _match_tracked_expected(exefs, title_id)
 
     raw_label = root.name if exefs != root else (root.parent.name if root.name.lower() == "exefs" else root.name)
     cleaned = re.sub(r"(?i)\b(pc|recomp|ns2|switch\s*2|dump|extracted)\b", " ", raw_label)
@@ -331,14 +488,25 @@ def discover_game_folder(folder: Path) -> dict:
         short = re.sub(r"[^a-z0-9]", "", "".join(words).lower())[:8]
     short = short or "ns2"
     ver = f"{short}100"
+    display_ver = "1.0.0"
+
+    if matched:
+        ver = matched["ver"]
+        md = matched["data"]
+        short = md.get("short_name") or "".join(ch for ch in ver if ch.isalpha()).lower() or short
+        display_name = md.get("display_name") or md.get("_comment", display_name).split(" ExeFS")[0]
+        display_ver = md.get("display_version", display_ver)
+
     return {
         "folder": root,
         "exefs": exefs,
         "romfs": romfs,
+        "romfs_loose": romfs_loose,
         "short": short,
         "name": display_name,
         "ver": ver,
-        "title_id": extract_title_id(exefs) or "0400000000000000",
+        "display": display_ver,
+        "title_id": title_id,
     }
 
 
@@ -761,6 +929,18 @@ def _resolve_folder_args(args) -> dict | None:
             args.short = disc["short"]
         if hasattr(args, "name") and not getattr(args, "name", None):
             args.name = disc["name"]
+        if hasattr(args, "display") and getattr(args, "display", "1.0.0") == "1.0.0" and disc.get("display"):
+            args.display = disc["display"]
+        folder_root = disc["folder"]
+        if not folder_root.is_relative_to(ROOT):
+            if hasattr(args, "gen") and not getattr(args, "gen", None):
+                args.gen = folder_root / "generated" / args.ver
+            if hasattr(args, "out") and not getattr(args, "out", None):
+                args.out = folder_root / "build" / args.ver
+            if hasattr(args, "pack_out") and not getattr(args, "pack_out", None):
+                args.pack_out = folder_root / "romfs_packed"
+            if hasattr(args, "profile") and not getattr(args, "profile", None):
+                args.profile = folder_root / "profile"
         return disc
     return None
 
@@ -867,6 +1047,20 @@ def cmd_init(args):
         _ensure_packed_romfs(args.romfs, args.ver, args.pack_out)
 
 
+def _romfs_has_nrr(romfs: Path | None, disc: dict | None) -> bool:
+    for cand in filter(None, [disc.get("romfs_loose") if disc else None, romfs, romfs.parent / "romfs" if romfs else None]):
+        if cand.is_dir() and (cand / ".nrr").is_dir():
+            return True
+    return False
+
+
+def _sorted_lift_mods(exefs: Path) -> list[str]:
+    mods = [p.name for p in sorted(exefs.iterdir()) if p.is_file() and p.name not in ("main.npdm", "rtld") and not p.name.startswith(".")]
+    order = {"main": 0, "sdk": 99}
+    mods.sort(key=lambda m: (order.get(m, 10), m))
+    return mods
+
+
 def cmd_build(args):
     disc = _resolve_folder_args(args)
     if not args.exefs or not args.ver:
@@ -889,39 +1083,85 @@ def cmd_build(args):
             patches.write_text(f"# Auto-created patch table for {args.ver}\n", encoding="utf-8")
 
     tracked_exp = ROOT / "tools" / "data" / f"expected-{args.ver}.json"
-    if tracked_exp.is_file():
+    tracked_meta = json.loads(tracked_exp.read_text(encoding="utf-8")) if tracked_exp.is_file() else {}
+    short = (getattr(args, "short", None) or tracked_meta.get("short_name")
+             or (disc["short"] if disc else None) or "".join(ch for ch in args.ver if ch.isalpha()).lower() or "ns2")
+    disp_name = (getattr(args, "name", None) or tracked_meta.get("display_name")
+                 or (disc["name"] if disc else None) or args.ver)
+    disp_ver = tracked_meta.get("display_version") or getattr(args, "display", "1.0.0")
+
+    romfs = _ensure_packed_romfs(args.romfs, args.ver, getattr(args, "pack_out", None))
+
+    # Automatic runtime NRO0 -> subsdk0 capture when .nrr is present and subsdk0 has not been extracted yet
+    if _romfs_has_nrr(args.romfs, disc) and not (args.exefs / "subsdk0").is_file():
+        print("Detected RomFS .nrr without ExeFS subsdk0; running headless NRO capture pass...")
+        pre_mods = _sorted_lift_mods(args.exefs)
+        subprocess.run([sys.executable, str(ROOT / "recomp" / "gen.py"),
+                        "--exefs", str(args.exefs), "--out", str(gen_dir),
+                        "--modules", ",".join(pre_mods), "--patches", str(patches)], check=True)
+        pre_exp = _build_expected_manifest(args.exefs, short, disp_name, disp_ver)
+        pre_exp_path = out_dir / f"expected-{args.ver}-prenro.json"
+        pre_exp_path.write_text(json.dumps(pre_exp, indent=2) + "\n", encoding="utf-8")
+        pre_cmd = [sys.executable, str(ROOT / "tools" / "build_game.py"),
+                   "--version", args.ver, "--gen", str(gen_dir), "--out", str(out_dir),
+                   "--exefs", str(args.exefs), "--expected", str(pre_exp_path)]
+        if romfs:
+            pre_cmd += ["--romfs", str(romfs)]
+        if getattr(args, "profile", None):
+            pre_cmd += ["--profile", str(args.profile)]
+        if getattr(args, "jobs", None):
+            pre_cmd += ["--jobs", str(args.jobs)]
+        subprocess.run(pre_cmd, check=True)
+
+        exe_path = out_dir / (f"{short}.exe" if os.name == "nt" else short)
+        tmp_nro = out_dir / "captured_runtime.nro"
+        tmp_nro.unlink(missing_ok=True)
+        env = dict(os.environ)
+        env["TOTK_GPU"] = "null"
+        env["NS2_DUMP_NRO"] = str(tmp_nro)
+        subprocess.run([str(exe_path), "--seconds", "8"], cwd=str(out_dir), env=env, check=False)
+        if tmp_nro.is_file():
+            want_sub_sha = tracked_meta.get("exefs_sha256", {}).get("subsdk0")
+            nso_bytes = nro_to_nso(tmp_nro.read_bytes(), want_sha256=want_sub_sha)
+            (args.exefs / "subsdk0").write_bytes(nso_bytes)
+            shutil.rmtree(gen_dir / "sdk", ignore_errors=True)
+            tmp_nro.unlink(missing_ok=True)
+            pre_exp_path.unlink(missing_ok=True)
+            got_sha = hashlib.sha256(nso_bytes).hexdigest()
+            print(f"Synthesized {args.exefs / 'subsdk0'} ({len(nso_bytes)} bytes, sha256={got_sha[:16]}...)")
+        else:
+            print("Warning: headless pre-pass did not capture a runtime NRO; continuing with static ExeFS modules.")
+
+    actual_exp = _build_expected_manifest(args.exefs, short, disp_name, disp_ver)
+    if tracked_exp.is_file() and tracked_meta.get("exefs_sha256") == actual_exp["exefs_sha256"]:
         exp_path = tracked_exp
-        exp_meta = json.loads(exp_path.read_text(encoding="utf-8"))
+        exp_meta = tracked_meta
     else:
-        short = getattr(args, "short", None) or (disc["short"] if disc else None) or "".join(ch for ch in args.ver if ch.isalpha()).lower() or "ns2"
-        disp_name = getattr(args, "name", None) or (disc["name"] if disc else None) or args.ver
-        exp_meta = _build_expected_manifest(args.exefs, short, disp_name, getattr(args, "display", "1.0.0"))
+        exp_meta = actual_exp
         exp_path = out_dir / f"expected-{args.ver}.json"
         exp_path.write_text(json.dumps(exp_meta, indent=2) + "\n", encoding="utf-8")
 
-    mods = [p.name for p in sorted(args.exefs.iterdir()) if p.is_file() and p.name not in ("main.npdm", "rtld") and not p.name.startswith(".")]
-    order = {"main": 0, "sdk": 99}
-    mods.sort(key=lambda m: (order.get(m, 10), m))
+    mods = _sorted_lift_mods(args.exefs)
     print(f"Lifting modules {mods} from {args.exefs} -> {gen_dir}...")
     subprocess.run([sys.executable, str(ROOT / "recomp" / "gen.py"),
                     "--exefs", str(args.exefs), "--out", str(gen_dir),
                     "--modules", ",".join(mods), "--patches", str(patches)], check=True)
-
-    romfs = _ensure_packed_romfs(args.romfs, args.ver, getattr(args, "pack_out", None))
 
     cmd = [sys.executable, str(ROOT / "tools" / "build_game.py"),
            "--version", args.ver, "--gen", str(gen_dir), "--out", str(out_dir),
            "--exefs", str(args.exefs), "--expected", str(exp_path)]
     if romfs:
         cmd += ["--romfs", str(romfs)]
+    if getattr(args, "profile", None):
+        cmd += ["--profile", str(args.profile)]
     if getattr(args, "jobs", None):
         cmd += ["--jobs", str(args.jobs)]
     if getattr(args, "prepare_shaders", False):
         cmd.append("--prepare-shaders")
     subprocess.run(cmd, check=True)
 
-    short_name = exp_meta.get("short_name") or "ns2"
-    display_name = exp_meta.get("display_name") or args.ver
+    short_name = exp_meta.get("short_name") or short or "ns2"
+    display_name = exp_meta.get("display_name") or disp_name or args.ver
     write_default_ini(out_dir / f"{short_name}.ini", display_name)
 
     subprocess.run([sys.executable, str(ROOT / "tools" / "check_content.py")], check=True)
@@ -980,6 +1220,7 @@ def main():
     p_bld.add_argument("--pack-out", type=Path)
     p_bld.add_argument("--gen", type=Path)
     p_bld.add_argument("--out", type=Path)
+    p_bld.add_argument("--profile", type=Path)
     p_bld.add_argument("--jobs", type=int)
     p_bld.add_argument("--prepare-shaders", action="store_true")
 
@@ -994,6 +1235,7 @@ def main():
     p_port.add_argument("--pack-out", type=Path)
     p_port.add_argument("--gen", type=Path)
     p_port.add_argument("--out", type=Path)
+    p_port.add_argument("--profile", type=Path)
     p_port.add_argument("--jobs", type=int)
     p_port.add_argument("--skip-scan", action="store_true", help="Skip pre-flight scan report")
     p_port.add_argument("--save-expected", action="store_true", help="Also write expected-<ver>.json and patches-<ver>.txt into tracked repo directories")

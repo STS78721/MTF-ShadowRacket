@@ -52,21 +52,21 @@ static void check_txd_routing(unsigned dest, unsigned mask, unsigned high, unsig
     std::array<unsigned, 256> regs{}, expected{};
     for (unsigned r = 0; r < regs.size(); ++r) regs[r] = expected[r] = 1000 + r;
     const bool enabled = predicate == 7 || (predicate == 0 ? p0 : !p0);
-    const unsigned channels = static_cast<unsigned>(std::popcount(mask));
-    // Note: in Ampere 0xb6c lowering, Maxwell TXD emits mask=15 (all 4 RGBA components) and routes the first
-    // `channels` components into (dest, dest+1, high, high+1), matching Eglantine's generalized 0xb6c lowering.
     if (enabled) {
-        for (unsigned i = 0; i < channels; ++i) {
-            if (i >= 2 && high == 255) break;
-            const unsigned to = i < 2 ? dest + i : high + (i - 2);
-            expected[to] = 11 * (i + 1);
+        unsigned out_idx = 0;
+        for (unsigned c = 0; c < 4; ++c) {
+            if (!((mask >> c) & 1u)) continue;
+            if (out_idx >= 2 && high == 255) break;
+            const unsigned to = out_idx < 2 ? dest + out_idx : high + (out_idx - 2);
+            expected[to] = 11 * (c + 1);
+            ++out_idx;
         }
     }
     unsigned textures = 0;
     for (const auto op : result.instructions) {
         if ((op >> 56) == 0xde) {
             ++textures;
-            CHECK(((op >> 31) & 15) == 15);
+            CHECK(((op >> 31) & 15) == mask);
             CHECK(((op >> 28) & 7) == (dimension == 5 ? 3u : 2u));
             CHECK(((op >> 8) & 255) == 32);
             CHECK(((op >> 20) & 255) == 40);
@@ -74,8 +74,11 @@ static void check_txd_routing(unsigned dest, unsigned mask, unsigned high, unsig
             CHECK(((op >> 16) & 15) == predicate);
             if (enabled) {
                 unsigned dst = op & 255;
-                for (unsigned component = 0; component < 4; ++component)
-                    regs[dst + component] = 11 * (component + 1);
+                unsigned out_idx = 0;
+                for (unsigned c = 0; c < 4; ++c) {
+                    if (!((mask >> c) & 1u)) continue;
+                    regs[dst + out_idx++] = 11 * (c + 1);
+                }
             }
         } else if ((op >> 48) == 0x5c98) {
             CHECK(((op >> 16) & 15) == predicate);
@@ -83,10 +86,7 @@ static void check_txd_routing(unsigned dest, unsigned mask, unsigned high, unsig
         }
     }
     CHECK(textures == 1);
-    const bool consecutive = channels <= 2 || high == dest + 2;
-    const unsigned check_limit = consecutive ? 244u : 248u; // consecutive 2-ch TXD with mask=15 writes dst..dst+3 on Maxwell when dst+2..3 are unused only if consecutive? Wait: check non-scratch!
-    for (unsigned r = 0; r < check_limit; ++r) {
-        if (consecutive && channels < 4 && r >= dest + channels && r < dest + 4) continue;
+    for (unsigned r = 0; r < 248u; ++r) {
         CHECK(regs[r] == expected[r]);
     }
 }
@@ -229,6 +229,29 @@ static void check_tanh_and_capture() {
     bits(frnd_cbuf, 75, 2, 2);
     bits(frnd_cbuf, 84, 2, 2);
     CHECK(bool(LowerToMaxwell(std::array{isbewr, frnd_cbuf, make_exit()}, false)));
+
+    // 0xb60 TEX Array2D + LB + DC (5 operands packed 4+1 across Ra=R20..R23, Rb=R32)
+    // and with AOFFI added (6 operands packed 4+2 across Ra=R20..R23, Rb=R32..R33).
+    for (bool with_aoffi : {false, true}) {
+        Instruction tex_shadow{};
+        tex_shadow.words = {0x14167b60U, 0xa0801020U, 0x051e41ffU | (with_aoffi ? 0x1000U : 0U), 0x00014200U};
+        const auto shadow_low = LowerToMaxwell(std::array{tex_shadow, make_exit()}, false);
+        CHECK(bool(shadow_low));
+        if (shadow_low) {
+            std::array<unsigned, 256> copy_src{};
+            for (u64 w : shadow_low.instructions) {
+                if ((w >> 48) == 0x5c98) {
+                    copy_src[w & 0xff] = unsigned((w >> 20) & 0xff);
+                }
+            }
+            CHECK(copy_src[250] == 20 && copy_src[251] == 21 && copy_src[252] == 22);
+            if (!with_aoffi) {
+                CHECK(copy_src[246] == 23 && copy_src[247] == 32 && copy_src[248] == 0);
+            } else {
+                CHECK(copy_src[246] == 23 && copy_src[247] == 32 && copy_src[248] == 33);
+            }
+        }
+    }
 }
 
 int main() {

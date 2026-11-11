@@ -762,18 +762,3 @@ HOST_OVERRIDE("_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorERKj
 HOST_OVERRIDE("_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorES2_RKj", ov_controller_color_dual);
 HOST_OVERRIDE("_ZN2nn3hid20ControllerSupportArg10SetDefaultEv", ov_controller_support_arg_default);
 HOST_OVERRIDE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleEPjRKjNS0_17NpadJoyDeviceTypeE", ov_hid_zero);
-
-HOST_OVERRIDE("_ZN2nn3hid15VibrationTarget24SetVibrationDeviceHandleERKNS0_21VibrationDeviceHandleE", ov_hid_noop);
-HOST_OVERRIDE("_ZN2nn3hid15VibrationTarget26UnsetVibrationDeviceHandleEv", ov_hid_noop);
-HOST_OVERRIDE("_ZN2nn3hid23VibrationNodeConnection10DisconnectEv", ov_hid_noop);
-HOST_OVERRIDE("_ZN2nn3hid23VibrationNodeConnection13SetModulationERKNS0_19VibrationModulationE", ov_hid_noop);
-HOST_OVERRIDE("_ZN2nn3hid13VibrationNode6UpdateEv", ov_hid_noop);
-HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer4PlayEv", ov_hid_noop);
-HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer4StopEv", ov_hid_noop);
-HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer4LoadEPKvm", ov_hid_zero);
-HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer6UnloadEv", ov_hid_noop);
-HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer7SetLoopEb", ov_hid_noop);
-HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer15SetLoopIntervalEi", ov_hid_noop);
-HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer18SetCurrentPositionEi", ov_hid_noop);
-HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayer20OnNextSampleRequiredEPNS0_14VibrationValueEPNS_4util13IntrusiveListINS0_23VibrationNodeConnectionENS4_27IntrusiveListBaseNodeTraitsIS6_S6_EEEE", ov_hid_zero);
-HOST_OVERRIDE("_ZN2nn3hid15VibrationPlayerD2Ev", ov_hid_noop);

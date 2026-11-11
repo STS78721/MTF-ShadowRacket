@@ -1365,11 +1365,23 @@ static void ov_ro_load_module(Cpu *c) {
     rt_log("ro: LoadModule(mod=%#llx, image=%#llx, buffer=%#llx, size=%llu, flag=%d)",
            (unsigned long long)mod, (unsigned long long)image, (unsigned long long)buffer,
            (unsigned long long)size, flag);
-    if (image && plat_mem_readable(image + 0x10, 0x10)) {
+    if (image && plat_mem_readable(image + 0x10, 0x30)) {
         uint32_t magic = *(const uint32_t *)(uintptr_t)(image + 0x10);
         uint32_t nro_size = *(const uint32_t *)(uintptr_t)(image + 0x18);
         rt_log("ro: NRO header magic: 0x%08x, nro_size=%u bytes (%.2f MiB)",
                magic, nro_size, (double)nro_size / (1024.0 * 1024.0));
+        const char *dump_path = getenv("NS2_DUMP_NRO");
+        if (dump_path && *dump_path && magic == 0x304f524eu &&
+            nro_size >= 0x100u && nro_size <= (256u << 20) &&
+            plat_mem_readable(image, nro_size)) {
+            FILE *f = fopen(dump_path, "wb");
+            if (f) {
+                size_t wrote = fwrite((const void *)(uintptr_t)image, 1, nro_size, f);
+                fclose(f);
+                rt_log("ro: captured runtime NRO (%zu bytes) -> %s", wrote, dump_path);
+                if (wrote == nro_size) exit(0);
+            }
+        }
     }
     ret_x(c, 0);
 }
@@ -1747,41 +1759,6 @@ static void ov_settings_lang_eq(Cpu *c) {
     ret_x(c, strncmp(codes[*lang], code, 8) == 0 ? 1 : 0);
 }
 
-static volatile uint32_t s_audio_autotune;
-static volatile uint32_t s_audio_dev_vol_bits = 0x3f800000u; // 1.0f
-static void ov_audio_set_autotune(Cpu *c) { __atomic_store_n(&s_audio_autotune, (uint32_t)(arg_x(c, 0) & 1), __ATOMIC_RELAXED); }
-static void ov_audio_get_autotune(Cpu *c) { ret_x(c, __atomic_load_n(&s_audio_autotune, __ATOMIC_RELAXED)); }
-static void ov_audio_list_out_devs(Cpu *c) {
-    char *names = arg_p(c, 0);
-    int32_t n = (int32_t)arg_x(c, 1);
-    if (n <= 0 || !names) { ret_x(c, 0); return; }
-    memset(names, 0, 0x100);
-    memcpy(names, "AudioBuiltInSpeakerOutput", sizeof "AudioBuiltInSpeakerOutput");
-    ret_x(c, 1);
-}
-static void ov_audio_active_out_dev(Cpu *c) {
-    char *name = arg_p(c, 0);
-    if (name) {
-        memset(name, 0, 0x100);
-        memcpy(name, "AudioBuiltInSpeakerOutput", sizeof "AudioBuiltInSpeakerOutput");
-    }
-}
-static void ov_audio_out_channels(Cpu *c) { ret_x(c, 2); }
-static void ov_audio_set_dev_vol(Cpu *c) {
-    uint32_t bits = (uint32_t)c->v[0];
-    __atomic_store_n(&s_audio_dev_vol_bits, bits, __ATOMIC_RELAXED);
-}
-static void ov_audio_get_dev_vol(Cpu *c) {
-    c->v[0] = (u128)__atomic_load_n(&s_audio_dev_vol_bits, __ATOMIC_RELAXED);
-}
-static void ov_audio_acquire_out_notif(Cpu *c) {
-    static volatile int32_t s_acquired;
-    if (plat_xchg32(&s_acquired, 1)) { ret_x(c, 0x499u); return; }
-    uint64_t ev = arg_x(c, 0);
-    if (ev) kern_bind_system_event(c, ev, 0);
-    ret_x(c, 0);
-}
-
 static void ov_stpl_mem_size(Cpu *c) { ret_x(c, 0x1000); }
 static void ov_stpl_conn_event(Cpu *c) {
     static uint64_t s_stpl_ev[16] = {0};
@@ -1978,17 +1955,6 @@ HOST_OVERRIDE("_ZN2nn5prepo5ArrayC1Ev", ov_noop);
 HOST_OVERRIDE("_ZN2nn5prepo5Array9SetBufferEPvm", ov_ret_zero);
 HOST_OVERRIDE("_ZN2nn5prepo5Array3AddEl", ov_ret_zero);
 HOST_OVERRIDE("_ZN2nn5prepo5Array3AddEf", ov_ret_zero);
-
-// nn::audio output device & auto-tune queries (Switch 2 SDK 20)
-HOST_OVERRIDE("_ZN2nn5audio40SetDeviceOutputVolumeAutoTuneModeEnabledEb", ov_audio_set_autotune);
-HOST_OVERRIDE("_ZN2nn5audio39IsDeviceOutputVolumeAutoTuneModeEnabledEv", ov_audio_get_autotune);
-HOST_OVERRIDE("_ZN2nn5audio25ListAudioOutputDeviceNameEPNS0_15AudioDeviceNameEi", ov_audio_list_out_devs);
-HOST_OVERRIDE("_ZN2nn5audio30GetActiveAudioOutputDeviceNameEPNS0_15AudioDeviceNameE", ov_audio_active_out_dev);
-HOST_OVERRIDE("_ZN2nn5audio41GetActiveAudioDeviceChannelCountForOutputEv", ov_audio_out_channels);
-HOST_OVERRIDE("_ZN2nn5audio26SetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameEf", ov_audio_set_dev_vol);
-HOST_OVERRIDE("_ZN2nn5audio26GetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameE", ov_audio_get_dev_vol);
-HOST_OVERRIDE("_ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11SystemEventE", ov_audio_acquire_out_notif);
-HOST_OVERRIDE("_ZN2nn5audio26CreateAudioRendererManagerEb", ov_ret_zero);
 
 // nn::streamplay (GameShare / GameChat streaming: idle host)
 HOST_OVERRIDE("_ZN2nn10streamplay21GetRequiredMemorySizeENS0_14StreamPlayTypeENS0_13StreamingModeEi", ov_stpl_mem_size);

@@ -1,5 +1,7 @@
 {
   "_comment": "Mario Tennis Fever 1.1.1 ExeFS. Hashes only; no game data.",
+  "short_name": "mtf",
+  "display_name": "Mario Tennis Fever",
   "title_id": "0400D4201C6EA000",
   "display_version": "1.1.1",
   "exefs_sha256": {
@@ -7,6 +9,6 @@
     "main.npdm": "6171756a59bf3322620b7f8fe907b51cfe925b14109248cec40cdaea11b62945",
     "rtld": "f3a05703aadc0eabecb1af71522e9be358d797f2b4489028d09c41fe220ebd7c",
     "sdk": "e8a2c5852508f330663d8ad639d4c20609e636c1bc6d5fcf7b01cd4bd3e0428f",
-    "subsdk0": "b9886d39906d65c0fcb9ccd3805f3388ff34a81d35a8d11d555cf1a24dc5cbf4"
+    "subsdk0": "3cf8c4dbaccaf1ed35295b64eb7698863577ca9b8d88e5ef13d360fa713b0d8e"
   }
 }
