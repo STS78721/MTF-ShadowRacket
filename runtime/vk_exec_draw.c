@@ -749,8 +749,13 @@ static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, 
     VkImageViewUsageCreateInfo use = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
                                       .usage = img->block_views ? VK_IMAGE_USAGE_SAMPLED_BIT
                                                                 : (img->usage & ~VK_IMAGE_USAGE_STORAGE_BIT)};
-    // Restrict view usage for block-view BC images or sampled views over STORAGE images (sRGB views lack STORAGE_IMAGE_BIT).
+    // Restrict view usage for block-view BC images, sampled views over STORAGE images (sRGB views lack STORAGE_IMAGE_BIT),
+    // or format-reinterpreted storage views (e.g. R32_UINT over R8G8B8A8_SRGB, where SAMPLED/ATTACHMENT bits may be invalid).
     if (img->block_views || (!storage && (img->usage & VK_IMAGE_USAGE_STORAGE_BIT))) ci.pNext = &use;
+    else if (storage && fmt != img->format) {
+        use.usage = VK_IMAGE_USAGE_STORAGE_BIT;
+        ci.pNext = &use;
+    }
     VkImageView view;
     if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS) return VK_NULL_HANDLE;
     ViewNode *n = malloc(sizeof *n);
@@ -1078,10 +1083,10 @@ static void count_use(int cls, int use, uint64_t n) {
 
 // A buffer descriptor for [addr, addr+size) of guest memory: its backing (a pool's VRAM mirror when it has one) when
 // aligned, a copy in transient memory when the backing is host memory with an unaligned offset. 0 when neither works.
-// written: the shader stores into it (a mirror's range goes back to guest memory at the end of the submission).
+// written: the shader stores into it; writeback: schedule a mirror -> host copy at the end of the submission.
 // direct_only: guarded aliases must share the real backing; a transient copy would lose writes and alias coherence.
 static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, uint64_t max, int use, int written,
-                      int direct_only, VkDescriptorBufferInfo *out) {
+                      int writeback, int direct_only, VkDescriptorBufferInfo *out) {
     VkMemSpan sp;
     if (!addr || !vk_mem_resolve(addr, 1, &sp)) return 0;
     uint64_t n = size && size < sp.avail ? size : sp.avail;
@@ -1090,7 +1095,7 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     if (sp.offset % align == 0) {
         VK_MEM_USE(sp);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
-        if (written && !direct_only) vk_mem_gpu_wrote(&sp, n);
+        if (writeback) vk_mem_gpu_wrote(&sp, n);
         if (written) vk_usnap_drop(addr, n);
         count_use(sp.cls, use, n);
         VK_MEM_BOUND(sp);
@@ -1202,7 +1207,7 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         uint32_t len, c1;
         if (find_stage(ex->prog, st, &ctl, &code, &len)) {
             memcpy(&c1, ctl + 0x700, 4);
-            if (c1 < len && bind_range(ex, (uint64_t)(uintptr_t)code + c1, len - c1, align, max, VK_MUSE_UBO, 0, 0, &bi))
+            if (c1 < len && bind_range(ex, (uint64_t)(uintptr_t)code + c1, len - c1, align, max, VK_MUSE_UBO, 0, 0, 0, &bi))
                 return bi;
             if (c1 < len && len - c1 <= max) {   // NVN 2 stages: the lowered code (nvn2_lower.cpp) is host memory
                 VkBuffer b;
@@ -1238,7 +1243,7 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
             count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, bi.range);
             return bi;
         }
-        if (bind_range(ex, b->addr, b->size, align, max, VK_MUSE_UBO, 0, 0, &bi)) return bi;
+        if (bind_range(ex, b->addr, b->size, align, max, VK_MUSE_UBO, 0, 0, 0, &bi)) return bi;
     }
     return zero_info(max);
 }
@@ -1352,6 +1357,15 @@ static p_bind_buf guarded_storage_binding(const VkExec *ex, int st, const GfxSha
     return b;
 }
 
+// Explicit NVN 2 compute storage-buffer table slots (c0 part 2..3) carry the exact byte size passed to
+// nvnCommandBufferBindStorageBuffer, unlike speculative root/c1/UBO pointer candidates whose unbounded pool remainder
+// would overwrite adjacent CPU-written buffers if mirrored back to host RAM.
+static int guarded_is_declared_ssbo(int st, const GfxShaderRes *r, const p_bind_buf *b) {
+    if (st != NVN_STAGE_CS || !c0_lay || r->cbuf_slot != 0 || !b || !b->size) return 0;
+    size_t sb = nvn2_c0_part(c0_lay, 2), end = nvn2_c0_part(c0_lay, 3), off = (size_t)r->handle * 4;
+    return off >= sb && off < end && (off - sb) % 16 == 0;
+}
+
 static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *r, int written) {
     if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
     uint64_t max = LIM.sbo_max, align = LIM.sbo_align;
@@ -1367,9 +1381,10 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
     if (b) {
         // vk_caps.c: shaders translated for sbuf_align address the buffer from its address rounded down to it.
         uint64_t lead = vk_caps.sbuf_align ? b->addr & (vk_caps.sbuf_align - 1) : 0;
+        int writeback = written && (!guarded || guarded_is_declared_ssbo(st, r, b));
         if (bind_range(ex, b->addr - lead, b->size ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
-                       written, guarded, &bi)) {
-            if (written && !guarded && bi.buffer != VK_NULL_HANDLE) {
+                       written, writeback, guarded, &bi)) {
+            if (writeback && bi.buffer != VK_NULL_HANDLE) {
                 note_written(ex, b->addr - lead, bi.range);
                 const uint8_t *ctl, *code;
                 uint32_t len;

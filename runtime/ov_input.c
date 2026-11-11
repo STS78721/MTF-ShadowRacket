@@ -631,6 +631,22 @@ static void ov_hid_zero(Cpu *c) { ret_x(c, 0); }
 static void ov_nmouse_types(Cpu *c) {
     uint32_t *out = arg_p(c, 0);
     if (out) *out = 0;
+    ret_x(c, 0);
+}
+static void ov_nmouse_merged_handle(Cpu *c) {
+    uint64_t *out = arg_p(c, 0);
+    if (out) *out = 0;
+    ret_x(c, 0);
+}
+static void ov_nmouse_states(Cpu *c) {
+    int32_t *count = arg_p(c, 0);
+    if (count) *count = 0;
+    ret_x(c, 0);
+}
+static void ov_jcms_state(Cpu *c) {
+    void *out = arg_p(c, 0);
+    if (out) memset(out, 0, 32);
+    ret_x(c, 0);
 }
 
 HOST_OVERRIDE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", ov_six_start);
@@ -641,15 +657,23 @@ HOST_OVERRIDE("_ZN2nn3hid29IsOunceVibrationDeviceMountedERKNS0_21VibrationDevice
 HOST_OVERRIDE("_ZN2nn3hid22GetSensorFusionHandlesEPNS0_18SensorFusionHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", ov_hid_zero);
 HOST_OVERRIDE("_ZN2nn3hid20FinalizeSensorFusionEv", ov_hid_noop);
 HOST_OVERRIDE("_ZN2nn3hid16GetNmouseHandlesEPNS0_12NmouseHandleEij", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid21GetMergedNmouseHandleEPNS0_12NmouseHandleE", ov_nmouse_merged_handle);
+HOST_OVERRIDE("_ZN2nn3hid15GetNmouseStatesEPiPNS0_11NmouseStateEiNS0_12NmouseHandleE", ov_nmouse_states);
+HOST_OVERRIDE("_ZN2nn3hid14GetNmouseStateEPNS0_11NmouseStateENS0_12NmouseHandleE", ov_jcms_state);
 HOST_OVERRIDE("_ZN2nn3hid16GetNmouseTypeSetEPNS_4util10BitFlagSetILi32ENS0_10NmouseTypeEEENS0_12NmouseHandleE", ov_nmouse_types);
-HOST_OVERRIDE("_ZN2nn3hid16InitializeNmouseEPvmii", ov_hid_noop);
-HOST_OVERRIDE("_ZN2nn3hid16InitializeNmouseEPvmiiNS0_17NmousePointerTypeE", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid26SetMergedNmouseSourceTypesENS_4util10BitFlagSetILi32ENS0_10NmouseTypeEEE", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid32SetNmouseButtonConfigJoyLeftJcmsERKNS0_29NmouseButtonConfigJoyLeftJcmsE", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid33SetNmouseButtonConfigJoyRightJcmsERKNS0_30NmouseButtonConfigJoyRightJcmsE", ov_hid_noop);
+HOST_OVERRIDE("_ZN2nn3hid16InitializeNmouseEPvmii", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid16InitializeNmouseEPvmiiNS0_17NmousePointerTypeE", ov_hid_zero);
 HOST_OVERRIDE("_ZN2nn3hid6detail16InitializeNmouseEPvmiiNS0_17NmousePointerTypeE", ov_hid_zero);
 HOST_OVERRIDE("_ZN2nn3hid14FinalizeNmouseEv", ov_hid_noop);
 HOST_OVERRIDE("_ZN2nn3hid6detail14FinalizeNmouseEv", ov_hid_noop);
 HOST_OVERRIDE("_ZN2nn3hid14InitializeJcmsEPvm", ov_hid_noop);
 HOST_OVERRIDE("_ZN2nn3hid6detail14InitializeJcmsEPvm", ov_hid_zero);
 HOST_OVERRIDE("_ZN2nn3hid13GetJcmsHandleERKjRKNS0_8JcmsTypeE", ov_hid_zero);
+HOST_OVERRIDE("_ZN2nn3hid12GetJcmsStateEPNS0_9JcmsStateERKNS0_10JcmsHandleE", ov_jcms_state);
+HOST_OVERRIDE("_ZN2nn3hid13GetJcmsStatesEPNS0_9JcmsStateEiRKNS0_10JcmsHandleE", ov_hid_zero);
 HOST_OVERRIDE("_ZN2nn3hid9StartJcmsERKNS0_10JcmsHandleE", ov_hid_zero);
 HOST_OVERRIDE("_ZN2nn3hid8StopJcmsERKNS0_10JcmsHandleE", ov_hid_noop);
 HOST_OVERRIDE("_ZN2nn3hid12FinalizeJcmsEv", ov_hid_noop);

@@ -24,6 +24,28 @@ NVN_API(nvnQueueGetTotalRayTracingMemoryUsed) { ret_x(c, 0); }
 // ---- Device
 // int nvnDeviceGetFlags(const NVNdevice *d): the flags the device was initialized with
 NVN_API(nvnDeviceGetFlags) { ret_x(c, ((const dev_t_ *)arg_p(c, 0))->flags); }
+// size_t nvnDeviceGetCommandHandleMemorySize(const NVNdevice *d): host command handles fit in 64 bytes
+NVN_API(nvnDeviceGetCommandHandleMemorySize) { ret_x(c, 64); }
+// NVNbufferAddress nvnDeviceGetUniformBufferHandle(const NVNdevice *d, NVNbufferAddress addr, size_t size): GPU address
+NVN_API(nvnDeviceGetUniformBufferHandle) { ret_x(c, arg_x(c, 1)); }
+// Device command buffer builder/handle stubs (Begin/End/SubmitDeviceCommands are NVN2_NOT_RECORDED below)
+NVN_API(nvnDeviceCommandBufferSetDefaults) { (void)c; }
+NVN_API(nvnDeviceCommandBufferSetDevice) { (void)c; }
+NVN_API(nvnDeviceCommandBufferSetStorage) { (void)c; }
+NVN_API(nvnDeviceCommandBufferSetCommandMemorySize) { (void)c; }
+NVN_API(nvnDeviceCommandBufferSetComputeMemorySize) { (void)c; }
+NVN_API(nvnDeviceCommandBufferGetHandle) { ret_x(c, 0); }
+// Device-level ray-tracing acceleration structure helpers (ray tracing is off on the host; zero memory requirements)
+NVN_API(nvnDeviceCalculateAccelerationStructureMemoryRequirements) {
+    static volatile int32_t logged;
+    if (!__atomic_exchange_n(&logged, 1, __ATOMIC_RELAXED))
+        rt_log("nvn2: nvnDeviceCalculateAccelerationStructureMemoryRequirements ignored (ray tracing off)");
+    void *out = arg_p(c, 2);
+    if (out) memset(out, 0, 32);
+}
+NVN_API(nvnDeviceCompactAccelerationStructure) { (void)c; }
+NVN_API(nvnDeviceCopyAccelerationStructure) { (void)c; }
+NVN_API(nvnDeviceRelocateAccelerationStructure) { (void)c; }
 // NVNboolean nvnDeviceRegisterFastClear{Color,Colori,Colorui}Index(NVNdevice *, const T *color, NVNformat, int index),
 // ...Stencil(NVNdevice *, int value): like the NVN 1 forms (nvn_api_core.c), "not registered" keeps the normal clear
 NVN_API(nvnDeviceRegisterFastClearColorIndex) { ret_x(c, 0); }
@@ -52,11 +74,21 @@ NVN_API(nvnMultisampleStateGetCoverageTruncationEnable) { ret_x(c, 0); }
 // void nvnWindowBuilderSetColorSpace(NVNwindowBuilder *, NVNcolorSpace), NVNcolorSpace ...GetColorSpace(...): 0, sRGB
 NVN_API(nvnWindowBuilderSetColorSpace) { NVN_LOG("WindowBuilderSetColorSpace %d", (int)arg_x(c, 1)); }
 NVN_API(nvnWindowBuilderGetColorSpace) { ret_x(c, 0); }
-// void ...Set{Hdr}Display/ContentMetadata(obj, const metadata *): kept by no one
+// void ...Set{Hdr}Display/ContentMetadata(obj, const metadata *): kept by no one; getters write 0 floats (SDR)
 NVN_API(nvnWindowBuilderSetHdrDisplayMetadata) { (void)c; }
 NVN_API(nvnWindowBuilderSetHdrContentMetadata) { (void)c; }
 NVN_API(nvnWindowSetHdrDisplayMetadata) { (void)c; }
 NVN_API(nvnWindowSetHdrContentMetadata) { (void)c; }
+static void nvn2_zero_float_outs(Cpu *c, int first, int count) {
+    for (int i = first; i < first + count; i++) {
+        float *p = arg_p(c, i);
+        if (p) *p = 0.0f;
+    }
+}
+NVN_API(nvnWindowBuilderGetHdrContentMetadata) { nvn2_zero_float_outs(c, 1, 2); }
+NVN_API(nvnWindowGetHdrContentMetadata) { nvn2_zero_float_outs(c, 1, 2); }
+NVN_API(nvnWindowBuilderGetHdrDisplayMetadata) { nvn2_zero_float_outs(c, 1, 10); }
+NVN_API(nvnWindowGetHdrDisplayMetadata) { nvn2_zero_float_outs(c, 1, 10); }
 
 // void nvnCommandBufferSetComputeOverlapMode(NVNcommandBuffer *cmd, uint32_t mode)
 // NVN 2 changes compute/graphics scheduling, not shader or resource state (docs/nvn2-command-modes.md).

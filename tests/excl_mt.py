@@ -22,6 +22,7 @@ SRC = r'''
 #include <stdlib.h>
 #include "cpu.h"
 
+RtExclSlot rt_excl_mon[256];
 static volatile int step;
 static uint64_t cell[4] __attribute__((aligned(64)));
 static int nthreads, iters;

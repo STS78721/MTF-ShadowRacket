@@ -129,12 +129,20 @@ def discover(mod):
     add = idx((w & 0xFFC00000) == 0x91000000)
     rn = ((w[add] >> 5) & 31).astype(np.int64)
     found = np.full(len(add), -1, dtype=np.int64)
+    # Stop scanning back when an intermediate instruction writes the register (`adrp x12, P; add x12, x10, x11;
+    # add x12, x12, #0x10`), preventing false function starts that split functions and break jump tables.
+    dp = ((w & 0x1C000000) == 0x10000000) | ((w & 0x0E000000) == 0x0A000000)
+    load = ((w & 0x0A000000) == 0x08000000) & (((w >> 22) & 1) == 1)
+    writes = (dp | load) & ~is_adrp
+    clobbered = np.zeros(len(add), dtype=bool)
     for k in range(1, 9):
         p = add - k
-        cand = (found < 0) & (p >= 0)
+        cand = (found < 0) & (p >= 0) & ~clobbered
         pc = np.where(cand, p, 0)
-        cand &= is_adrp[pc] & ((w[pc] & 31).astype(np.int64) == rn)
-        found[cand] = p[cand]
+        same = (w[pc] & 31).astype(np.int64) == rn
+        hit_k = cand & is_adrp[pc] & same
+        found[hit_k] = p[hit_k]
+        clobbered |= cand & ~hit_k & writes[pc] & same
     hit = found >= 0
     p = found[hit]
     page = ((pc0 + p * 4) & ~np.int64(0xFFF)) + (imm21(p) << 12)
@@ -408,6 +416,11 @@ class Emitter:
         def emit(i, line):
             body.append((i, line))
 
+        # Calls up to each instruction: a loop with none gets a compiler memory barrier on its back-edge.
+        calls = [0]
+        for ins in insns:
+            calls.append(calls[-1] + (ins.kind in ('bl', 'blr', 'trap')))
+
         k = None
         for i, ins in enumerate(insns):
             a = entry + 4 * i
@@ -425,6 +438,9 @@ class Emitter:
                 if self.spins.get(a) == ins.target and entry <= ins.target < end:
                     j = f'rt_spin_gate(c, {hx(ins.target)}); {j}'   # a pass of a spin wait
                     self.stats['spin_gates'] += 1
+                elif entry <= ins.target <= a and calls[i] == calls[(ins.target - entry) // 4]:
+                    j = f'__asm__ volatile("" ::: "memory"); {j}'
+                    self.stats['loop_barriers'] += 1
                 emit(i, '    ' + j if k == 'b' else f'    if ({fx(i, ins.cond)}) {{ {j} }}')
             elif k == 'bl':
                 emit(i, '    ' + call(ins.target, a))
@@ -719,6 +735,7 @@ def main():
                 'flag_reads_after_call': stats['flag_reads_after_call'],
                 'flag_publishing_exits': stats['flag_publishing_exits'],
                 'spin_gates': stats['spin_gates'],
+                'loop_barriers': stats['loop_barriers'],
                 'unsupported': stats['unsupported'],
                 'external_branches': stats['external_branches'],
                 'external_calls': stats['external_calls'],

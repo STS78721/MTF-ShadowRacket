@@ -937,11 +937,16 @@ def main():
         shutil.copy2(dll, exe.parent / dll.name)
     xlate_src = ROOT / 'build' / 'xlate' / ('totk_xlate.exe' if WIN else 'totk_xlate')
     if xlate_src.is_file():
-        dst_xlate = exe.parent / ('ns2_xlate.exe' if WIN else 'ns2_xlate')
-        shutil.copy2(xlate_src, dst_xlate)
         xlate_id = xlate_src.with_suffix('.id')
-        if xlate_id.is_file():
-            shutil.copy2(xlate_id, dst_xlate.with_suffix('.id'))
+        for stem in ('ns2_xlate', 'totk_xlate'):
+            dst_xlate = exe.parent / (f'{stem}.exe' if WIN else stem)
+            shutil.copy2(xlate_src, dst_xlate)
+            if xlate_id.is_file():
+                shutil.copy2(xlate_id, dst_xlate.with_suffix('.id'))
+    for font_asset in ('Roboto-Medium.ttf', 'LICENSE-Roboto.txt'):
+        src_font = RUNTIME / 'ui' / 'fonts' / font_asset
+        if src_font.is_file():
+            shutil.copy2(src_font, exe.parent / font_asset)
     sections, image = pe_sections(exe) if WIN else elf_sections(exe)
     print(f'{below_root(exe)}: file {mib(exe.stat().st_size)}, '
           f'image {mib(image)}; ' + ', '.join(f'{k} {mib(v)}' for k, v in sections.items() if k.startswith('.') and v))

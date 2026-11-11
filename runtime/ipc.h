@@ -40,13 +40,16 @@ typedef struct IpcSession IpcSession;
 typedef void (*IpcHandler)(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);
 
 // One server object. Every kernel handle (including CloneCurrentObject copies) and in-flight request holds a
-// reference; the last release calls close(state).
+// reference; the last release calls close(state). When converted to a CMIF domain (ConvertCurrentObjectToDomain),
+// domain != NULL holds sub-object slots indexed by 1-based object IDs (slot 1 is the root session itself).
+struct IpcDomain;
 struct IpcSession {
     const char *name;
     IpcHandler handler;
     void *state;
     void (*close)(void *state);
     int32_t refs;
+    struct IpcDomain *domain;
 };
 
 uint32_t ipc_session_new(const char *name, IpcHandler handler, void *state, void (*close)(void *state));   // handle

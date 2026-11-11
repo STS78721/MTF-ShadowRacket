@@ -11,7 +11,8 @@ MacNativeGames, Fritchii (NX2_NOTES), Lichii, and Eglantine:
   - 1-command `init` and `build` workflows for bringing up new Switch 2 titles cleanly without polluting git.
 
 Usage:
-    python tools/universal_ns2_to_pc.py scan --exefs "C:\\Games\\MKW PC\\exefs" --romfs "C:\\Games\\MKW PC\\romfs"
+    python tools/universal_ns2_to_pc.py port --folder "C:\\Games\\My Switch 2 Game"
+    python tools/universal_ns2_to_pc.py scan --folder "C:\\Games\\My Switch 2 Game"
     python tools/universal_ns2_to_pc.py init --ver mygame100 --short mygame --name "My Switch 2 Game" --exefs ... --romfs ...
     python tools/universal_ns2_to_pc.py build --ver mygame100 --exefs ... --romfs ...
 """
@@ -268,6 +269,95 @@ def extract_title_id(exefs: Path) -> str | None:
         if off + 0x18 <= len(raw) and raw[off:off + 4] == b"ACI0":
             return f"{struct.unpack_from('<Q', raw, off + 0x10)[0]:016X}"
     return None
+
+
+def _is_exefs_dir(d: Path) -> bool:
+    return d.is_dir() and (d / "main").is_file() and ((d / "sdk").is_file() or (d / "main.npdm").is_file())
+
+
+def discover_game_folder(folder: Path) -> dict:
+    """Auto-discover ExeFS, RomFS (packed or loose), short name, display name, and version key from a game directory."""
+    root = folder.resolve()
+    if not root.is_dir():
+        sys.exit(f"Game folder does not exist: {root}")
+
+    exefs = None
+    exefs_candidates = [
+        root / "exefs",
+        root,
+        root / "base" / "exefs",
+        root / "program" / "0" / "exefs",
+        root / "ExtractedExeFS",
+    ]
+    for cand in exefs_candidates:
+        if _is_exefs_dir(cand):
+            exefs = cand
+            break
+    if exefs is None:
+        for sub in sorted(root.iterdir()):
+            if sub.is_dir() and not sub.name.startswith("."):
+                if _is_exefs_dir(sub):
+                    exefs = sub
+                    break
+                if _is_exefs_dir(sub / "exefs"):
+                    exefs = sub / "exefs"
+                    break
+    if exefs is None:
+        sys.exit(f"Could not find an ExeFS directory (with 'main' + 'sdk'/'main.npdm') under {root}")
+
+    search_roots = [exefs.parent, root] if exefs.parent != root else [root]
+    romfs = None
+    for sr in search_roots:
+        for rname in ("romfs_packed", "romfs", "ExtractedRomFS", "base/romfs"):
+            cand = sr / rname
+            if cand.is_dir():
+                if (cand / "index.json").is_file() or any(True for _ in cand.iterdir()):
+                    romfs = cand
+                    break
+        if romfs is not None:
+            break
+
+    raw_label = root.name if exefs != root else (root.parent.name if root.name.lower() == "exefs" else root.name)
+    cleaned = re.sub(r"(?i)\b(pc|recomp|ns2|switch\s*2|dump|extracted)\b", " ", raw_label)
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", cleaned) if w]
+    if not words:
+        words = [w for w in re.split(r"[^A-Za-z0-9]+", raw_label) if w] or ["ns2game"]
+    display_name = " ".join(words)
+    if len(words) >= 2 and sum(len(w) for w in words) > 10:
+        short = "".join(w[0] for w in words if w[0].isalnum()).lower()[:8]
+        if len(short) < 2:
+            short = re.sub(r"[^a-z0-9]", "", words[0].lower())[:8]
+    else:
+        short = re.sub(r"[^a-z0-9]", "", "".join(words).lower())[:8]
+    short = short or "ns2"
+    ver = f"{short}100"
+    return {
+        "folder": root,
+        "exefs": exefs,
+        "romfs": romfs,
+        "short": short,
+        "name": display_name,
+        "ver": ver,
+        "title_id": extract_title_id(exefs) or "0400000000000000",
+    }
+
+
+def write_default_ini(ini_path: Path, display_name: str) -> None:
+    if ini_path.exists():
+        return
+    ini_text = (
+        f"# {display_name} - Universal NS2 to PC configuration\n"
+        "[display]\n"
+        "operation_mode = docked\n"
+        "output_res = 1920x1080\n"
+        "render_scale = game\n"
+        "vk_present = fifo\n"
+        "\n"
+        "[performance]\n"
+        "timer_1ms = 1\n"
+        "replay_async = 1\n"
+    )
+    ini_path.write_text(ini_text, encoding="utf-8")
 
 
 def analyze_exefs(exefs: Path, knowledge: dict) -> dict:
@@ -658,7 +748,58 @@ def build_recommendations(exefs_rep: dict | None, romfs_rep: dict | None) -> lis
     return recs
 
 
+def _resolve_folder_args(args) -> dict | None:
+    if getattr(args, "folder", None):
+        disc = discover_game_folder(args.folder)
+        if not getattr(args, "exefs", None):
+            args.exefs = disc["exefs"]
+        if not getattr(args, "romfs", None) and disc["romfs"]:
+            args.romfs = disc["romfs"]
+        if hasattr(args, "ver") and not getattr(args, "ver", None):
+            args.ver = disc["ver"]
+        if hasattr(args, "short") and not getattr(args, "short", None):
+            args.short = disc["short"]
+        if hasattr(args, "name") and not getattr(args, "name", None):
+            args.name = disc["name"]
+        return disc
+    return None
+
+
+def _build_expected_manifest(exefs: Path, short: str, name: str, display: str) -> dict:
+    exefs = exefs.resolve()
+    title_id = extract_title_id(exefs) or "0400000000000000"
+    files = sorted(p for p in exefs.iterdir() if p.is_file() and not p.name.startswith("."))
+    return {
+        "_comment": f"{name} ({display}) ExeFS. Hashes only; no game data.",
+        "short_name": short,
+        "display_name": name,
+        "title_id": title_id,
+        "display_version": display,
+        "exefs_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files},
+    }
+
+
+def _ensure_packed_romfs(romfs: Path | None, ver: str, pack_out: Path | None = None) -> Path | None:
+    if not romfs:
+        return None
+    romfs = romfs.resolve()
+    if (romfs / "index.json").is_file():
+        return romfs
+    for cand in filter(None, [pack_out, romfs.parent / "romfs_packed", ROOT / "build" / "extracted" / ver / "romfs"]):
+        if (cand / "index.json").is_file() and (cand / "romfs.bin").is_file():
+            print(f"Using existing packed RomFS -> {cand}")
+            return cand.resolve()
+    target = (pack_out or (ROOT / "build" / "extracted" / ver / "romfs")).resolve()
+    packer = ROOT / "tools" / "dkb_pack_romfs.py"
+    if packer.is_file():
+        print(f"Packing loose RomFS {romfs} -> {target}...")
+        subprocess.run([sys.executable, str(packer), "--dir", str(romfs), "--out", str(target)], check=True)
+        return target
+    return romfs
+
+
 def cmd_scan(args):
+    _resolve_folder_args(args)
     t0 = time.monotonic()
     knowledge = load_host_knowledge()
     exefs_rep = analyze_exefs(args.exefs, knowledge) if args.exefs else None
@@ -702,27 +843,20 @@ def cmd_scan(args):
     for i, r in enumerate(recs, 1):
         print(f"  {i}. {r}")
 
-    if args.json:
+    if getattr(args, "json", None):
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps({"exefs": exefs_rep, "romfs": romfs_rep, "recommendations": recs}, indent=2) + "\n", encoding="utf-8")
         print(f"\nSaved JSON report -> {args.json}")
 
 
 def cmd_init(args):
-    exefs = args.exefs.resolve()
-    title_id = extract_title_id(exefs) or "0400000000000000"
-    files = sorted(p for p in exefs.iterdir() if p.is_file() and not p.name.startswith("."))
-    exp = {
-        "_comment": f"{args.name} ({args.display}) ExeFS. Hashes only; no game data.",
-        "short_name": args.short,
-        "display_name": args.name,
-        "title_id": title_id,
-        "display_version": args.display,
-        "exefs_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files},
-    }
+    _resolve_folder_args(args)
+    if not args.exefs or not args.ver or not args.short or not args.name:
+        sys.exit("init requires either --folder <PATH> or explicit --exefs, --ver, --short, and --name")
+    exp = _build_expected_manifest(args.exefs, args.short, args.name, args.display)
     exp_path = ROOT / "tools" / "data" / f"expected-{args.ver}.json"
     exp_path.write_text(json.dumps(exp, indent=2) + "\n", encoding="utf-8")
-    print(f"Wrote {exp_path} (title_id={title_id}, modules={list(exp['exefs_sha256'])})")
+    print(f"Wrote {exp_path} (title_id={exp['title_id']}, modules={list(exp['exefs_sha256'])})")
 
     patches_path = ROOT / "recomp" / f"patches-{args.ver}.txt"
     if not patches_path.exists():
@@ -730,12 +864,13 @@ def cmd_init(args):
         print(f"Created empty patch table {patches_path}")
 
     if args.romfs and not (args.romfs / "index.json").is_file() and args.pack_out:
-        packer = ROOT / "tools" / "dkb_pack_romfs.py"
-        if packer.is_file():
-            subprocess.run([sys.executable, str(packer), "--dir", str(args.romfs), "--out", str(args.pack_out)], check=True)
+        _ensure_packed_romfs(args.romfs, args.ver, args.pack_out)
 
 
 def cmd_build(args):
+    disc = _resolve_folder_args(args)
+    if not args.exefs or not args.ver:
+        sys.exit("build requires either --folder <PATH> or explicit --ver and --exefs")
     xlate = ROOT / "build" / "xlate" / ("totk_xlate.exe" if os.name == "nt" else "totk_xlate")
     if not xlate.is_file():
         print("Building shader translator (NativeAOT)...")
@@ -743,9 +878,26 @@ def cmd_build(args):
 
     gen_dir = (args.gen or (ROOT / "generated" / args.ver)).resolve()
     out_dir = (args.out or (ROOT / "build" / args.ver)).resolve()
-    patches = ROOT / "recomp" / f"patches-{args.ver}.txt"
-    if not patches.exists():
-        patches.write_text(f"# Auto-created patch table for {args.ver}\n", encoding="utf-8")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    tracked_patches = ROOT / "recomp" / f"patches-{args.ver}.txt"
+    if tracked_patches.is_file():
+        patches = tracked_patches
+    else:
+        patches = out_dir / f"patches-{args.ver}.txt"
+        if not patches.exists():
+            patches.write_text(f"# Auto-created patch table for {args.ver}\n", encoding="utf-8")
+
+    tracked_exp = ROOT / "tools" / "data" / f"expected-{args.ver}.json"
+    if tracked_exp.is_file():
+        exp_path = tracked_exp
+        exp_meta = json.loads(exp_path.read_text(encoding="utf-8"))
+    else:
+        short = getattr(args, "short", None) or (disc["short"] if disc else None) or "".join(ch for ch in args.ver if ch.isalpha()).lower() or "ns2"
+        disp_name = getattr(args, "name", None) or (disc["name"] if disc else None) or args.ver
+        exp_meta = _build_expected_manifest(args.exefs, short, disp_name, getattr(args, "display", "1.0.0"))
+        exp_path = out_dir / f"expected-{args.ver}.json"
+        exp_path.write_text(json.dumps(exp_meta, indent=2) + "\n", encoding="utf-8")
 
     mods = [p.name for p in sorted(args.exefs.iterdir()) if p.is_file() and p.name not in ("main.npdm", "rtld") and not p.name.startswith(".")]
     order = {"main": 0, "sdk": 99}
@@ -755,26 +907,44 @@ def cmd_build(args):
                     "--exefs", str(args.exefs), "--out", str(gen_dir),
                     "--modules", ",".join(mods), "--patches", str(patches)], check=True)
 
-    romfs = args.romfs
-    if romfs and not (romfs / "index.json").is_file():
-        packed_candidate = romfs.parent / "romfs_packed"
-        if (packed_candidate / "index.json").is_file():
-            romfs = packed_candidate
+    romfs = _ensure_packed_romfs(args.romfs, args.ver, getattr(args, "pack_out", None))
 
     cmd = [sys.executable, str(ROOT / "tools" / "build_game.py"),
-           "--version", args.ver, "--gen", str(gen_dir), "--out", str(out_dir), "--exefs", str(args.exefs)]
+           "--version", args.ver, "--gen", str(gen_dir), "--out", str(out_dir),
+           "--exefs", str(args.exefs), "--expected", str(exp_path)]
     if romfs:
         cmd += ["--romfs", str(romfs)]
+    if getattr(args, "jobs", None):
+        cmd += ["--jobs", str(args.jobs)]
+    if getattr(args, "prepare_shaders", False):
+        cmd.append("--prepare-shaders")
     subprocess.run(cmd, check=True)
 
-    if xlate.is_file():
-        dst_xlate = out_dir / ("ns2_xlate.exe" if os.name == "nt" else "ns2_xlate")
-        shutil.copy2(xlate, dst_xlate)
-        xlate_id = xlate.with_suffix(".id")
-        if xlate_id.is_file():
-            shutil.copy2(xlate_id, dst_xlate.with_suffix(".id"))
+    short_name = exp_meta.get("short_name") or "ns2"
+    display_name = exp_meta.get("display_name") or args.ver
+    write_default_ini(out_dir / f"{short_name}.ini", display_name)
+
     subprocess.run([sys.executable, str(ROOT / "tools" / "check_content.py")], check=True)
-    print(f"\nBUILD COMPLETE -> {out_dir}")
+    exe_name = f"{short_name}.exe" if os.name == "nt" else short_name
+    print(f"\nBUILD COMPLETE -> {out_dir / exe_name}")
+
+
+def cmd_port(args):
+    disc = _resolve_folder_args(args)
+    if not args.exefs:
+        sys.exit("port requires --folder <PATH> (or --exefs <PATH>)")
+    if disc:
+        print(f"Discovered Switch 2 title '{disc['name']}' (title_id={disc['title_id']}, short={args.short}, ver={args.ver})")
+        print(f"  ExeFS: {args.exefs}")
+        print(f"  RomFS: {args.romfs or '(none)'}")
+    if not args.skip_scan:
+        args.max_textures = 400
+        args.dump_shaders = None
+        args.json = (args.out or (ROOT / "build" / args.ver)).resolve() / "preflight_scan.json"
+        cmd_scan(args)
+    if args.save_expected:
+        cmd_init(args)
+    cmd_build(args)
 
 
 def main():
@@ -782,6 +952,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p_scan = sub.add_parser("scan", help="Profile ExeFS & RomFS before recompilation")
+    p_scan.add_argument("--folder", type=Path, help="Game folder containing exefs/ and romfs/ (auto-detected)")
     p_scan.add_argument("--exefs", type=Path)
     p_scan.add_argument("--romfs", type=Path)
     p_scan.add_argument("--max-textures", type=int, default=600)
@@ -789,20 +960,44 @@ def main():
     p_scan.add_argument("--json", type=Path)
 
     p_init = sub.add_parser("init", help="Scaffold expected-*.json, patches table, and packed RomFS for a new NS2 game")
-    p_init.add_argument("--ver", required=True, help="Version key, e.g. mkw180, mtf111, ns2test")
-    p_init.add_argument("--short", required=True, help="Short binary name, e.g. mkw, mtf, dkb")
-    p_init.add_argument("--name", required=True, help="Human-readable game name")
+    p_init.add_argument("--folder", type=Path, help="Game folder containing exefs/ and romfs/ (auto-detected)")
+    p_init.add_argument("--ver", help="Version key, e.g. mkw180, mtf111, ns2test")
+    p_init.add_argument("--short", help="Short binary name, e.g. mkw, mtf, dkb")
+    p_init.add_argument("--name", help="Human-readable game name")
     p_init.add_argument("--display", default="1.0.0")
-    p_init.add_argument("--exefs", type=Path, required=True)
+    p_init.add_argument("--exefs", type=Path)
     p_init.add_argument("--romfs", type=Path)
     p_init.add_argument("--pack-out", type=Path, help="Optional folder to pack loose RomFS into romfs.bin")
 
     p_bld = sub.add_parser("build", help="One-step xlate + lift + compile + link for any NS2 target")
-    p_bld.add_argument("--ver", required=True)
-    p_bld.add_argument("--exefs", type=Path, required=True)
+    p_bld.add_argument("--folder", type=Path, help="Game folder containing exefs/ and romfs/ (auto-detected)")
+    p_bld.add_argument("--ver", help="Version key (auto-derived when --folder is used)")
+    p_bld.add_argument("--short", help="Short executable stem (auto-derived when --folder is used)")
+    p_bld.add_argument("--name", help="Display name (auto-derived when --folder is used)")
+    p_bld.add_argument("--display", default="1.0.0")
+    p_bld.add_argument("--exefs", type=Path)
     p_bld.add_argument("--romfs", type=Path)
+    p_bld.add_argument("--pack-out", type=Path)
     p_bld.add_argument("--gen", type=Path)
     p_bld.add_argument("--out", type=Path)
+    p_bld.add_argument("--jobs", type=int)
+    p_bld.add_argument("--prepare-shaders", action="store_true")
+
+    p_port = sub.add_parser("port", aliases=["auto"], help="Turnkey 1-command folder-to-PC port (discover + scan + pack RomFS + lift + build)")
+    p_port.add_argument("--folder", type=Path, help="Game folder containing exefs/ and romfs/ (auto-detected)")
+    p_port.add_argument("--ver", help="Version key override")
+    p_port.add_argument("--short", help="Short executable stem override")
+    p_port.add_argument("--name", help="Human-readable game name override")
+    p_port.add_argument("--display", default="1.0.0")
+    p_port.add_argument("--exefs", type=Path)
+    p_port.add_argument("--romfs", type=Path)
+    p_port.add_argument("--pack-out", type=Path)
+    p_port.add_argument("--gen", type=Path)
+    p_port.add_argument("--out", type=Path)
+    p_port.add_argument("--jobs", type=int)
+    p_port.add_argument("--skip-scan", action="store_true", help="Skip pre-flight scan report")
+    p_port.add_argument("--save-expected", action="store_true", help="Also write expected-<ver>.json and patches-<ver>.txt into tracked repo directories")
+    p_port.add_argument("--prepare-shaders", action="store_true", help="Extract & pre-warm shaders after linking")
 
     args = ap.parse_args()
     if args.cmd == "scan":
@@ -811,6 +1006,8 @@ def main():
         cmd_init(args)
     elif args.cmd == "build":
         cmd_build(args)
+    elif args.cmd in ("port", "auto"):
+        cmd_port(args)
 
 
 if __name__ == "__main__":

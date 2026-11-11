@@ -14,6 +14,7 @@
 
 #include "cpu.h"
 
+RtExclSlot rt_excl_mon[256];
 extern GuestFn tests[];
 extern int ntests;
 
@@ -67,6 +68,7 @@ void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) { (void)c; (void)imm; (void)pc; }
 void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) { (void)c; (void)imm; (void)pc; abort(); }
 void rt_udf(Cpu *c, uint64_t pc) { (void)c; (void)pc; abort(); }
 uint64_t rt_ticks(void) { return 0; }
+uint32_t rt_tick_hz(void) { return 19200000u; }
 volatile int g_fnprof;
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)addr; (void)lr; (void)x0; }
 

@@ -41,7 +41,16 @@ Never scatter `if (strstr(game, "..."))` across the codebase. Add a clean flag i
 
 ## 2. Standard Bring-Up Workflow (Scan -> Init -> Build -> Probe -> Boot)
 
-Every new Nintendo Switch 2 game follows this exact 5-step pipeline from `C:\Games\DKB PC\Universal-NS2-to-PC`:
+### One-Command Turnkey Port (`port` / `auto`)
+Point directly at **any** Switch 2 game folder (containing `exefs`/`romfs`, loose NSOs, or SubSDKs) and let the engine discover layouts, pack loose RomFS if needed, stage metadata inside `build/<ver>/`, lift ARM64 -> C, compile & link with MSYS2 Clang + Ninja, deploy `ns2_xlate.exe` + fonts + `<short>.ini`, and run the repo content guard automatically:
+```powershell
+$env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+python tools\universal_ns2_to_pc.py port --folder "<GAME_FOLDER>"
+```
+(Pass `--save-expected` only if you want `tools/data/expected-<ver>.json` and `recomp/patches-<ver>.txt` persisted in git-tracked paths; by default `port` stages them inside gitignored `build/<ver>/` so your repo stays clean.)
+
+### Manual Step-by-Step Pipeline (`scan` -> `init` -> `build`)
+Every new Nintendo Switch 2 game can also be run step-by-step from `C:\Games\DKB PC\Universal-NS2-to-PC` (using `--folder "<GAME_FOLDER>"` or explicit `--exefs` / `--romfs`):
 
 ### Step 1: Build the NativeAOT Shader Translator (once per machine/update)
 ```powershell
@@ -162,17 +171,12 @@ Read AGENTS.md and docs\UNIVERSAL_NS2_TO_PC_PLAYBOOK.md first. Follow these stri
 ### 5.1. Massive Vertex Explosions: Speculative SSBO DMA Writeback
 - **Symptom:** The 3D scene shows giant skewed polygon sheets, skewed triangles, or exploded vertex geometry covering the screen, while 2D UI/HUD remains intact.
 - **Root Cause:** In branching compute/graphics dispatches, `GlobalToStorage.cs` registers every candidate storage buffer expression with `BufferUsageFlags.Write` for SPIR-V validator safety. In `runtime/vk_exec_draw.c`, `ssbo_info` binds these speculative candidates with `guarded=1` (`direct_only=1`). If `vk_mem_gpu_wrote(&sp, n)` and `note_written` are called for candidate buffers, the engine schedules full-extent (`n = 120 KiB+` or pool remainder) `mbuf -> buf` GPU DMA writebacks at `vk_mem_mirror_end`. Because Windows `GetWriteWatch` only tracks host CPU writes and does not track GPU DMA writes, host memory is overwritten with stale mirror buffer bytes. This clobbers guest host RAM where subsequent draws' vertex buffers reside.
-- **Solution:** Guarded storage buffer candidates (`direct_only` / `guarded`) must NEVER schedule full-extent writeback or register completion dirty ranges:
+- **Solution:** Speculative guarded storage buffer candidates (root constants, `c1`, UBOs, or unbounded `b->size == 0` pointers) must NEVER schedule full-extent writeback or register completion dirty ranges, whereas explicitly bound NVN2 compute `c0` storage-buffer table entries (`guarded_is_declared_ssbo`: `off >= nvn2_c0_part(c0_lay, 2) && off < nvn2_c0_part(c0_lay, 3) && b->size > 0`) write back only their exact declared `b->size`:
   ```c
-  // runtime/vk_exec_draw.c: bind_range
-  if (written && !direct_only) vk_mem_gpu_wrote(&sp, n);
+  // runtime/vk_exec_draw.c: ssbo_info / bind_range
+  int writeback = written && (!guarded || guarded_is_declared_ssbo(st, r, b));
+  if (writeback) vk_mem_gpu_wrote(&sp, n);
   if (written) vk_usnap_drop(addr, n);
-
-  // runtime/vk_exec_draw.c: ssbo_info
-  if (written && !guarded && bi.buffer != VK_NULL_HANDLE) {
-      note_written(ex, b->addr - lead, bi.range);
-      ...
-  }
   ```
 
 ### 5.2. Missing Volumetric Fog LUT / Black Skybox: Single-Image Fallback
@@ -285,3 +289,18 @@ Read AGENTS.md and docs\UNIVERSAL_NS2_TO_PC_PLAYBOOK.md first. Follow these stri
      - `frame_gen = 0` / `fg_mult = off` (or clean `2x`): Eliminates high-multiplier optical flow noise.
      - `render_scale = 2x` (or `100` / `200`): Delivers razor-sharp Native 4K ($3840\times 2160$) internal 3D rendering.
 
+### 5.9. Cross-Recompiler & Cross-Emulator First-Launch Hardening
+- **ARM64 Lifter, Codegen, & Exclusive Monitor (`recomp/lifter.py`, `recomp/gen.py`, `runtime/cpu.h`):**
+  1. **Switch 2 `CNTFRQ_EL0` (31.25 MHz vs 19.2 MHz):** `MRS Xd, CNTFRQ_EL0` calls `rt_tick_hz()` dynamically (`31,250,000` Hz on Switch 2, `19,200,000` Hz on Switch 1) instead of hardcoding `19200000ULL`, eliminating $1.6276\times$ timer/audio/physics skew when games read `CNTFRQ_EL0` inline.
+  2. **`adrp`+`add` Clobber Stop & Spin-Loop Compiler Barrier (`mkw-recomp` `60961f0`, `ab1ad52`):** `gen.py` stops backward `adrp` scanning when an intermediate instruction overwrites the base register, and emits `__asm__ volatile("" ::: "memory");` on call-free intra-function backward branches so `-O2` Clang never hoists cross-thread memory polls into infinite loops.
+  3. **ABA-Safe 256-Slot Exclusive Monitor (`ldxr`/`stxr`, `ldxp`/`stxp`):** Tracks a monotonic generation counter + 256 cacheline-aligned monitor slots (`rt_excl_mon[256]`) so `A -> B -> A` lock-free queue updates cannot falsely succeed.
+- **Ampere SM86 -> Maxwell Shader Lowering (`runtime/third_party/eglantine/`, `runtime/nvn2_lower.cpp`):**
+  - Upgraded to `Eglantine` `780a1d0` (216 SM86 opcodes vs 197 previously: `IMAD.WIDE`, `F2I.FTZ.U64.TRUNC`, `WARPSYNC`, generalized `TXD` `0xb6c`, cooperative matrix HMMA expansion, `geometry_exit.h` non-passthrough GS check) + `Orchid` `8837379`/`88fdb54` (unsigned constant-buffer offsets `>= 0x8000` on `0x625`/`0xab9`) + `Orchid` `cf66896` (`CALL.REL.NOINC` `0x7944` subroutine capture) + pure-Maxwell `MUFU.TANH` (`EX2` + `RCP` lowering).
+- **CMIF IPC Domain Protocol (`runtime/ipc.h`, `runtime/ipc.c`):**
+  - Implements CMIF Control Command `0` (`ConvertCurrentObjectToDomain`), `3` (`CopyFromCurrentDomain`), domain sub-object allocation (`ipc_domain_alloc`), and `CMIF` domain input/output headers (`DomainInHeader` `cmd=1` invoke / `cmd=2` `CloseVirtualHandle`, `DomainOutHeader` sub-object ID emission) so Switch 2 SDK `fs` / `vi` / `hid` / `audren` domain clients never abort on boot.
+- **Zero-Firmware Shared Fonts & BFTTF Header Fix (`runtime/ov_system.c`, `runtime/cfg.c`):**
+  - Fixed `BFTTF` decryption loop to skip the 8-byte `(magic, size)` header and start XORing at byte `8` so `OTTO` / `\x00\x01\x00\x00` magic lands at `out[0..3]`.
+  - When no external Switch font dump is configured, automatically loads bundled `Roboto-Medium.ttf` or Windows system fonts (`segoeui.ttf`, `meiryo.ttc`, `YuGothM.ttc`, `malgun.ttf`, `msyh.ttc`) so every game boots with crisp text on first launch.
+- **Switch 2 SDK 20/21 HLE Coverage & NVN2 Procs (`runtime/ov_system.c`, `runtime/ov_input.c`, `runtime/ov_codec.c`, `runtime/nvn_api_*.c`):**
+  - Added ~170 Switch 2 SDK symbols across `nn::oe` (SDK 20+ `OperationMode`/`PerformanceMode`, `TryPopNotificationMessage`, launch storage, focus), `nn::fs` (`CommitSaveData`, `MountCacheStorage`, `SetSaveDataRootPath`, priority), `nn::settings`/`nn::time`, `nn::account`/`nn::friends`/`nn::nifm`/`nn::ldn`/`nn::ssl`/`nn::bcat`/`nn::irsensor`/`nn::nfc`/`nn::mii`, `nn::hid` (`NpadJoyHoldType`, `GetNpadStates` arrays, `Palma`, keyboard/mouse/gesture/debugpad), and `nn::codec::HardwareOpusMultiStreamDecoder`.
+  - Registered 30 missing NVN2 procs (734 resolved total), added `Hookshot` `upload_all_zero` GPU clear optimization in `runtime/vk_texture.c`, and preserved `VK_IMAGE_USAGE_STORAGE_BIT` on format-reinterpreted storage views in `runtime/vk_exec_draw.c`.
