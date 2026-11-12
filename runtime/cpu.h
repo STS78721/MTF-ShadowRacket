@@ -18,7 +18,8 @@ typedef struct __attribute__((aligned(16))) Cpu {
     uint64_t fpcr;           // 320: guest FPCR/FPSR (portable FP/SIMD lowering only; the asm path uses the host's)
     uint64_t fpsr;           // 328
     uint64_t excl_val_hi;    // 336: upper half of a 128-bit exclusive pair (LDXP/LDAXP of two X registers)
-    uint8_t _pad[512 - 344];
+    uint64_t excl_gen;       // 344: per-line exclusive monitor generation (catches X->Y->X ABA between LDXR and STXR)
+    uint8_t _pad[512 - 352];
     __uint128_t v[32];       // 512
 } Cpu;
 
@@ -86,20 +87,51 @@ void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
 #define ST32(a, v) (*(volatile u32u *)(uintptr_t)(a) = (uint32_t)(v))
 #define ST64(a, v) (*(volatile u64u *)(uintptr_t)(a) = (uint64_t)(v))
 
-// ---- exclusive monitor (emulated with compare-and-swap)
+// ---- exclusive monitor (emulated with compare-and-swap + per-cacheline ABA generation table)
+typedef struct __attribute__((aligned(64))) { uint64_t gen; uint8_t _pad[56]; } RtExclSlot;
+extern RtExclSlot rt_excl_mon[256];
+static inline volatile uint64_t *rt_excl_line(uint64_t a) {
+    return &rt_excl_mon[((a >> 6) ^ (a >> 14)) & 255u].gen;
+}
+static inline void rt_excl_lock(volatile uint64_t *g) {
+    for (;;) {
+        uint64_t cur = __atomic_load_n(g, __ATOMIC_RELAXED) & ~1ull;
+        if (__atomic_compare_exchange_n(g, &cur, cur | 1ull, 1, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) break;
+        __builtin_ia32_pause();
+    }
+}
+
 #define EXCL(N, T)                                                                         \
     static inline uint64_t ldx##N(Cpu *c, uint64_t a) {                                    \
-        T v = __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_ACQUIRE);                        \
+        volatile uint64_t *g = rt_excl_line(a);                                            \
+        uint64_t gen;                                                                      \
+        T v;                                                                               \
+        for (;;) {                                                                         \
+            gen = __atomic_load_n(g, __ATOMIC_ACQUIRE);                                    \
+            if (gen & 1ull) { __builtin_ia32_pause(); continue; }                          \
+            v = __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_ACQUIRE);                      \
+            if (__atomic_load_n(g, __ATOMIC_ACQUIRE) == gen) break;                        \
+        }                                                                                  \
         c->excl_addr = a;                                                                  \
         c->excl_val = v;                                                                   \
+        c->excl_gen = gen;                                                                 \
         return v;                                                                          \
     }                                                                                      \
     static inline uint32_t stx##N(Cpu *c, uint64_t a, uint64_t v) {                        \
         if (c->excl_addr != a) return 1;                                                   \
         c->excl_addr = ~0ull;                                                              \
+        volatile uint64_t *g = rt_excl_line(a);                                            \
+        if (__atomic_load_n(g, __ATOMIC_ACQUIRE) != c->excl_gen) return 1;                 \
+        rt_excl_lock(g);                                                                   \
+        if (__atomic_load_n(g, __ATOMIC_RELAXED) != (c->excl_gen | 1ull)) {                \
+            __atomic_fetch_and(g, ~1ull, __ATOMIC_RELEASE);                                \
+            return 1;                                                                      \
+        }                                                                                  \
         T expected = (T)c->excl_val;                                                       \
-        return !__atomic_compare_exchange_n((T *)(uintptr_t)a, &expected, (T)v, 0,         \
-                                            __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);           \
+        int ok = __atomic_compare_exchange_n((T *)(uintptr_t)a, &expected, (T)v, 0,        \
+                                             __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);          \
+        __atomic_store_n(g, c->excl_gen + (ok ? 2ull : 0ull), __ATOMIC_RELEASE);           \
+        return !ok;                                                                        \
     }                                                                                      \
     static inline uint64_t lda##N(uint64_t a) {                                            \
         return __atomic_load_n((T *)(uintptr_t)a, __ATOMIC_ACQUIRE);                       \
@@ -115,19 +147,37 @@ EXCL(64, uint64_t)
 // Exclusive pair of two X registers: one 16-byte-aligned 128-bit access (cmpxchg16b; x86-64-v3 has CX16).
 // A pair of two W registers is a 64-bit exclusive and uses ldx64/stx64.
 static inline __uint128_t ldxp128(Cpu *c, uint64_t a) {
-    __uint128_t v = __atomic_load_n((__uint128_t *)(uintptr_t)a, __ATOMIC_ACQUIRE);
+    volatile uint64_t *g = rt_excl_line(a);
+    uint64_t gen;
+    __uint128_t v;
+    for (;;) {
+        gen = __atomic_load_n(g, __ATOMIC_ACQUIRE);
+        if (gen & 1ull) { __builtin_ia32_pause(); continue; }
+        v = __atomic_load_n((__uint128_t *)(uintptr_t)a, __ATOMIC_ACQUIRE);
+        if (__atomic_load_n(g, __ATOMIC_ACQUIRE) == gen) break;
+    }
     c->excl_addr = a;
     c->excl_val = (uint64_t)v;
     c->excl_val_hi = (uint64_t)(v >> 64);
+    c->excl_gen = gen;
     return v;
 }
 static inline uint32_t stxp128(Cpu *c, uint64_t a, uint64_t lo, uint64_t hi) {
     if (c->excl_addr != a) return 1;
     c->excl_addr = ~0ull;
+    volatile uint64_t *g = rt_excl_line(a);
+    if (__atomic_load_n(g, __ATOMIC_ACQUIRE) != c->excl_gen) return 1;
+    rt_excl_lock(g);
+    if (__atomic_load_n(g, __ATOMIC_RELAXED) != (c->excl_gen | 1ull)) {
+        __atomic_fetch_and(g, ~1ull, __ATOMIC_RELEASE);
+        return 1;
+    }
     __uint128_t expected = ((__uint128_t)c->excl_val_hi << 64) | c->excl_val;
     __uint128_t v = ((__uint128_t)hi << 64) | lo;
-    return !__atomic_compare_exchange_n((__uint128_t *)(uintptr_t)a, &expected, v, 0, __ATOMIC_SEQ_CST,
-                                        __ATOMIC_SEQ_CST);
+    int ok = __atomic_compare_exchange_n((__uint128_t *)(uintptr_t)a, &expected, v, 0, __ATOMIC_SEQ_CST,
+                                         __ATOMIC_SEQ_CST);
+    __atomic_store_n(g, c->excl_gen + (ok ? 2ull : 0ull), __ATOMIC_RELEASE);
+    return !ok;
 }
 
 // ---- LSE atomics (ARMv8.1; the A57 lacks them, the SDK carries them behind a CPU feature check).

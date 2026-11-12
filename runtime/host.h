@@ -266,6 +266,11 @@ int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 
 int res_wants_wide_overlay(const unsigned out[2]);         // not 16:9 on a game version with the camera aspect patch
 void res_wanted(unsigned out[2]);                          // the output size TOTK_OUTPUT_RES asks for
 void res_fov_live(void);                                   // TOTK_FOV to the camera (set fov); on a settings change
+void res_apply_live(void);                                 // universal NS2 live resolution / mode sync on present
+void res_record_game_surface(uint32_t win_w, uint32_t win_h, int cx, int cy, int cw, int ch);
+void res_live_snapshot(unsigned win_sz[2], unsigned crop_sz[2], unsigned out_tgt[2], int *handheld);
+void ff_get_target_resolutions(uint32_t *canvas_w, uint32_t *canvas_h, uint32_t *scene_w, uint32_t *scene_h);
+void ov_notify_operation_mode_changed(void);               // signal live 0x1e/0x1f Switch 2 console mode change
 // ---- code patches (patches.c) and the frame step (frame_rate.c)
 void rt_patches_init(void);                                // after ldr_load: switches from the environment, the patch
                                                            // page committed; logs the sets

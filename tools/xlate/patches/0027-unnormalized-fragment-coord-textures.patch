@@ -1,0 +1,40 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Transforms/TexturePass.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Transforms/TexturePass.cs
+@@ -137,6 +137,28 @@ namespace Ryujinx.Graphics.Shader.Translation.Transforms
+             return node;
+         }
+ 
++        private static bool IsFragCoordOperand(Operand op)
++        {
++            if (op == null)
++            {
++                return false;
++            }
++
++            if (op.Type == OperandType.LocalVariable && op.AsgOp is Operation operation)
++            {
++                if ((operation.Inst & Instruction.Mask) == Instruction.Divide)
++                {
++                    return IsFragCoordOperand(operation.GetSource(0));
++                }
++                if (operation.Inst == Instruction.Load && operation.StorageKind == StorageKind.Input)
++                {
++                    Operand src0 = operation.GetSource(0);
++                    return (IoVariable)src0.Value == IoVariable.FragmentCoord;
++                }
++            }
++            return false;
++        }
++
+         private static LinkedListNode<INode> InsertCoordNormalization(
+             HelperFunctionManager hfm,
+             LinkedListNode<INode> node,
+@@ -161,7 +183,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Transforms
+ 
+             bool intCoords = (texOp.Flags & TextureFlags.IntCoords) != 0;
+ 
+-            bool isCoordNormalized = gpuAccessor.QueryTextureCoordNormalized(handle, cbufSlot);
++            bool isCoordNormalized = !IsFragCoordOperand(texOp.GetSource(0)) && gpuAccessor.QueryTextureCoordNormalized(handle, cbufSlot);
+ 
+             if (isCoordNormalized || intCoords)
+             {

@@ -30,8 +30,18 @@ static inline int nvn_gpu_only(uint64_t a) { return a - RT_GPU_VA_BASE < RT_GPU_
 // game_mem the game's storage (never touched), span the reserved window bytes, host NULL. Every other pool: mem is the
 // game's storage, the GPU address equals the guest address.
 
-typedef struct { NVNdevice *dev; pool_t *pool; int64_t off; uint64_t size; } buf_builder_t;   FITS(buf_builder_t, NVNbufferBuilder);
-typedef struct { uint32_t magic; pool_t *pool; int64_t off; uint64_t size; } buf_t;           FITS(buf_t, NVNbuffer);
+// NVN 55 fastpath layout (sdk+0x5c2c70..0x5c2df0): +0x08 dev, +0x10 pool, +0x18 off, +0x20 size.
+// Middleware using nvn_fastpath (e.g. agl dynamic uniform rings) reads and patches NVNbuffer +0x18 directly.
+typedef struct { uint64_t pad; NVNdevice *dev; pool_t *pool; int64_t off; uint64_t size; } buf_builder_t;
+typedef struct { uint32_t magic, pad; NVNdevice *dev; pool_t *pool; int64_t off; uint64_t size; } buf_t;
+FITS(buf_builder_t, NVNbufferBuilder);
+FITS(buf_t, NVNbuffer);
+_Static_assert(__builtin_offsetof(buf_builder_t, dev) == 0x08 && __builtin_offsetof(buf_builder_t, pool) == 0x10 &&
+               __builtin_offsetof(buf_builder_t, off) == 0x18 && __builtin_offsetof(buf_builder_t, size) == 0x20,
+               "NVN 55 NVNbufferBuilder fastpath layout");
+_Static_assert(__builtin_offsetof(buf_t, dev) == 0x08 && __builtin_offsetof(buf_t, pool) == 0x10 &&
+               __builtin_offsetof(buf_t, off) == 0x18 && __builtin_offsetof(buf_t, size) == 0x20,
+               "NVN 55 NVNbuffer fastpath layout");
 typedef struct {                                           // NVNmappingRequest as main passes it (0x28 bytes)
     const NVNmemoryPool *physical_pool;                    // NULL unmaps
     int64_t physical_offset, virtual_offset;
@@ -119,3 +129,8 @@ void nvn_pool_invalidate(const pool_t *p, uint64_t off, uint64_t size);
 // MemoryPoolFlushMappedRange: the CPU wrote [mem + off, mem + off + size). Weak no-op in nvn_ext.c; a back end that keeps
 // device-side copies of pool memory (vk_memory.c's VRAM mirror) defines it and copies the range again.
 void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size);
+// Records a linear-filtered texture copy/blit for NVN2 passthrough paths (e.g. bare-bones nvnCommandBufferEvaluateDlss).
+void nvn_cmd_copy_tex_blit(NVNcommandBuffer *cmd, const NVNtexture *src, const NVNtextureView *sv,
+                           int sx, int sy, int sw, int sh,
+                           const NVNtexture *dst, const NVNtextureView *dv,
+                           int dx, int dy, int dw, int dh);

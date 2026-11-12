@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "game_profile.h"
 #include "host.h"
 #include "kernel.h"
 #include "platform/platform.h"
@@ -1634,7 +1635,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
             x[0] = R_BAD_STATE;
             return 1;
         }
-        if (rt_application_id == 0x0400D4201C6EA000ull && x[2]) {
+        if (game_profile_has(GAME_QUIRK_MTF_WORKER_ARGS) && x[2]) {
             uint64_t thread_obj = x[2];
             if (thread_obj >= 0x100000000ull && thread_obj < 0x8000000000ull) {
                 uint64_t user_func = *(const uint64_t *)(uintptr_t)(thread_obj + 104);

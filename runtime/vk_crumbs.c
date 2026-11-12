@@ -6,8 +6,10 @@
 // writes per crumb, and crumbs mark submissions, upload batches, ASTC chunks and presents, not draws.
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "host.h"
 #include "platform/platform.h"
 #include "vk.h"
@@ -236,9 +238,13 @@ void vk_checkpoint(VkCommandBuffer cb, const void *marker) {
 
 VkPipelineCreateFlags vk_pipeline_capture_flags(void) {
     VkCtx *c = vk_ctx();
-    return c && c->has_pipeline_exec_info && set_cp
-               ? VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR | VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR
-               : 0;
+    VkPipelineCreateFlags flags = 0;
+    if (c && c->has_pipeline_exec_info && set_cp)
+        flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR | VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+    const char *rx = getenv("RX_VK_NOOPT");
+    if (cfg_bool("NS2_VK_NOOPT") || (rx && rx[0] == '1'))
+        flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+    return flags;
 }
 
 // DKB_GPU_CHECKPOINTS=1 with VK_KHR_pipeline_executable_properties: one log line per executable of a pipeline (its

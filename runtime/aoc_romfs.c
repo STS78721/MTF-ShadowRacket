@@ -240,7 +240,8 @@ uint32_t aoc_open(uint64_t *out, const char *path, int mode) {
         plat_mutex_unlock(&lock);
         return FS_R_UNSUPPORTED_OPEN;
     }
-    const char *p = romfs_path_relative(mount_name, path);
+    char norm[4096];
+    const char *p = romfs_path_norm(mount_name, path, norm, sizeof norm);
     uint64_t i = p ? find(p) : UINT64_MAX;
     if (i == UINT64_MAX) {
         plat_mutex_unlock(&lock);
@@ -311,7 +312,8 @@ uint32_t aoc_entry_type(int *out, const char *path) {
     plat_mutex_lock_shared(&lock);
     uint32_t r = FS_R_INVALID;
     if (owns_locked(path)) {
-        const char *p = romfs_path_relative(mount_name, path);
+        char norm[4096];
+    const char *p = romfs_path_norm(mount_name, path, norm, sizeof norm);
         char dir[4200];
         int matches = 0;
         if (!p) {

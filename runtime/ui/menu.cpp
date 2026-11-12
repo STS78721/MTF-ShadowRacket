@@ -36,6 +36,7 @@ static int g_font_bad;
 
 extern "C" {
 #include "cfg.h"
+#include "game_profile.h"
 #include "input.h"
 #include "input_map.h"
 #include "perfmon.h"
@@ -43,11 +44,13 @@ extern "C" {
 #include "sysinfo.h"
 #include "ui/menu.h"
 #include "ui_text.h"
-// host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
+void res_live_snapshot(unsigned win_sz[2], unsigned crop_sz[2], unsigned out_tgt[2], int *handheld);
+void res_apply_live(void);
+void ov_notify_operation_mode_changed(void);
 // Vulkan & GPU capabilities
 int vk_gpu_is_nvidia(void);
 int vk_gpu_is_rtx40_plus(void);
@@ -204,27 +207,31 @@ static float menu_scale(uint32_t h) {
     return ((float)h >= least ? (float)h : least) / 1080.0f;
 }
 
-// SavageWindRecomp's colours: dark green panels, gold accents.
+// Universal NS2 Studio Theme: Midnight Obsidian Glass + Electric Switch 2 Cyan.
 static void style_init(ImGuiStyle &s) {
     ImGui::StyleColorsDark(&s);
-    s.WindowRounding = 14; s.FrameRounding = 8; s.GrabRounding = 8; s.TabRounding = 8; s.ChildRounding = 10;
-    s.WindowPadding = ImVec2(28, 22); s.FramePadding = ImVec2(14, 8); s.ItemSpacing = ImVec2(14, 12);
-    s.WindowBorderSize = 0; s.ScrollbarSize = 18;
+    s.WindowRounding = 16; s.FrameRounding = 8; s.GrabRounding = 8; s.TabRounding = 8; s.ChildRounding = 10;
+    s.WindowPadding = ImVec2(28, 22); s.FramePadding = ImVec2(16, 9); s.ItemSpacing = ImVec2(14, 10);
+    s.WindowBorderSize = 1.0f; s.PopupBorderSize = 1.0f; s.ScrollbarSize = 14;
     ImVec4 *c = s.Colors;
-    ImVec4 gold(0.93f, 0.76f, 0.33f, 1), green(0.15f, 0.36f, 0.25f, 1);
-    c[ImGuiCol_WindowBg] = ImVec4(0.06f, 0.09f, 0.08f, 0.94f);
+    ImVec4 cyan(0.22f, 0.74f, 0.97f, 1.0f);
+    ImVec4 cobalt(0.08f, 0.36f, 0.56f, 1.0f);
+    ImVec4 cobalt_hi(0.11f, 0.48f, 0.74f, 1.0f);
+    c[ImGuiCol_WindowBg] = ImVec4(0.045f, 0.065f, 0.105f, 0.94f);
+    c[ImGuiCol_PopupBg] = ImVec4(0.06f, 0.09f, 0.145f, 0.98f);
     c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_Text] = ImVec4(0.96f, 0.94f, 0.88f, 1);
-    c[ImGuiCol_TextDisabled] = ImVec4(0.62f, 0.64f, 0.58f, 1);
-    c[ImGuiCol_Button] = ImVec4(0.14f, 0.22f, 0.18f, 1);
-    c[ImGuiCol_ButtonHovered] = green;
-    c[ImGuiCol_ButtonActive] = ImVec4(0.21f, 0.50f, 0.34f, 1);
-    c[ImGuiCol_Tab] = ImVec4(0.12f, 0.18f, 0.15f, 1);
-    c[ImGuiCol_TabHovered] = green;
-    c[ImGuiCol_TabSelected] = ImVec4(0.21f, 0.44f, 0.31f, 1);
-    c[ImGuiCol_TabSelectedOverline] = gold;
-    c[ImGuiCol_NavCursor] = gold;
-    c[ImGuiCol_Separator] = ImVec4(0.30f, 0.36f, 0.30f, 1);
+    c[ImGuiCol_Border] = ImVec4(0.22f, 0.74f, 0.97f, 0.28f);
+    c[ImGuiCol_Text] = ImVec4(0.945f, 0.96f, 0.98f, 1.0f);
+    c[ImGuiCol_TextDisabled] = ImVec4(0.58f, 0.64f, 0.72f, 1.0f);
+    c[ImGuiCol_Button] = ImVec4(0.10f, 0.15f, 0.24f, 1.0f);
+    c[ImGuiCol_ButtonHovered] = cobalt;
+    c[ImGuiCol_ButtonActive] = cobalt_hi;
+    c[ImGuiCol_Tab] = ImVec4(0.08f, 0.12f, 0.19f, 1.0f);
+    c[ImGuiCol_TabHovered] = cobalt;
+    c[ImGuiCol_TabSelected] = ImVec4(0.10f, 0.27f, 0.42f, 1.0f);
+    c[ImGuiCol_TabSelectedOverline] = cyan;
+    c[ImGuiCol_NavCursor] = cyan;
+    c[ImGuiCol_Separator] = ImVec4(0.22f, 0.74f, 0.97f, 0.22f);
 }
 
 static void make_context(void) {
@@ -388,13 +395,13 @@ static struct {
 
 static void test_parse(void) {
     g_test.parsed = 1;
-    if (const char *e = cfg_get("DKB_MENU_TEST")) {
+    if (const char *e = cfg_get("NS2_MENU_TEST")) {
         long long at = atoll(e), per = 0;
         if (const char *c = strchr(e, ':')) per = atoll(c + 1);
         g_test.at = at > 0 ? (uint64_t)at : 0;
         g_test.per_page = per > 0 ? (uint64_t)per : TEST_PAGE_FRAMES;
     }
-    const char *s = cfg_get("DKB_MENU_TEST_SET");
+    const char *s = cfg_get("NS2_MENU_TEST_SET");
     while (s && *s) {   // groups "<frame>:<key>=<value>,..." separated by ';'
         char *end;
         unsigned long long f = strtoull(s, &end, 10);
@@ -407,7 +414,9 @@ static void test_parse(void) {
                 TestSet &t = g_test.sets[g_test.n_sets++];
                 t.frame = f;
                 int kn = (int)(eq - s), vn = (int)(s + n - eq - 1);
-                snprintf(t.key, sizeof t.key, "%s%.*s", strncmp(s, "DKB_", 5) ? "DKB_" : "", kn, s);
+                bool has_pfx = !strncmp(s, "NS2_", 4) || !strncmp(s, "TOTK_", 5) || !strncmp(s, "DKB_", 4) ||
+                               !strncmp(s, "MKW_", 4) || !strncmp(s, "MTF_", 4);
+                snprintf(t.key, sizeof t.key, "%s%.*s", has_pfx ? "" : "NS2_", kn, s);
                 snprintf(t.value, sizeof t.value, "%.*s", vn, eq + 1);
             }
             s += n;
@@ -425,7 +434,7 @@ static void test_apply_sets(uint64_t frame) {
     for (; g_test.next_set < g_test.n_sets && g_test.sets[g_test.next_set].frame <= frame; g_test.next_set++) {
         const TestSet &t = g_test.sets[g_test.next_set];
         rt_log("menu: test hook: frame %llu: %s=%s", (unsigned long long)frame, t.key, t.value);
-        if (!strcmp(t.key, "DKB_SAVE")) rt_log("menu: test hook: cfg_save %s", cfg_save() ? "wrote" : "failed");
+        if (!strcmp(t.key, "NS2_SAVE")) rt_log("menu: test hook: cfg_save %s", cfg_save() ? "wrote" : "failed");
         else cfg_set(t.key, t.value);
     }
 }
@@ -455,10 +464,10 @@ static const int kSizes[][2] = {{1280, 720}, {1366, 768}, {1600, 900}, {1920, 10
 enum { MAX_SIZES = sizeof kSizes / sizeof *kSizes + 1 };
 
 static void row_window_size(void) {
-    if (cfg_bool("DKB_FULLSCREEN")) opt_disable_next(UI_MENU_WINDOWED_ONLY);
+    if (cfg_bool("NS2_FULLSCREEN")) opt_disable_next(UI_MENU_WINDOWED_ONLY);
     int sz[MAX_SIZES][2], n = 0, mw = 0, mh = 0, cw = 0, ch = 0;
     int have = gfx_window_monitor_size(&mw, &mh);
-    int cur_ok = sscanf(cfg_value("DKB_WINDOW_SIZE"), "%dx%d", &cw, &ch) == 2;
+    int cur_ok = sscanf(cfg_value("NS2_WINDOW_SIZE"), "%dx%d", &cw, &ch) == 2;
     bool listed = false;
     for (size_t i = 0; i < sizeof kSizes / sizeof *kSizes; i++) {
         int w = kSizes[i][0], h = kSizes[i][1];
@@ -481,7 +490,7 @@ static void row_window_size(void) {
         pv[i] = vals[i];
         pn[i] = shown[i];
     }
-    opt_choice_list("DKB_WINDOW_SIZE", UI_MENU_WINDOW_SIZE, pv, pn, n, UI_MENU_WINDOW_SIZE_DESC);
+    opt_choice_list("NS2_WINDOW_SIZE", UI_MENU_WINDOW_SIZE, pv, pn, n, UI_MENU_WINDOW_SIZE_DESC);
 }
 
 // The game resolution (resolution.c): 16:9 sizes from its smallest, 1280x720 (for weak GPUs), up, the common 21:9 and
@@ -501,7 +510,10 @@ static void row_output_res(void) {
         snprintf(shown[i], sizeof shown[i], "%d × %d", w, h);   // U+00D7, the multiplication sign
         names[i] = shown[i];
     }
-    opt_choice_list("DKB_OUTPUT_RES", UI_MENU_OUTPUT_RES, vals, names, N, UI_MENU_OUTPUT_RES_DESC);
+    if (opt_choice_list("NS2_OUTPUT_RES", UI_MENU_OUTPUT_RES, vals, names, N, UI_MENU_OUTPUT_RES_DESC)) {
+        res_apply_live();
+        cfg_save();
+    }
 }
 
 static void row_render_scale(void) {
@@ -514,24 +526,25 @@ static void row_render_scale(void) {
         snprintf(shown[i], sizeof shown[i], "%s %%", vals[i]);
         names[i] = shown[i];
     }
-    if (opt_choice_list("DKB_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC)) {
-        const char *rs = cfg_value("DKB_RENDER_SCALE");
+    if (opt_choice_list("NS2_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC)) {
+        const char *rs = cfg_value("NS2_RENDER_SCALE");
         if (!strcmp(rs, "100") || !strcmp(rs, "125") || !strcmp(rs, "150") || !strcmp(rs, "200") || !strcmp(rs, "game")) {
-            cfg_set("DKB_OPERATION_MODE", "docked");
-            cfg_set("DKB_UPSCALER_PRESET", "native");
+            cfg_set("NS2_OPERATION_MODE", "docked");
+            cfg_set("NS2_UPSCALER_PRESET", "native");
         } else if (!strcmp(rs, "75") || !strcmp(rs, "67")) {
-            cfg_set("DKB_OPERATION_MODE", "docked");
-            cfg_set("DKB_UPSCALER_PRESET", "quality");
+            cfg_set("NS2_OPERATION_MODE", "docked");
+            cfg_set("NS2_UPSCALER_PRESET", "quality");
         } else if (!strcmp(rs, "58")) {
-            cfg_set("DKB_OPERATION_MODE", "handheld");
-            cfg_set("DKB_UPSCALER_PRESET", "balanced");
+            cfg_set("NS2_OPERATION_MODE", "handheld");
+            cfg_set("NS2_UPSCALER_PRESET", "balanced");
         } else if (!strcmp(rs, "50")) {
-            cfg_set("DKB_OPERATION_MODE", "handheld");
-            cfg_set("DKB_UPSCALER_PRESET", "performance");
+            cfg_set("NS2_OPERATION_MODE", "handheld");
+            cfg_set("NS2_UPSCALER_PRESET", "performance");
         } else if (!strcmp(rs, "33")) {
-            cfg_set("DKB_OPERATION_MODE", "handheld");
-            cfg_set("DKB_UPSCALER_PRESET", "ultra_performance");
+            cfg_set("NS2_OPERATION_MODE", "handheld");
+            cfg_set("NS2_UPSCALER_PRESET", "ultra_performance");
         }
+        res_apply_live();
         cfg_save();
     }
 }
@@ -546,7 +559,7 @@ static void row_gpu(void) {
         vals[i + 1] = idx[i];
         names[i + 1] = g_gpu_names[i];
     }
-    opt_choice_list("DKB_GPU_INDEX", UI_MENU_GPU, vals, names, g_gpu_n + 1, UI_MENU_GPU_DESC);
+    opt_choice_list("NS2_GPU_INDEX", UI_MENU_GPU, vals, names, g_gpu_n + 1, UI_MENU_GPU_DESC);
 }
 
 // The game language: one entry per language TotK ships (a Switch code that names it), each under its own name. The
@@ -562,26 +575,34 @@ static void row_game_lang(void) {
     const char *vals[N], *names[N];
     vals[0] = "";
     names[0] = menu_text(UI_MENU_GAME_LANG_AUTO);
-    const char *now = cfg_value("DKB_LANG");
+    const char *now = cfg_value("NS2_LANG");
     int cur = *now ? -1 : 0;
     for (int i = 1; i < N; i++) {
         vals[i] = langs[i - 1].code;
         names[i] = menu_text(langs[i - 1].name);
         if (*now && !strcmp(ui_text_lang(now), ui_text_lang(vals[i]))) cur = i;   // en-GB is English too
     }
-    opt_choice_list("DKB_LANG", UI_MENU_GAME_LANG, vals, names, N, UI_MENU_GAME_LANG_DESC, cur);
+    opt_choice_list("NS2_LANG", UI_MENU_GAME_LANG, vals, names, N, UI_MENU_GAME_LANG_DESC, cur);
 }
 
-// The frame limit (frame_rate.c): unset, the older fps60 = 0 still means 30. The monitor choice shows the rate it gives.
+// The frame limit (frame_rate.c): full unlocked Switch 2 PC rates up to 240 Hz or Monitor Match.
 static void row_fps_limit() {
-    static const char *const vals[] = {"30", "60"};
-    static const UiTextId ids[] = {UI_MENU_FPS_30, UI_MENU_FPS_60};
+    static const char *const vals[] = {"30", "60", "90", "120", "144", "165", "240", "display"};
+    static char disp_lbl[48];
+    double hz = gfx_window_refresh_hz();
+    if (hz > 1.0) snprintf(disp_lbl, sizeof disp_lbl, "Match Display (%.0f Hz)", hz);
+    else snprintf(disp_lbl, sizeof disp_lbl, "Match Display Refresh");
+    const char *names[] = {"30 FPS", "60 FPS", "90 FPS", "120 FPS", "144 FPS", "165 FPS", "240 FPS", disp_lbl};
     enum { N = sizeof vals / sizeof *vals };
-    const char *names[N];
-    for (int i = 0; i < N; i++) names[i] = menu_text(ids[i]);
-    const char *set = cfg_get("DKB_FPS_LIMIT"), *old = cfg_get("DKB_FPS60");
-    int cur = (!set || !*set) ? (old && !strcmp(old, "0") ? 0 : 1) : (!strcmp(set, "30") ? 0 : 1);
-    opt_choice_list("DKB_FPS_LIMIT", UI_MENU_FPS_LIMIT, vals, names, N, UI_MENU_FPS_LIMIT_DESC, cur);
+    const char *set = cfg_get("NS2_FPS_LIMIT"), *old = cfg_get("NS2_FPS60");
+    int cur = -1;
+    if (!set || !*set) {
+        cur = (old && !strcmp(old, "0")) ? 0 : 1;
+    } else {
+        for (int i = 0; i < N; i++)
+            if (!strcasecmp(vals[i], set)) cur = i;
+    }
+    opt_choice_list("NS2_FPS_LIMIT", UI_MENU_FPS_LIMIT, vals, names, N, UI_MENU_FPS_LIMIT_DESC, cur);
 }
 
 // The menu's name of a TOTK_VK_PRESENT mode (gfx_window_present_mode); NULL for another.
@@ -598,7 +619,7 @@ static const char *present_name(const char *mode) {
 // mailbox gets fifo); NULL when they agree or before the first swapchain.
 static const char *present_note(void) {
     const char *got = gfx_window_present_mode(), *name = present_name(got);
-    if (!*got || !strcmp(got, cfg_value("DKB_VK_PRESENT")) || !name) return nullptr;
+    if (!*got || !strcmp(got, cfg_value("NS2_VK_PRESENT")) || !name) return nullptr;
     static char note[96];
     snprintf(note, sizeof note, menu_text(UI_MENU_PRESENT_IN_USE), name);
     return note;
@@ -613,38 +634,46 @@ static void rows_color(void) {
     static const UiTextId names[] = {UI_MENU_COLOR_DEFAULT, UI_MENU_COLOR_VIVID, UI_MENU_COLOR_CLARITY,
                                      UI_MENU_COLOR_CUSTOM};
     opt_group(UI_MENU_COLOR);
-    if (opt_choice("DKB_COLOR_PRESET", UI_MENU_COLOR_PRESET, names, 4, UI_MENU_COLOR_PRESET_DESC)) {
-        const char *p = cfg_value("DKB_COLOR_PRESET");
+    if (opt_choice("NS2_COLOR_PRESET", UI_MENU_COLOR_PRESET, names, 4, UI_MENU_COLOR_PRESET_DESC)) {
+        const char *p = cfg_value("NS2_COLOR_PRESET");
         for (const auto &e : presets)
             if (!strcmp(p, e.name)) {
-                cfg_set("DKB_COLOR_BRIGHTNESS", e.b), cfg_set("DKB_COLOR_CONTRAST", e.c);
-                cfg_set("DKB_COLOR_SATURATION", e.s), cfg_set("DKB_COLOR_GAMMA", e.g);
+                cfg_set("NS2_COLOR_BRIGHTNESS", e.b), cfg_set("NS2_COLOR_CONTRAST", e.c);
+                cfg_set("NS2_COLOR_SATURATION", e.s), cfg_set("NS2_COLOR_GAMMA", e.g);
                 cfg_save();
             }
     }
-    bool moved = opt_slider("DKB_COLOR_BRIGHTNESS", UI_MENU_COLOR_BRIGHTNESS, -30, 30, UI_MENU_COLOR_BRIGHTNESS_DESC, 1,
+    bool moved = opt_slider("NS2_COLOR_BRIGHTNESS", UI_MENU_COLOR_BRIGHTNESS, -30, 30, UI_MENU_COLOR_BRIGHTNESS_DESC, 1,
                             "%+.0f %%");
-    moved |= opt_slider("DKB_COLOR_CONTRAST", UI_MENU_COLOR_CONTRAST, 70, 150, UI_MENU_COLOR_CONTRAST_DESC, 5, "%.0f %%");
-    moved |= opt_slider("DKB_COLOR_SATURATION", UI_MENU_COLOR_SATURATION, 50, 200, UI_MENU_COLOR_SATURATION_DESC, 5,
+    moved |= opt_slider("NS2_COLOR_CONTRAST", UI_MENU_COLOR_CONTRAST, 70, 150, UI_MENU_COLOR_CONTRAST_DESC, 5, "%.0f %%");
+    moved |= opt_slider("NS2_COLOR_SATURATION", UI_MENU_COLOR_SATURATION, 50, 200, UI_MENU_COLOR_SATURATION_DESC, 5,
                         "%.0f %%");
-    moved |= opt_slider("DKB_COLOR_GAMMA", UI_MENU_COLOR_GAMMA, 0.8f, 1.2f, UI_MENU_COLOR_GAMMA_DESC, 0.02f, "%.2f");
-    if (moved && strcmp(cfg_value("DKB_COLOR_PRESET"), "custom")) {
-        cfg_set("DKB_COLOR_PRESET", "custom");
+    moved |= opt_slider("NS2_COLOR_GAMMA", UI_MENU_COLOR_GAMMA, 0.8f, 1.2f, UI_MENU_COLOR_GAMMA_DESC, 0.02f, "%.2f");
+    if (moved && strcmp(cfg_value("NS2_COLOR_PRESET"), "custom")) {
+        cfg_set("NS2_COLOR_PRESET", "custom");
         cfg_save();
     }
 }
 
 static void tab_screen(float scale) {
     opt_begin("##screen", scale);
-    opt_toggle("DKB_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
+    opt_toggle("NS2_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
     row_output_res();
     row_window_size();
     static const UiTextId present[] = {UI_MENU_PRESENT_MAILBOX, UI_MENU_PRESENT_VSYNC, UI_MENU_PRESENT_IMMEDIATE};
-    opt_choice("DKB_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
+    opt_choice("NS2_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
     row_gpu();
     static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
-    opt_choice("DKB_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
-    opt_group_text("Nodix Super Motion & Super Resolution");
+    opt_choice("NS2_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
+
+    opt_group_text("Universal NS2 Resolution, Console Mode & Upscaler");
+    static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
+    if (opt_choice("NS2_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC)) {
+        res_apply_live();
+        cfg_save();
+    }
+    opt_toggle_text("NS2_RES_HOOK", "Live Game Resolution & Mode Sync",
+                    "Hooks Docked/Handheld switches and Display Output Resolution live into Switch 2 OS/NVN2 notifications so games dynamically adjust internal buffers when supported.");
     row_render_scale();
     static const char *const up_vals[] = {"smrs", "fsr", "bilinear", "off"};
     static const char *const up_names[] = {
@@ -653,70 +682,68 @@ static void tab_screen(float scale) {
         "Bilinear (Clean Scaler)",
         "Off (Raw 1:1)"
     };
-    opt_choice_list("DKB_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 4, UI_MENU_UPSCALER_DESC);
-    const char *up = cfg_value("DKB_UPSCALER");
+    opt_choice_list("NS2_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 4, UI_MENU_UPSCALER_DESC);
+    const char *up = cfg_value("NS2_UPSCALER");
     bool is_smrs = !strcmp(up, "smrs");
     bool is_fsr = !strcmp(up, "fsr");
     if (is_smrs) {
         static const struct { const char *name, *label, *scale; } p[] = {
-            {"native", "Native / DLAA (Docked 1620p)", "100"},
-            {"quality", "Quality (Docked 1620p)", "67"},
-            {"balanced", "Balanced (Handheld 1080p)", "58"},
-            {"performance", "Performance (Handheld 1080p)", "50"},
-            {"ultra_performance", "Ultra Performance (Handheld 1080p)", "33"}
+            {"native", "Native (Docked)", "100"},
+            {"quality", "Quality (Docked 67%)", "67"},
+            {"balanced", "Balanced (Handheld 58%)", "58"},
+            {"performance", "Performance (Handheld 50%)", "50"},
+            {"ultra_performance", "Ultra Performance (Handheld 33%)", "33"}
         };
         static const char *names[5], *vals[5];
         for (int i = 0; i < 5; i++) { vals[i] = p[i].name; names[i] = p[i].label; }
-        const char *cur_op = cfg_value("DKB_OPERATION_MODE");
-        const char *p_note = (!cur_op || !strcmp(cur_op, "docked")) ? "Docked Profile Active (1620p base)" : "Handheld Profile Active (1080p base, 56% lighter)";
-        if (opt_choice_list("DKB_UPSCALER_PRESET", UI_MENU_UPSCALE_PRESET, vals, names, 5, UI_MENU_UPSCALE_PRESET_DESC, -1, p_note)) {
-            const char *preset = cfg_value("DKB_UPSCALER_PRESET");
+        const char *cur_op = cfg_value("NS2_OPERATION_MODE");
+        const char *p_note = (!cur_op || !strcmp(cur_op, "docked")) ? "Docked Console Profile Active" : "Handheld Console Profile Active (Lighter GPU Load)";
+        if (opt_choice_list("NS2_UPSCALER_PRESET", UI_MENU_UPSCALE_PRESET, vals, names, 5, UI_MENU_UPSCALE_PRESET_DESC, -1, p_note)) {
+            const char *preset = cfg_value("NS2_UPSCALER_PRESET");
             if (!strcmp(preset, "native") || !strcmp(preset, "quality")) {
-                cfg_set("DKB_OPERATION_MODE", "docked");
+                cfg_set("NS2_OPERATION_MODE", "docked");
             } else {
-                cfg_set("DKB_OPERATION_MODE", "handheld");
+                cfg_set("NS2_OPERATION_MODE", "handheld");
             }
             for (int i = 0; i < 5; i++) {
                 if (!strcmp(preset, p[i].name)) {
-                    cfg_set("DKB_RENDER_SCALE", p[i].scale);
+                    cfg_set("NS2_RENDER_SCALE", p[i].scale);
                     break;
                 }
             }
+            res_apply_live();
             cfg_save();
         }
-        opt_slider("DKB_SHARPNESS", UI_MENU_SMRS_SHARPNESS, 0, 100, UI_MENU_SMRS_SHARPNESS_DESC, 5, "%.0f %%");
+        opt_slider("NS2_SHARPNESS", UI_MENU_SMRS_SHARPNESS, 0, 100, UI_MENU_SMRS_SHARPNESS_DESC, 5, "%.0f %%");
     } else if (is_fsr) {
-        opt_slider("DKB_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
+        opt_slider("NS2_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
     }
-    opt_toggle("DKB_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
+    opt_toggle("NS2_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
 
-    // Frame Generation / Super Motion (Nodix Super Motion and DLSS MFG)
+    // Frame Generation / Super Motion (Nodix Super Motion, FSR 3.1 FG, XeSS FG)
     opt_group_text("Frame Generation (Nodix Super Motion & MFG)");
-    static const char *const fg_gen_vals[] = {"off", "msm_fg", "dlss_fg", "fsr3_fg", "xefg"};
+    static const char *const fg_gen_vals[] = {"off", "msm_fg", "fsr3_fg", "xefg"};
     static const char *const fg_gen_names[] = {
         "Off",
         "Nodix Super Motion (SMFG 1.3)",
-        "DLSS MFG (NVIDIA RTX)",
         "AMD FSR 3.1 FG (Universal)",
         "XeSS MFG (Intel Universal)"
     };
     const char *fg_note = nullptr;
-    const char *cur_fg = cfg_value("DKB_FG_MODE");
+    const char *cur_fg = cfg_value("NS2_FG_MODE");
     if (!strcmp(cur_fg, "msm_fg")) {
         fg_note = "Nodix Super Motion DirectML / Compute Active";
-    } else if (!strcmp(cur_fg, "dlss_fg")) {
-        fg_note = vk_gpu_is_nvidia() ? "NVIDIA Hardware Optical Flow Active" : "Requires NVIDIA RTX GPU";
     } else if (!strcmp(cur_fg, "fsr3_fg")) {
         fg_note = "AMD FidelityFX FSR 3.1 Frame Generation Active";
     } else if (!strcmp(cur_fg, "xefg")) {
         fg_note = "Intel XeSS Frame Generation Active";
     }
-    opt_choice_list("DKB_FG_MODE", UI_MENU_FG_MODE, fg_gen_vals, fg_gen_names, 5, UI_MENU_FG_MODE_DESC, -1, fg_note);
+    opt_choice_list("NS2_FG_MODE", UI_MENU_FG_MODE, fg_gen_vals, fg_gen_names, 4, UI_MENU_FG_MODE_DESC, -1, fg_note);
 
     if (strcmp(cur_fg, "off") != 0) {
         static const char *const mode_vals[] = {"fixed", "adaptive"};
         static const char *const mode_names[] = {"Fixed Multiplier", "Adaptive Frame Pacing"};
-        opt_choice_list("DKB_FG_TYPE", UI_MENU_PRESENT, mode_vals, mode_names, 2, UI_MENU_PRESENT_DESC);
+        opt_choice_list("NS2_FG_TYPE", UI_MENU_PRESENT, mode_vals, mode_names, 2, UI_MENU_PRESENT_DESC);
 
         static const char *const mult_vals[] = {"2x", "3x", "4x", "6x"};
         static const char *const mult_names[] = {
@@ -725,21 +752,10 @@ static void tab_screen(float scale) {
             "x4 (Quadruple FPS)",
             "x6 (6x Multiplier)"
         };
-        opt_choice_list("DKB_FG_MULT", UI_MENU_FG_MULT, mult_vals, mult_names, 4, UI_MENU_FG_MULT_DESC);
+        opt_choice_list("NS2_FG_MULT", UI_MENU_FG_MULT, mult_vals, mult_names, 4, UI_MENU_FG_MULT_DESC);
 
-        if (!strcmp(cur_fg, "dlss_fg")) {
-            static const char *const dpreset_vals[] = {"drivers_choice", "preset_c", "preset_b", "preset_a"};
-            static const char *const dpreset_names[] = {
-                "Driver's choice",
-                "Performance · Preset C",
-                "Quality · Preset B (Optical Flow)",
-                "Balanced · Preset A (Transformer)"
-            };
-            opt_choice_list("DKB_FG_PRESET", UI_MENU_FG_PRESET, dpreset_vals, dpreset_names, 4, UI_MENU_FG_PRESET_DESC);
-        }
-
-        opt_toggle("DKB_FG_STILL", UI_MENU_LOD_GUARD, UI_MENU_LOD_GUARD_DESC); // Still Pixels / HUD Guard
-        opt_slider("DKB_FG_FLOW", UI_MENU_FG_FLOW, 10, 100, UI_MENU_FG_FLOW_DESC, 5, "%.0f %%");
+        opt_toggle("NS2_FG_STILL", UI_MENU_LOD_GUARD, UI_MENU_LOD_GUARD_DESC); // Still Pixels / HUD Guard
+        opt_slider("NS2_FG_FLOW", UI_MENU_FG_FLOW, 10, 100, UI_MENU_FG_FLOW_DESC, 5, "%.0f %%");
     }
 
     // Low Latency (Strictly mutually exclusive per GPU vendor to prevent conflicts)
@@ -753,41 +769,38 @@ static void tab_screen(float scale) {
 
     if (vk_gpu_is_nvidia()) {
         const char *ref_note = "NVIDIA Reflex (VK_NV_low_latency2 Active)";
-        if (opt_choice_list("DKB_REFLEX", UI_MENU_REFLEX, reflex_vals, reflex_names, 3, UI_MENU_REFLEX_DESC, -1, ref_note)) {
+        if (opt_choice_list("NS2_REFLEX", UI_MENU_REFLEX, reflex_vals, reflex_names, 3, UI_MENU_REFLEX_DESC, -1, ref_note)) {
             // Guarantee no conflict: disable AMD/Intel low-latency
-            cfg_set("DKB_ANTILAG2", "off");
-            cfg_set("DKB_XELL", "off");
-            if (!strcmp(cfg_value("DKB_REFLEX"), "off") && !strcmp(cfg_value("DKB_FG_MODE"), "dlss_fg")) {
-                cfg_set("DKB_FG_MODE", "off");
-            }
+            cfg_set("NS2_ANTILAG2", "off");
+            cfg_set("NS2_XELL", "off");
             cfg_save();
         }
     } else if (vk_has_amd_antilag()) {
         const char *al_note = "AMD Anti-Lag 2 (VK_AMD_anti_lag Active)";
-        if (opt_choice_list("DKB_ANTILAG2", UI_MENU_ANTILAG2, al_vals, al_names, 2, UI_MENU_ANTILAG2_DESC, -1, al_note)) {
-            cfg_set("DKB_REFLEX", "off");
-            cfg_set("DKB_XELL", "off");
+        if (opt_choice_list("NS2_ANTILAG2", UI_MENU_ANTILAG2, al_vals, al_names, 2, UI_MENU_ANTILAG2_DESC, -1, al_note)) {
+            cfg_set("NS2_REFLEX", "off");
+            cfg_set("NS2_XELL", "off");
             cfg_save();
         }
     } else if (vk_gpu_is_intel()) {
         const char *xell_note = "Intel Xe Low Latency (XeLL Active)";
-        if (opt_choice_list("DKB_XELL", UI_MENU_XELL, xell_vals, xell_names, 3, UI_MENU_XELL_DESC, -1, xell_note)) {
-            cfg_set("DKB_REFLEX", "off");
-            cfg_set("DKB_ANTILAG2", "off");
+        if (opt_choice_list("NS2_XELL", UI_MENU_XELL, xell_vals, xell_names, 3, UI_MENU_XELL_DESC, -1, xell_note)) {
+            cfg_set("NS2_REFLEX", "off");
+            cfg_set("NS2_ANTILAG2", "off");
             cfg_save();
         }
     } else {
         const char *ref_note = "Universal GPU Frame Pacing";
-        if (opt_choice_list("DKB_REFLEX", UI_MENU_REFLEX, reflex_vals, reflex_names, 3, UI_MENU_REFLEX_DESC, -1, ref_note)) {
-            cfg_set("DKB_ANTILAG2", "off");
-            cfg_set("DKB_XELL", "off");
+        if (opt_choice_list("NS2_REFLEX", UI_MENU_REFLEX, reflex_vals, reflex_names, 3, UI_MENU_REFLEX_DESC, -1, ref_note)) {
+            cfg_set("NS2_ANTILAG2", "off");
+            cfg_set("NS2_XELL", "off");
             cfg_save();
         }
     }
 
     static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
-    opt_choice("DKB_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
-    opt_slider("DKB_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
+    opt_choice("NS2_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
+    opt_slider("NS2_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
     rows_color();
     opt_end();
 }
@@ -795,21 +808,24 @@ static void tab_screen(float scale) {
 static void tab_game(float scale) {
     opt_begin("##game", scale);
     row_fps_limit();
-    opt_toggle("DKB_REALTIME", UI_MENU_REALTIME, UI_MENU_REALTIME_DESC);
-    opt_toggle("DKB_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
-    opt_toggle("DKB_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
+    opt_toggle("NS2_REALTIME", UI_MENU_REALTIME, UI_MENU_REALTIME_DESC);
+    opt_toggle("NS2_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
+    opt_toggle("NS2_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
     row_game_lang();
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
-    opt_choice("DKB_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
-    opt_toggle("DKB_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
+    if (opt_choice("NS2_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC)) {
+        res_apply_live();
+        cfg_save();
+    }
+    opt_toggle("NS2_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
     opt_end();
 }
 
 static void tab_sound(float scale) {
     opt_begin("##sound", scale);
-    opt_slider("DKB_VOLUME", UI_MENU_VOLUME, 0, 100, UI_MENU_VOLUME_DESC, 5, "%.0f %%");
+    opt_slider("NS2_VOLUME", UI_MENU_VOLUME, 0, 100, UI_MENU_VOLUME_DESC, 5, "%.0f %%");
     static const UiTextId channels[] = {UI_MENU_CHANNELS_AUTO, UI_MENU_CHANNELS_STEREO, UI_MENU_CHANNELS_51};
-    opt_choice("DKB_AUDIO_CHANNELS", UI_MENU_AUDIO_CHANNELS, channels, 3, UI_MENU_AUDIO_CHANNELS_DESC);
+    opt_choice("NS2_AUDIO_CHANNELS", UI_MENU_AUDIO_CHANNELS, channels, 3, UI_MENU_AUDIO_CHANNELS_DESC);
     opt_end();
 }
 
@@ -818,11 +834,11 @@ static void tab_sound(float scale) {
 // romfs-patches-xbox, "prompts change after restart" while the prompts in use differ from the choice. Automatic with a
 // gamepad connected: "in use: Xbox". NULL otherwise.
 static const char *pad_layout_note(void) {
-    bool want = !strcasecmp(cfg_value("DKB_PAD_LAYOUT"), "xbox_prompts");
+    bool want = !strcasecmp(cfg_value("NS2_PAD_LAYOUT"), "xbox_prompts");
     if (want && !romfs_xbox_prompts_ready()) return menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_MISSING);
     if (want != (romfs_xbox_prompts_active() != 0)) return menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_RESTART);
     int got = input_pad_layout();
-    if (got < 0 || strcmp(cfg_value("DKB_PAD_LAYOUT"), "auto")) return nullptr;
+    if (got < 0 || strcmp(cfg_value("NS2_PAD_LAYOUT"), "auto")) return nullptr;
     static char note[96];
     snprintf(note, sizeof note, menu_text(UI_MENU_PAD_LAYOUT_IN_USE),
              menu_text(got == PAD_LAYOUT_XBOX ? UI_MENU_PAD_LAYOUT_XBOX : UI_MENU_PAD_LAYOUT_NINTENDO));
@@ -833,22 +849,22 @@ static void tab_controls(float scale) {
     opt_begin("##controls", scale);
     static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX,
                                       UI_MENU_PAD_LAYOUT_XBOX_PROMPTS};
-    opt_choice("DKB_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 4, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
-    opt_toggle("DKB_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
-    opt_slider("DKB_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
-    opt_slider("DKB_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
-    opt_toggle("DKB_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
+    opt_choice("NS2_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 4, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
+    opt_toggle("NS2_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
+    opt_slider("NS2_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
+    opt_slider("NS2_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
+    opt_toggle("NS2_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
 
     opt_group(UI_MENU_GROUP_DUALSENSE);
-    opt_toggle("DKB_DUALSENSE", UI_MENU_DUALSENSE, UI_MENU_DUALSENSE_DESC);
-    opt_toggle("DKB_DUALSENSE_TRIGGERS", UI_MENU_DUALSENSE_TRIGGERS, UI_MENU_DUALSENSE_TRIGGERS_DESC);
-    opt_slider("DKB_DUALSENSE_TRIGGER_STRENGTH", UI_MENU_DUALSENSE_TRIGGER_STRENGTH, 0, 100, UI_MENU_DUALSENSE_TRIGGER_STRENGTH_DESC, 5, "%.0f %%");
-    opt_toggle("DKB_DUALSENSE_AUDIO", UI_MENU_DUALSENSE_AUDIO, UI_MENU_DUALSENSE_AUDIO_DESC);
-    opt_slider("DKB_DUALSENSE_VOL", UI_MENU_DUALSENSE_VOL, 0, 150, UI_MENU_DUALSENSE_VOL_DESC, 5, "%.0f %%");
-    opt_toggle("DKB_DUALSENSE_HAPTICS", UI_MENU_DUALSENSE_HAPTICS, UI_MENU_DUALSENSE_HAPTICS_DESC);
+    opt_toggle("NS2_DUALSENSE", UI_MENU_DUALSENSE, UI_MENU_DUALSENSE_DESC);
+    opt_toggle("NS2_DUALSENSE_TRIGGERS", UI_MENU_DUALSENSE_TRIGGERS, UI_MENU_DUALSENSE_TRIGGERS_DESC);
+    opt_slider("NS2_DUALSENSE_TRIGGER_STRENGTH", UI_MENU_DUALSENSE_TRIGGER_STRENGTH, 0, 100, UI_MENU_DUALSENSE_TRIGGER_STRENGTH_DESC, 5, "%.0f %%");
+    opt_toggle("NS2_DUALSENSE_AUDIO", UI_MENU_DUALSENSE_AUDIO, UI_MENU_DUALSENSE_AUDIO_DESC);
+    opt_slider("NS2_DUALSENSE_VOL", UI_MENU_DUALSENSE_VOL, 0, 150, UI_MENU_DUALSENSE_VOL_DESC, 5, "%.0f %%");
+    opt_toggle("NS2_DUALSENSE_HAPTICS", UI_MENU_DUALSENSE_HAPTICS, UI_MENU_DUALSENSE_HAPTICS_DESC);
 
-    opt_slider("DKB_STICK_DEADZONE", UI_MENU_STICK_DEADZONE, 0, 50, UI_MENU_STICK_DEADZONE_DESC, 1, "%.0f %%");
-    opt_slider("DKB_MOUSE_SENS", UI_MENU_MOUSE_SENS, 0, 10, UI_MENU_MOUSE_SENS_DESC, 0.1f, "%.1f");
+    opt_slider("NS2_STICK_DEADZONE", UI_MENU_STICK_DEADZONE, 0, 50, UI_MENU_STICK_DEADZONE_DESC, 1, "%.0f %%");
+    opt_slider("NS2_MOUSE_SENS", UI_MENU_MOUSE_SENS, 0, 10, UI_MENU_MOUSE_SENS_DESC, 0.1f, "%.1f");
     binds_rows(scale);
     opt_end();
     binds_after_page();
@@ -857,7 +873,7 @@ static void tab_controls(float scale) {
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
     static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU};
-    opt_choice("DKB_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
+    opt_choice("NS2_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
     opt_end();
 }
 
@@ -921,61 +937,65 @@ static void tab_advanced(float scale) {
 
     opt_group(UI_MENU_GROUP_SCHED);
     static const UiTextId preempt[] = {UI_MENU_PREEMPT_OFF, UI_MENU_PREEMPT_ON, UI_MENU_PREEMPT_INHERIT};   // 0|1|2
-    opt_choice("DKB_ASYNC_PREEMPT", UI_MENU_ASYNC_PREEMPT, preempt, 3, UI_MENU_ASYNC_PREEMPT_DESC);
-    opt_toggle("DKB_REPLAY_ASYNC", UI_MENU_REPLAY_ASYNC, UI_MENU_REPLAY_ASYNC_DESC);
-    opt_toggle("DKB_TIMER_1MS", UI_MENU_TIMER_1MS, UI_MENU_TIMER_1MS_DESC);
+    opt_choice("NS2_ASYNC_PREEMPT", UI_MENU_ASYNC_PREEMPT, preempt, 3, UI_MENU_ASYNC_PREEMPT_DESC);
+    opt_toggle("NS2_REPLAY_ASYNC", UI_MENU_REPLAY_ASYNC, UI_MENU_REPLAY_ASYNC_DESC);
+    opt_toggle("NS2_TIMER_1MS", UI_MENU_TIMER_1MS, UI_MENU_TIMER_1MS_DESC);
 
     opt_group(UI_MENU_GROUP_SHADERS);
     static const UiTextId wait[] = {UI_MENU_PIPE_WAIT_DEFAULT, UI_MENU_PIPE_WAIT_DRAW};
-    opt_choice("DKB_PIPE_WAIT", UI_MENU_PIPE_WAIT, wait, 2, UI_MENU_PIPE_WAIT_DESC);
+    opt_choice("NS2_PIPE_WAIT", UI_MENU_PIPE_WAIT, wait, 2, UI_MENU_PIPE_WAIT_DESC);
     static const UiTextId skip[] = {UI_MENU_PIPE_SKIP_STRICT, UI_MENU_PIPE_SKIP_ANY, UI_MENU_PIPE_SKIP_FULLSCREEN};
-    opt_choice("DKB_PIPE_SKIP", UI_MENU_PIPE_SKIP, skip, 3, UI_MENU_PIPE_SKIP_DESC);
-    opt_toggle("DKB_LIB_PREBUILD", UI_MENU_LIB_PREBUILD, UI_MENU_LIB_PREBUILD_DESC);
-    row_threads("DKB_LIB_PREBUILD_THREADS", UI_MENU_LIB_PREBUILD_THREADS, UI_MENU_LIB_PREBUILD_THREADS_DESC);
-    opt_toggle("DKB_PIPE_PREBUILD", UI_MENU_PIPE_PREBUILD, UI_MENU_PIPE_PREBUILD_DESC);
-    row_threads("DKB_PREWARM_XLATE", UI_MENU_PREWARM_XLATE, UI_MENU_PREWARM_XLATE_DESC);
-    opt_toggle("DKB_GPL", UI_MENU_GPL, UI_MENU_GPL_DESC);
+    opt_choice("NS2_PIPE_SKIP", UI_MENU_PIPE_SKIP, skip, 3, UI_MENU_PIPE_SKIP_DESC);
+    opt_toggle("NS2_LIB_PREBUILD", UI_MENU_LIB_PREBUILD, UI_MENU_LIB_PREBUILD_DESC);
+    row_threads("NS2_LIB_PREBUILD_THREADS", UI_MENU_LIB_PREBUILD_THREADS, UI_MENU_LIB_PREBUILD_THREADS_DESC);
+    opt_toggle("NS2_PIPE_PREBUILD", UI_MENU_PIPE_PREBUILD, UI_MENU_PIPE_PREBUILD_DESC);
+    row_threads("NS2_PREWARM_XLATE", UI_MENU_PREWARM_XLATE, UI_MENU_PREWARM_XLATE_DESC);
+    opt_toggle("NS2_GPL", UI_MENU_GPL, UI_MENU_GPL_DESC);
 
     opt_group(UI_MENU_GROUP_TEXMEM);
     static const UiTextId astc[] = {UI_MENU_ASTC_AUTO, UI_MENU_ASTC_GPU, UI_MENU_ASTC_NATIVE, UI_MENU_ASTC_CPU};
-    opt_choice("DKB_ASTC", UI_MENU_ASTC, astc, 4, UI_MENU_ASTC_DESC);
+    opt_choice("NS2_ASTC", UI_MENU_ASTC, astc, 4, UI_MENU_ASTC_DESC);
     static const UiTextId mem[] = {UI_MENU_MEMORY_AUTO, UI_MENU_MEMORY_IMPORT, UI_MENU_MEMORY_MIRROR,
                                    UI_MENU_MEMORY_VERIFY};
-    opt_choice("DKB_MEMORY", UI_MENU_MEMORY, mem, 4, UI_MENU_MEMORY_DESC);
-    opt_toggle("DKB_TEX_ALIAS", UI_MENU_TEX_ALIAS, UI_MENU_TEX_ALIAS_DESC);
-    opt_slider("DKB_TEX_VRAM_PRESSURE", UI_MENU_TEX_VRAM_PRESSURE, 0, 100, UI_MENU_TEX_VRAM_PRESSURE_DESC, 1, "%.0f%%");
-    opt_toggle("DKB_ASTC_BC", UI_MENU_ASTC_BC, UI_MENU_ASTC_BC_DESC);
+    opt_choice("NS2_MEMORY", UI_MENU_MEMORY, mem, 4, UI_MENU_MEMORY_DESC);
+    opt_toggle("NS2_TEX_ALIAS", UI_MENU_TEX_ALIAS, UI_MENU_TEX_ALIAS_DESC);
+    opt_slider("NS2_TEX_VRAM_PRESSURE", UI_MENU_TEX_VRAM_PRESSURE, 0, 100, UI_MENU_TEX_VRAM_PRESSURE_DESC, 1, "%.0f%%");
+    opt_toggle("NS2_ASTC_BC", UI_MENU_ASTC_BC, UI_MENU_ASTC_BC_DESC);
+    opt_toggle_text("NS2_GPU_DESWIZZLE", "GPU Compute Deswizzle",
+                    "Offloads Tegra Switch 2 block-linear (GOB) texture deswizzling onto Vulkan compute shaders and chains ASTC/BC3 decode directly in VRAM.");
 
     opt_group(UI_MENU_GROUP_FIXES);
-    opt_toggle("DKB_LOD_GUARD", UI_MENU_LOD_GUARD, UI_MENU_LOD_GUARD_DESC);
-    opt_toggle("DKB_FIX_C0", UI_MENU_FIX_C0, UI_MENU_FIX_C0_DESC);
-    opt_toggle("DKB_FIX_ZERO", UI_MENU_FIX_ZERO, UI_MENU_FIX_ZERO_DESC);
-    opt_toggle("DKB_BIND_SKIP", UI_MENU_BIND_SKIP, UI_MENU_BIND_SKIP_DESC);
-    opt_toggle("DKB_SHADER_MEMO", UI_MENU_SHADER_MEMO, UI_MENU_SHADER_MEMO_DESC);
-    opt_toggle("DKB_PIPE_MEMO", UI_MENU_PIPE_MEMO, UI_MENU_PIPE_MEMO_DESC);
-    opt_toggle("DKB_TEX_MEMO", UI_MENU_TEX_MEMO, UI_MENU_TEX_MEMO_DESC);
-    opt_toggle("DKB_DESC_TEMPLATE", UI_MENU_DESC_TEMPLATE, UI_MENU_DESC_TEMPLATE_DESC);
-    opt_toggle("DKB_PUSH_SKIP", UI_MENU_PUSH_SKIP, UI_MENU_PUSH_SKIP_DESC);
-    opt_slider("DKB_SPLIT_DRAWS", UI_MENU_SPLIT_DRAWS, 0, 1000, UI_MENU_SPLIT_DRAWS_DESC, 8, "%.0f");
+    opt_toggle("NS2_LOD_GUARD", UI_MENU_LOD_GUARD, UI_MENU_LOD_GUARD_DESC);
+    opt_toggle("NS2_FIX_C0", UI_MENU_FIX_C0, UI_MENU_FIX_C0_DESC);
+    opt_toggle("NS2_FIX_ZERO", UI_MENU_FIX_ZERO, UI_MENU_FIX_ZERO_DESC);
+    opt_toggle("NS2_BIND_SKIP", UI_MENU_BIND_SKIP, UI_MENU_BIND_SKIP_DESC);
+    opt_toggle("NS2_SHADER_MEMO", UI_MENU_SHADER_MEMO, UI_MENU_SHADER_MEMO_DESC);
+    opt_toggle("NS2_PIPE_MEMO", UI_MENU_PIPE_MEMO, UI_MENU_PIPE_MEMO_DESC);
+    opt_toggle("NS2_TEX_MEMO", UI_MENU_TEX_MEMO, UI_MENU_TEX_MEMO_DESC);
+    opt_toggle("NS2_DESC_TEMPLATE", UI_MENU_DESC_TEMPLATE, UI_MENU_DESC_TEMPLATE_DESC);
+    opt_toggle("NS2_PUSH_SKIP", UI_MENU_PUSH_SKIP, UI_MENU_PUSH_SKIP_DESC);
+    opt_slider("NS2_SPLIT_DRAWS", UI_MENU_SPLIT_DRAWS, 0, 1000, UI_MENU_SPLIT_DRAWS_DESC, 8, "%.0f");
 
     opt_group(UI_MENU_GROUP_VULKAN);
-    if (!validation_layer_present() && !cfg_bool("DKB_VK_VALIDATION")) opt_disable_next(UI_MENU_VK_VALIDATION_MISSING);
-    opt_toggle("DKB_VK_VALIDATION", UI_MENU_VK_VALIDATION, UI_MENU_VK_VALIDATION_DESC);
+    if (!validation_layer_present() && !cfg_bool("NS2_VK_VALIDATION")) opt_disable_next(UI_MENU_VK_VALIDATION_MISSING);
+    opt_toggle("NS2_VK_VALIDATION", UI_MENU_VK_VALIDATION, UI_MENU_VK_VALIDATION_DESC);
+    opt_toggle_text("NS2_VK_NOOPT", "Safe Shader Compile (Disable Driver Opt)",
+                    "Passes VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT when creating Vulkan graphics & compute pipelines (Hookshot RX_VK_NOOPT workaround for GPU driver compiler hangs or crashes).");
     static const UiTextId dyn[] = {UI_MENU_AUTO, UI_MENU_OFF, UI_MENU_ON};   // unset, 0, 1
-    opt_choice("DKB_VK_DYN_VERTEX", UI_MENU_VK_DYN_VERTEX, dyn, 3, UI_MENU_VK_DYN_VERTEX_DESC);
-    opt_choice("DKB_VK_DYN_A2C", UI_MENU_VK_DYN_A2C, dyn, 3, UI_MENU_VK_DYN_A2C_DESC);
-    opt_toggle("DKB_VK_SUBGROUP_PIN", UI_MENU_VK_SUBGROUP_PIN, UI_MENU_VK_SUBGROUP_PIN_DESC);
+    opt_choice("NS2_VK_DYN_VERTEX", UI_MENU_VK_DYN_VERTEX, dyn, 3, UI_MENU_VK_DYN_VERTEX_DESC);
+    opt_choice("NS2_VK_DYN_A2C", UI_MENU_VK_DYN_A2C, dyn, 3, UI_MENU_VK_DYN_A2C_DESC);
+    opt_toggle("NS2_VK_SUBGROUP_PIN", UI_MENU_VK_SUBGROUP_PIN, UI_MENU_VK_SUBGROUP_PIN_DESC);
 
     opt_group(UI_MENU_GROUP_DIAG);
-    row_set_or_not("DKB_TRACE", UI_MENU_TRACE, UI_MENU_TRACE_DESC, "perf");
-    opt_toggle("DKB_FLIGHT", UI_MENU_FLIGHT, UI_MENU_FLIGHT_DESC);
-    opt_slider("DKB_FLIGHT_SPIKE_MS", UI_MENU_FLIGHT_SPIKE_MS, 20, 1000, UI_MENU_FLIGHT_SPIKE_MS_DESC, 10, "%.0f");
+    row_set_or_not("NS2_TRACE", UI_MENU_TRACE, UI_MENU_TRACE_DESC, "perf");
+    opt_toggle("NS2_FLIGHT", UI_MENU_FLIGHT, UI_MENU_FLIGHT_DESC);
+    opt_slider("NS2_FLIGHT_SPIKE_MS", UI_MENU_FLIGHT_SPIKE_MS, 20, 1000, UI_MENU_FLIGHT_SPIKE_MS_DESC, 10, "%.0f");
     static char rec_path[600];   // the recording goes beside the log
     if (!rec_path[0]) {
         char dir[512];
         snprintf(rec_path, sizeof rec_path, "%s/input-record.txt", sysinfo_log_folder(dir, sizeof dir) ? dir : ".");
     }
-    row_set_or_not("DKB_INPUT_RECORD", UI_MENU_INPUT_RECORD, UI_MENU_INPUT_RECORD_DESC, rec_path);
+    row_set_or_not("NS2_INPUT_RECORD", UI_MENU_INPUT_RECORD, UI_MENU_INPUT_RECORD_DESC, rec_path);
     if (opt_button("##open_log", UI_MENU_OPEN_LOG, UI_MENU_OPEN_LOG_DESC, action_value(log_note, UI_MENU_OPEN_LOG))) {
         char dir[512];
         bool ok = sysinfo_log_folder(dir, sizeof dir) && plat_open_folder(dir);
@@ -1028,19 +1048,49 @@ static int g_focus_page = -1;   // this tab's first row takes the cursor once it
 // ---- the window: title, tabs (L / R or Q / E switch), the page, and the bottom row with "Continue" and "Quit game".
 // B on the gamepad and Esc close it.
 static void layout_menu(uint32_t w, uint32_t h, float scale) {
-    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2((float)w, (float)h), IM_COL32(0, 0, 0, 120));
-    float ww = fminf(w * 0.88f, 1400 * scale), wh = fminf(h * 0.86f, 820 * scale);
+    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2((float)w, (float)h), IM_COL32(3, 6, 12, 165));
+    float ww = fminf(w * 0.90f, 1460 * scale), wh = fminf(h * 0.88f, 860 * scale);
     ImGui::SetNextWindowPos(ImVec2(w * 0.5f, h * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(ww, wh), ImGuiCond_Always);
     ImGui::Begin("##menu", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                         ImGuiWindowFlags_NoSavedSettings);
-    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", menu_text(UI_MENU_TITLE));
-    // the port version and the game update, right-aligned on the title line: what a bug report needs first
-    char game[16], version[96];
-    snprintf(game, sizeof game, "%d.%d.%d", rt_game_version / 100, rt_game_version / 10 % 10, rt_game_version % 10);
-    snprintf(version, sizeof version, menu_text(UI_MENU_VERSION), rt_port_version, game);
+
+    const RtGameProfile *gp = game_profile();
+    unsigned win_sz[2] = {0, 0}, crop_sz[2] = {0, 0}, out_tgt[2] = {0, 0};
+    int hh = 0;
+    res_live_snapshot(win_sz, crop_sz, out_tgt, &hh);
+
+    // Header Row: Brand Pill + Game Name + Version
+    ImGui::TextColored(ImVec4(0.22f, 0.74f, 0.97f, 1.0f), "UNIVERSAL NS2 -> PC");
+    ImGui::SameLine(0, 12 * scale);
+    ImGui::TextUnformatted(gp->display_name);
+    char version[128];
+    snprintf(version, sizeof version, "ID %016llX  |  %s", (unsigned long long)gp->title_id, rt_port_version);
     ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - ImGui::CalcTextSize(version).x);
     ImGui::TextDisabled("%s", version);
+
+    // Live Telemetry Pipeline Bar (proving settings hook directly into game & swapchain)
+    {
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        ImVec2 bp = ImGui::GetCursorScreenPos();
+        float bw = ImGui::GetContentRegionAvail().x;
+        float bh = ImGui::GetFontSize() * 1.65f;
+        dl->AddRectFilled(bp, ImVec2(bp.x + bw, bp.y + bh), IM_COL32(14, 22, 38, 225), 8 * scale);
+        dl->AddRect(bp, ImVec2(bp.x + bw, bp.y + bh), IM_COL32(56, 189, 248, 70), 8 * scale, 0, 1.0f);
+        const char *up = cfg_value("NS2_UPSCALER");
+        const char *fg = cfg_value("NS2_FG_MODE");
+        char pipe_info[256];
+        snprintf(pipe_info, sizeof pipe_info,
+                 "  LIVE PIPELINE:   Game %ux%u (%s)   ->   %s [%s %d%%]   ->   Display %ux%u   |   FG: %s   |   Cap: %s",
+                 crop_sz[0], crop_sz[1], hh ? "Handheld" : "Docked",
+                 !strcmp(up, "smrs") ? "Nodix SMRS" : !strcmp(up, "fsr") ? "FSR 1.0" : !strcmp(up, "bilinear") ? "Bilinear" : "Off",
+                 cfg_value("NS2_UPSCALER_PRESET"), cfg_int("NS2_SHARPNESS"),
+                 w, h, strcmp(fg, "off") ? fg : "Off", cfg_value("NS2_FPS_LIMIT"));
+        ImFont *f = ImGui::GetFont();
+        float sfs = ImGui::GetFontSize() * 0.78f;
+        dl->AddText(f, sfs, ImVec2(bp.x + 8 * scale, bp.y + (bh - sfs) * 0.5f), IM_COL32(186, 230, 253, 255), pipe_info);
+        ImGui::Dummy(ImVec2(bw, bh + 4 * scale));
+    }
 
     int step = g_modal || binds_modal()                                                                  ? 0
              : ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
@@ -1129,7 +1179,7 @@ static int perf_mode_of(const char *s) { return !strcmp(s, "full") ? 2 : !strcmp
 
 extern "C" void menu_perf_cycle(void) {
     static const char *const modes[] = {"off", "fps", "full"};
-    cfg_set("DKB_PERF_OVERLAY", modes[(perf_mode_of(cfg_value("DKB_PERF_OVERLAY")) + 1) % 3]);
+    cfg_set("NS2_PERF_OVERLAY", modes[(perf_mode_of(cfg_value("NS2_PERF_OVERLAY")) + 1) % 3]);
     g_perf_save.store(1);
 }
 
@@ -1162,7 +1212,7 @@ static void perf_gpu_once(const MenuTarget *t) {
 static void perf_tick(uint64_t now, const MenuTarget *t) {
     if (cfg_version() != g_perf_ver) {
         g_perf_ver = cfg_version();
-        int m = perf_mode_of(cfg_value("DKB_PERF_OVERLAY"));
+        int m = perf_mode_of(cfg_value("NS2_PERF_OVERLAY"));
         if (m != g_perf_mode) {
             g_perf_last_ns = 0, g_perf_text[0] = 0;
             g_perf_fps_num[0] = 0;
@@ -1197,9 +1247,8 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
             double eff_ms = (eff_fps > 0) ? (1000.0 / eff_fps) : base_ms;
 
             if (fgm > 1) {
-                const char *fgm_mode = cfg_value("DKB_FG_MODE");
+                const char *fgm_mode = cfg_value("NS2_FG_MODE");
                 const char *fgt = !strcmp(fgm_mode, "msm_fg") ? "MSM-FG"
-                                : (!strcmp(fgm_mode, "dlss_fg") && vk_gpu_is_nvidia()) ? "DLSS FG"
                                 : !strcmp(fgm_mode, "xefg") ? "XeFG"
                                 : "FSR3 FG";
                 snprintf(g_perf_fg_badge, sizeof g_perf_fg_badge, "%s %dx", fgt, fgm);
@@ -1242,15 +1291,15 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
                 snprintf(g_perf_01pct_num, sizeof g_perf_01pct_num, "0.1%% %.0f", eff_fps);
             }
 
-            const char *up = cfg_value("DKB_UPSCALER");
+            const char *up = cfg_value("NS2_UPSCALER");
             bool is_smrs = !strcmp(up, "smrs");
             bool is_fsr = !strcmp(up, "fsr");
             if (is_smrs) {
                 g_perf_theme = 2;
-                const char *p = cfg_value("DKB_UPSCALER_PRESET");
-                const char *op = cfg_value("DKB_OPERATION_MODE");
+                const char *p = cfg_value("NS2_UPSCALER_PRESET");
+                const char *op = cfg_value("NS2_OPERATION_MODE");
                 bool is_hh = (op && !strcmp(op, "handheld"));
-                const char *plabel = !strcmp(p, "native") ? "Native DLAA (1620p)"
+                const char *plabel = !strcmp(p, "native") ? "Native (1620p)"
                                    : !strcmp(p, "quality") ? "Quality (1620p)"
                                    : !strcmp(p, "balanced") ? "Balanced (1080p)"
                                    : !strcmp(p, "performance") ? "Perf (1080p)"
@@ -1279,14 +1328,14 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
                 else snprintf(res_buf, sizeof res_buf, "%up->%up", scene[1], out[1]);
                 strncat(line2, res_buf, sizeof(line2) - strlen(line2) - 1);
             }
-            const char *ref = cfg_value("DKB_REFLEX");
+            const char *ref = cfg_value("NS2_REFLEX");
             if (ref && !strcmp(ref, "boost")) {
                 if (line2[0]) strncat(line2, " · Reflex Boost", sizeof(line2) - strlen(line2) - 1);
                 else strncat(line2, "Reflex Boost", sizeof(line2) - strlen(line2) - 1);
             } else if (ref && !strcmp(ref, "on")) {
                 if (line2[0]) strncat(line2, " · Reflex/Anti-Lag", sizeof(line2) - strlen(line2) - 1);
                 else strncat(line2, "Reflex/Anti-Lag", sizeof(line2) - strlen(line2) - 1);
-            } else if (cfg_bool("DKB_XELL")) {
+            } else if (cfg_bool("NS2_XELL")) {
                 if (line2[0]) strncat(line2, " · XeLL", sizeof(line2) - strlen(line2) - 1);
                 else strncat(line2, "XeLL", sizeof(line2) - strlen(line2) - 1);
             }
@@ -1350,23 +1399,23 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
     snprintf(v[2], sizeof v[2], menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
-    if (!strcmp(cfg_value("DKB_UPSCALER"), "smrs")) {
-        int s = cfg_int("DKB_SHARPNESS");
-        const char *p = cfg_value("DKB_UPSCALER_PRESET");
-        const char *op = cfg_value("DKB_OPERATION_MODE");
+    if (!strcmp(cfg_value("NS2_UPSCALER"), "smrs")) {
+        int s = cfg_int("NS2_SHARPNESS");
+        const char *p = cfg_value("NS2_UPSCALER_PRESET");
+        const char *op = cfg_value("NS2_OPERATION_MODE");
         bool is_hh = (op && !strcmp(op, "handheld"));
         snprintf(v[3], sizeof v[3], "Nodix SMRS (%s, %s, %d%% Sharp)",
                  is_hh ? "Handheld 1080p" : "Docked 1620p",
                  p ? p : "Quality", s < 0 ? 0 : s > 100 ? 100 : s);
     } else if (t->scaler == 2) {
-        int s = cfg_int("DKB_SHARPNESS");
+        int s = cfg_int("NS2_SHARPNESS");
         snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);
     } else {
         snprintf(v[3], sizeof v[3], "%s", menu_text(t->scaler ? UI_MENU_OV_SCALE_BILINEAR : UI_MENU_OV_SCALE_NONE));
     }
-    const char *ref = cfg_value("DKB_REFLEX");
-    const char *al = cfg_value("DKB_ANTILAG2");
-    const char *xl = cfg_value("DKB_XELL");
+    const char *ref = cfg_value("NS2_REFLEX");
+    const char *al = cfg_value("NS2_ANTILAG2");
+    const char *xl = cfg_value("NS2_XELL");
     if (vk_gpu_is_nvidia()) {
         snprintf(v[4], sizeof v[4], !strcmp(ref, "boost") ? "Reflex (On + Boost)" : !strcmp(ref, "on") ? "Reflex (On)" : "Off");
     } else if (vk_has_amd_antilag()) {
@@ -1377,10 +1426,9 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
         snprintf(v[4], sizeof v[4], !strcmp(ref, "boost") ? "Low Latency (Boost)" : !strcmp(ref, "on") ? "Low Latency (On)" : "Off");
     }
     int fg_mult = vk_fg_active_multiplier();
-    const char *fg_m = cfg_value("DKB_FG_MODE");
+    const char *fg_m = cfg_value("NS2_FG_MODE");
     if (fg_mult > 1 && fg_m && strcmp(fg_m, "off") != 0) {
         const char *gen = !strcmp(fg_m, "msm_fg") ? "Nodix Super Motion"
-                        : !strcmp(fg_m, "dlss_fg") ? "DLSS MFG"
                         : !strcmp(fg_m, "fsr3_fg") ? "FSR 3.1 FG"
                         : !strcmp(fg_m, "xefg") ? "XeSS MFG" : "Super Motion";
         snprintf(v[5], sizeof v[5], "%s (%dx Active)", gen, fg_mult);
@@ -1708,7 +1756,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     g_cost_ns += plat_now_ns() - t0;
     if (g_test.page >= 0 && frame >= g_test.opened + g_test.per_page * (uint64_t)(g_test.page + 1)) {
         static char path[512];   // this frame's image goes to a file; then the next tab, or the menu closes
-        const char *dir = cfg_get("DKB_MENU_TEST_DIR");
+        const char *dir = cfg_get("NS2_MENU_TEST_DIR");
         snprintf(path, sizeof path, "%s/menu-test-%llu-%d.png", dir ? dir : ".", (unsigned long long)frame, g_test.page);
         *shot = path;
         if (++g_test.page == TAB_COUNT) {

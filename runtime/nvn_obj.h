@@ -18,7 +18,7 @@
 typedef struct {
     int target, format, flags, samples;   // NVNtextureTarget / NVNformat / NVNtextureFlags / sample count (0 or 1 = single-sampled)
     uint32_t width, height, depth, levels, stride;
-    signed int pkg_block_h:8; unsigned int swizzle_r:3,swizzle_g:3,swizzle_b:3,swizzle_a:3,swizzle_pad:12;                      // Byte 0 of the packaged texture layout parameters + 1 (low nibble log2 block height, high nibble log2 block depth); 0 = use the automatic algorithm
+    signed int pkg_block_h:8; unsigned int swizzle_r:3,swizzle_g:3,swizzle_b:3,swizzle_a:3,dsmode:2,set_dsmode:1,swizzle_pad:9;                      // Byte 0 of the packaged texture layout parameters + 1 (low nibble log2 block height, high nibble log2 block depth); 0 = use the automatic algorithm
 } nvn_texdesc;
 
 typedef struct {
@@ -161,7 +161,7 @@ typedef struct { int32_t enable; uint32_t index; } p_prim_restart;   // SetPrimi
 typedef struct { float n, f; } p_depth_range;
 typedef struct { const prog_t *prog; int32_t stages; } p_bind_program;
 typedef struct { int32_t kind; uint8_t bytes[0x18]; } p_bind_state;      // kind: 0 blend 1 color 2 chmask 3 ms 4 poly 5 ds 6 point size (float) 7 alpha ref (float)
-typedef struct { int32_t first, n; uint32_t st[16]; } p_bind_vattr;
+typedef struct { int32_t first, n; uint32_t st[32]; } p_bind_vattr;
 typedef struct { int32_t first, n; vs_st st[16]; } p_bind_vstream;
 typedef struct { int32_t first, n; NVNbufferRange r[16]; } p_bind_vbuf;
 typedef struct { int32_t stage, index; uint64_t addr, size; } p_bind_buf;  // UBO / SSBO

@@ -1050,16 +1050,20 @@ static uint32_t delete_recursive(const char *path) {
 }
 
 static uint32_t open_directory(uint64_t *out, const char *path, int mode) {
-    if (romfs_owns(path)) rt_fatal("fs: OpenDirectory on the RomFS (%s) is not implemented", path);
     if (aoc_owns(path)) rt_fatal("fs: OpenDirectory on add-on content (%s) is not implemented", path);
-    char p[PATH_CAP];
-    uint32_t r = host_path(path, p, sizeof p);
-    if (r) return r;
     if (!out || mode < 1 || mode > 3) return FS_R_INVALID_ARGUMENT;
-    if (plat_fs_kind(p) != PLAT_FS_DIR) return FS_R_PATH_NOT_FOUND;
-    Listing l;
-    int e = list_dir(p, &l);
-    if (e) return fs_result(e);
+    Listing l = {0};
+    if (romfs_owns(path)) {
+        int e = romfs_list_dir(path, listing_add, &l);
+        if (e) { listing_free(l.e, l.n); return fs_result(e); }
+    } else {
+        char p[PATH_CAP];
+        uint32_t r = host_path(path, p, sizeof p);
+        if (r) return r;
+        if (plat_fs_kind(p) != PLAT_FS_DIR) return FS_R_PATH_NOT_FOUND;
+        int e = list_dir(p, &l);
+        if (e) return fs_result(e);
+    }
     plat_mutex_lock(&lock);
     for (int i = 0; i < NDIRS; i++)
         if (!dirs[i].used) {
@@ -1069,7 +1073,22 @@ static uint32_t open_directory(uint64_t *out, const char *path, int mode) {
             return 0;
         }
     plat_mutex_unlock(&lock);
+    listing_free(l.e, l.n);
     rt_fatal("fs: host directory handle table full (%d)", NDIRS);
+}
+
+static uint32_t get_directory_entry_count(int64_t *out, uint64_t h) {
+    if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !out) return FS_R_INVALID_ARGUMENT;
+    const Dir *d = &dirs[h - DIR_BASE];
+    if (!d->used) return FS_R_INVALID_ARGUMENT;
+    int64_t count = 0;
+    for (int i = 0; i < d->n; i++) {
+        if (strlen(d->e[i].name) + 1 > 769) continue;
+        int is_dir = d->e[i].kind == PLAT_FS_DIR;
+        if (d->mode & (is_dir ? 1 : 2)) count++;
+    }
+    *out = count;
+    return 0;
 }
 
 static uint32_t read_directory(int64_t *count, DirectoryEntry *out, uint64_t h, int64_t max) {
@@ -1124,6 +1143,7 @@ static void ov_create_directory(Cpu *c) { ret_x(c, create_directory(arg_p(c, 0))
 static void ov_delete_recursive(Cpu *c) { ret_x(c, delete_recursive(arg_p(c, 0))); }
 static void ov_open_directory(Cpu *c) { ret_x(c, open_directory(arg_p(c, 0), arg_p(c, 1), I32(2))); }
 static void ov_read_directory(Cpu *c) { ret_x(c, read_directory(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2), I64(3))); }
+static void ov_get_dir_entry_count(Cpu *c) { ret_x(c, get_directory_entry_count(arg_p(c, 0), arg_x(c, 1))); }
 static void ov_close_directory(Cpu *c) { close_directory(arg_x(c, 0)); }
 static void ov_mount_save(Cpu *c) { ret_x(c, mount_save(arg_p(c, 0), arg_p(c, 1))); }
 static void ov_mount_save_ro(Cpu *c) { ret_x(c, mount_save_ro(arg_p(c, 0), arg_x(c, 1), arg_p(c, 2))); }
@@ -1166,7 +1186,9 @@ static void ov_set_priority(Cpu *c) { (void)c; }
 #define S_DELETE_RECURSIVE "_ZN2nn2fs26DeleteDirectoryRecursivelyEPKc"
 #define S_OPEN_DIRECTORY "_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci"
 #define S_READ_DIRECTORY "_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl"
+#define S_GET_DIR_COUNT "_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE"
 #define S_CLOSE_DIRECTORY "_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE"
+#define S_COMMIT_SAVE "_ZN2nn2fs14CommitSaveDataEPKc"
 #define S_MOUNT_SAVE "_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE"
 #define S_MOUNT_SAVE_RO "_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE"
 #define S_SAVE_EXISTS "_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE"
@@ -1203,6 +1225,7 @@ HOST_OVERRIDE(S_CREATE_DIRECTORY, ov_create_directory);
 HOST_OVERRIDE(S_DELETE_RECURSIVE, ov_delete_recursive);
 HOST_OVERRIDE(S_OPEN_DIRECTORY, ov_open_directory);
 HOST_OVERRIDE(S_READ_DIRECTORY, ov_read_directory);
+HOST_OVERRIDE(S_GET_DIR_COUNT, ov_get_dir_entry_count);
 HOST_OVERRIDE(S_CLOSE_DIRECTORY, ov_close_directory);
 HOST_OVERRIDE(S_MOUNT_SAVE, ov_mount_save);
 HOST_OVERRIDE(S_MOUNT_SAVE_RO, ov_mount_save_ro);
@@ -1227,6 +1250,7 @@ HOST_OVERRIDE("_ZN2nn2fs19UnmountAddOnContentEPKc", ov_unmount_aoc);
 HOST_OVERRIDE("_ZN2nn2fs31QueryMountAddOnContentCacheSizeEPmi", ov_query_aoc_cache);
 HOST_OVERRIDE(S_UNMOUNT, ov_unmount);
 HOST_OVERRIDE(S_COMMIT, ov_commit);
+HOST_OVERRIDE(S_COMMIT_SAVE, ov_commit);
 HOST_OVERRIDE(S_CREATE_CACHE, ov_create_cache);
 HOST_OVERRIDE(S_DELETE_CACHE, ov_delete_cache);
 HOST_OVERRIDE(S_MOUNT_CACHE, ov_mount_cache);
@@ -1317,6 +1341,10 @@ static void probe_paths(void) {
     failures += bad > 0;
     CHECK(!romfs_path_relative(NULL, "rom:/a") && !romfs_path_relative("", ":/a") && !romfs_path_relative("rom", NULL),
           "romfs_path_relative accepts an empty mount or path");
+    char norm[64];
+    CHECK(romfs_path_norm("rom", "rom:/a//b", norm, sizeof norm) && !strcmp(norm, "a/b") &&
+              !romfs_path_norm("rom", "rom:/a//b/", norm, sizeof norm),
+          "romfs_path_norm handles consecutive slashes");
     printf("paths: %u romfs_path.h normalisation cases: %s\n", (unsigned)(sizeof cases / sizeof *cases),
            bad ? "FAIL" : "ok");
 }

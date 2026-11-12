@@ -792,7 +792,16 @@ static void probe_fonts(void) {
     snprintf(path, sizeof path, "%s/0-standard.bfttf", ov_shared_font_dir(dir, sizeof dir));
     FILE *f = fopen(path, "rb");
     if (!f) {
-        printf("pl: no shared fonts in %s (tools/extract_fonts.py); Address/Size checked as named fatals only\n", dir);
+        const char *explicit_dir = cfg_get("TOTK_SHARED_FONTS");
+        if (!(explicit_dir && *explicit_dir)) {
+            uint64_t sz5 = CALL("pl.GetSharedFontSize", 5), ad5 = CALL("pl.GetSharedFontAddress", 5);
+            const uint8_t *p5 = (const uint8_t *)(uintptr_t)ad5;
+            CHECK(ad5 && sz5 >= 1024 && ov_bfttf_size(p5 - 8, sz5 + 8) == sz5 &&
+                  p5[0] == 0 && p5[1] == 1 && p5[2] == 0 && p5[3] == 0,
+                  "shared font 5: synthesized PUA sfnt invalid (addr=%#llx size=%llu)",
+                  (unsigned long long)ad5, (unsigned long long)sz5);
+        }
+        printf("pl: no shared fonts in %s (tools/extract_fonts.py); synthesized PUA font 5 + named fatals checked\n", dir);
         return;
     }
     uint8_t head[12];

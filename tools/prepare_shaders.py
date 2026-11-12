@@ -66,7 +66,13 @@ def read_list(path):
         return Path(path).read_text(encoding='utf-8')
     if BUNDLED_LIST.is_file():
         return BUNDLED_LIST.read_text(encoding='utf-8')
-    return shader_list.history(ROOT / 'refs' / 'MacNativeGames')
+    mng_path = ROOT / 'refs' / 'MacNativeGames'
+    if (mng_path / '.git').is_dir() or (mng_path / 'HEAD').is_file():
+        try:
+            return shader_list.history(mng_path)
+        except Exception:
+            pass
+    return ""
 
 
 def pipeline_variants(key):
@@ -130,27 +136,69 @@ def code_hash(stage, control, code, length, c1):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('build', type=Path, help='build directory holding totk.exe (build\\v121)')
+    ap.add_argument('build', type=Path, help='build directory holding game executable (build\\v121, build\\ff100, etc.)')
     ap.add_argument('--version', default='v121', help='build/extracted/<version>')
-    ap.add_argument('--romfs', type=Path, help='RomFS directory (default build/extracted/<version>/romfs)')
+    ap.add_argument('--romfs', type=Path, help='RomFS directory (loose directory or packed folder with index.json and romfs.bin)')
     ap.add_argument('--exefs', type=Path, help='ExeFS directory (default build/extracted/<version>/exefs)')
     ap.add_argument('--list', help='a shader_list.tsv instead of tools/data/shader_list.tsv or refs/MacNativeGames')
     ap.add_argument('--no-run', action='store_true', help='write the seed files only')
     a = ap.parse_args()
     t0 = time.monotonic()
     variants, prio = parse_list(read_list(a.list))
+    out = a.build.resolve()
     extracted = ROOT / 'build' / 'extracted' / a.version
+    romfs_dir = a.romfs or (extracted / 'romfs')
+    exefs_dir = a.exefs or (extracted / 'exefs')
     listed = len(variants)
-    shaders, _ = inventory(a.romfs or extracted / 'romfs', a.exefs or extracted / 'exefs', everything=False)
-    # A missing list row says nothing about the walk: the list covers several versions, and 1.1.1 holds 17,587 of its
-    # 41,414 rows, so most rows are absent because the game does not have them, not because the walk missed them. A walk
-    # that found next to nothing does say something: the shader directories have moved.
-    if len(shaders) < max(64, listed // 20):
-        print(f'only {len(shaders)} shaders found of the {listed} listed variants: reading every RomFS file instead',
-              flush=True)
-        shaders, _ = inventory(a.romfs or extracted / 'romfs', a.exefs or extracted / 'exefs')
+    shaders = {}
+    if (romfs_dir and (romfs_dir.is_dir() or (romfs_dir / 'index.json').is_file())) or (exefs_dir and exefs_dir.is_dir()):
+        shaders, _ = inventory(romfs_dir, exefs_dir, everything=False)
+        if listed and len(shaders) < max(64, listed // 20):
+            print(f'only {len(shaders)} shaders found of the {listed} listed variants: reading every RomFS file instead',
+                  flush=True)
+            shaders, _ = inventory(romfs_dir, exefs_dir, everything=True)
     t1 = time.monotonic()
     progs, recs, seen, skipped = {}, [], set(), {'not in this version': 0, 'stage': 0}
+
+    # Load existing recorded programs/answers if present in build dir
+    existing_prg = out / 'shader-programs.bin'
+    existing_ans = out / 'shader-answers.bin'
+    if existing_prg.is_file() and existing_ans.is_file():
+        try:
+            prg_data = existing_prg.read_bytes()
+            if prg_data[:8] == b'TOTKSPRG' and len(prg_data) >= 16:
+                off = 16
+                while off + 44 + CONTROL <= len(prg_data):
+                    stg, lg, c1_lg = struct.unpack_from('<III', prg_data, off)
+                    rec_size = 44 + CONTROL + lg + c1_lg
+                    if off + rec_size > len(prg_data):
+                        break
+                    chash = prg_data[off + 12:off + 44]
+                    rec_body = prg_data[off:off + rec_size]
+                    progs[chash.hex()] = (chash, rec_body)
+                    off += rec_size
+
+            ans_data = existing_ans.read_bytes()
+            if ans_data[:8] == b'TOTKSANS' and len(ans_data) >= 16:
+                _, rec_sz = struct.unpack_from('<II', ans_data, 8)
+                off = 16
+                while off + rec_sz <= len(ans_data):
+                    rec = ans_data[off:off + rec_sz]
+                    stg = struct.unpack_from('<I', rec, 0)[0]
+                    chash = rec[4:36]
+                    iid = rec[36:68]
+                    ans_packed = rec[68:68 + 147]
+                    prio_byte = rec[rec_sz - 1] if rec_sz > 68 + 147 else 1
+                    if (chash, ans_packed) not in seen:
+                        seen.add((chash, ans_packed))
+                        norm_rec = struct.pack('<I', stg) + chash + iid + ans_packed + bytes([prio_byte])
+                        recs.append((prio_byte, norm_rec))
+                    off += rec_sz
+            print(f'merged {len(progs)} programs and {len(recs)} variants from existing shader-*.bin in {out.name}',
+                  flush=True)
+        except Exception as e:
+            print(f'Note: could not merge existing shader-*.bin: {e}')
+
     variants += [(key, DEFAULT) for key in sorted(shaders)]
     for key, deps in variants:
         s = shaders.get(key)
@@ -162,7 +210,13 @@ def main():
             skipped['stage'] += 1
             continue
         control, code = s['control'][:CONTROL], s['code']
+        if len(control) < CONTROL:
+            control = control.ljust(CONTROL, b'\x00')
         c1_off, length = struct.unpack_from('<II', control, 0x700)
+        if length == 0 or length > len(code):
+            length = len(code)
+        if c1_off == 0 or c1_off > length:
+            c1_off = length
         c1 = code[c1_off:length]
         if key not in progs:
             h = code_hash(stage, control, code, length, c1)
@@ -176,7 +230,6 @@ def main():
         assert len(rec) == ANS_REC
         recs.append((prio.get(key, 2), rec))
     recs.sort(key=lambda r: r[0])   # stable: list order within a priority
-    out = a.build.resolve()
     with open(out / 'seed-programs.bin', 'wb') as f:
         f.write(b'TOTKSPRG' + struct.pack('<II', 1, 0))
         for _, body in progs.values():
@@ -191,9 +244,25 @@ def main():
           f'seed written in {time.monotonic() - t0:.1f} s', flush=True)
     if a.no_run:
         return 0
-    exe = out / ('totk.exe' if os.name == 'nt' else 'totk')
+
+    # Auto-detect target executable
+    exe = None
+    for name in ('ff.exe', 'dkb.exe', 'mkw.exe', 'mtf.exe', 'totk.exe', 'ff', 'dkb', 'mkw', 'mtf', 'totk'):
+        cand = out / name
+        if cand.is_file():
+            exe = cand
+            break
+    if not exe:
+        for p in out.glob('*.exe' if os.name == 'nt' else '*'):
+            if p.is_file() and not p.name.endswith('_xlate.exe') and not p.name.endswith('.id'):
+                exe = p
+                break
+    if not exe:
+        print(f'prepare_shaders: seed files written to {out}, but no game executable found to run --prepare-shaders')
+        return 0
+
     r = subprocess.run([str(exe), '--prepare-shaders'], cwd=str(out))
-    print(f'totk.exe --prepare-shaders: rc={r.returncode}; total {time.monotonic() - t0:.1f} s')
+    print(f'{exe.name} --prepare-shaders: rc={r.returncode}; total {time.monotonic() - t0:.1f} s')
     return r.returncode
 
 

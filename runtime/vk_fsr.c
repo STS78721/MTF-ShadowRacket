@@ -162,8 +162,7 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
     uint32_t dw = (uint32_t)out[2], dh = (uint32_t)out[3];
     if (!fmt || cw <= 0 || ch <= 0 || dw <= 0 || dh <= 0) return 0;
 
-    int sharp = cfg_int("DKB_SHARPNESS");
-    if (!sharp && cfg_is_set("TOTK_SHARPNESS")) sharp = cfg_int("TOTK_SHARPNESS");
+    int sharp = cfg_int("NS2_SHARPNESS");
     if (sharp < 0) sharp = 0;
     if (sharp > 100) sharp = 100;
 
@@ -175,7 +174,9 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
     if (!F.ok || !ensure_images(c, dw, dh)) return 0;
     slot %= SLOTS;
     if (F.src_view[slot]) vkDestroyImageView(c->device, F.src_view[slot], NULL);
-    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = src,
+    VkImageViewUsageCreateInfo use = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+                                      .usage = VK_IMAGE_USAGE_SAMPLED_BIT};
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .pNext = &use, .image = src,
                                 .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt,
                                 .components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                                                VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_ONE},
@@ -186,7 +187,9 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
     }
     if (!F.logged) {
         F.logged = 1;
-        rt_log("vk: FSR upscales %dx%d to %ux%u (sharpness %d)", cw, ch, dw, dh, sharp);
+        rt_log("vk: FSR %s %dx%d to %ux%u (sharpness %d)",
+               (dw == (uint32_t)cw && dh == (uint32_t)ch) ? "RCAS native sharpen" : "upscales",
+               cw, ch, dw, dh, sharp);
     }
     const VkPipelineStageFlags2 CS = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, XF = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     // the game's writes to the source become visible to the compute read; the earlier frame's reads of the
@@ -197,17 +200,25 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
         barrier(cb, F.img[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, CS | XF, 0, CS,
                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     uint32_t gx = (dw + 15) / 16, gy = (dh + 15) / 16;
-    float easu[8] = {(float)cw, (float)ch, (float)sw, (float)sh, (float)dw, (float)dh, (float)crop[0], (float)crop[1]};
-    bind_pass(cb, F.easu, F.src_view[slot], F.view[0], easu);
-    vkCmdDispatch(cb, gx, gy, 1);
     int last = 0;
-    if (sharp > 0) {
-        barrier(cb, F.img[0], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                CS, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    if (dw == (uint32_t)cw && dh == (uint32_t)ch) {
+        // Native 1:1 sharpening: skip EASU spatial filter entirely, run RCAS directly on src
         float rcas[8] = {(float)dw, (float)dh, (float)(100 - sharp) / 50.0f, 0, 0, 0, 0, 0};
-        bind_pass(cb, F.rcas, F.view[0], F.view[1], rcas);
+        bind_pass(cb, F.rcas, F.src_view[slot], F.view[0], rcas);
         vkCmdDispatch(cb, gx, gy, 1);
-        last = 1;
+        last = 0;
+    } else {
+        float easu[8] = {(float)cw, (float)ch, (float)sw, (float)sh, (float)dw, (float)dh, (float)crop[0], (float)crop[1]};
+        bind_pass(cb, F.easu, F.src_view[slot], F.view[0], easu);
+        vkCmdDispatch(cb, gx, gy, 1);
+        if (sharp > 0) {
+            barrier(cb, F.img[0], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    CS, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            float rcas[8] = {(float)dw, (float)dh, (float)(100 - sharp) / 50.0f, 0, 0, 0, 0, 0};
+            bind_pass(cb, F.rcas, F.view[0], F.view[1], rcas);
+            vkCmdDispatch(cb, gx, gy, 1);
+            last = 1;
+        }
     }
     barrier(cb, F.img[last], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
             XF, VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -218,7 +229,7 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
                           .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                           .dstOffsets = {{out[0], out[1], 0}, {out[0] + (int)dw, out[1] + (int)dh, 1}}};
     vkCmdBlitImage(cb, F.img[last], VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region,
-                   VK_FILTER_NEAREST);
+                   VK_FILTER_LINEAR);
     return 1;
 }
 

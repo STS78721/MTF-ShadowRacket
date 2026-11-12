@@ -55,9 +55,10 @@ def main():
             off += size
     total_bytes = off
     index = {
-        'format_version': 1,
-        'image_sha256': sha.hexdigest(),
-        'image_size': total_bytes,
+        'status': 'pass',
+        'source': 'packed from a loose RomFS folder; no NCA hash tree checked',
+        'romfs_sha256': sha.hexdigest(),
+        'romfs_size': total_bytes,
         'files': entries,
     }
     index_path = args.out / 'index.json'

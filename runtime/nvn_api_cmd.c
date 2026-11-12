@@ -36,9 +36,9 @@ static cmd_t *cmd_of(const Cpu *c) { return arg_p(c, 0); }
 
 // ---------- memory callbacks
 // NVN calls the game's memory callback when a recording needs command or control memory and none is left. Records
-// live in host memory here, so the callback is called only where the hardware certainly would: a recording starts
-// without any command memory, or ends without any control memory. It runs on the calling guest thread through
-// rt_call; whatever memory it adds is accounted. Set{Command,Control}MemoryCallbackEnabled(false) suppress it.
+// live in host memory here, so the callback is called when accounted command or control memory runs out at
+// BeginRecording or EndRecording. It runs on the calling guest thread through rt_call; whatever memory it adds is
+// accounted. Set{Command,Control}MemoryCallbackEnabled(false) suppress it.
 enum { CB_NO_COMMAND = 1, CB_NO_CONTROL = 2 };
 static PlatMutex cb_lock = PLAT_MUTEX_INIT;
 static nvn_hmap cb_off = {.klen = 8};       // command buffer -> disabled callback kinds | 0x100
@@ -392,18 +392,29 @@ NVN_API(nvnCommandBufferBeginRecording) {
     if (o->recording) rt_log("nvn: BeginRecording on command buffer %p while it records", (void *)o);
     o->recording = 1;
     o->cur = o->seg;   // the previous recording was copied at EndRecording
+    if (o->hw_used + MIN_COMMAND_SIZE > o->game_size)
+        memory_event(c, o, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY, MIN_COMMAND_SIZE);
     o->rec_start = o->cmd_used;
     put_hdr(cmd_alloc(o, 8), OP_BEGIN, 8);
     o->hw_used -= 8;   // BEGIN and END have no hardware equivalent
     o->hw_start = o->hw_used;
     nvn_mode_trace(NVN_MODE_BEGIN, (uintptr_t)o, 0, 0, 0);
-    if (!o->game_size) memory_event(c, o, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY, MIN_COMMAND_SIZE);
 }
 // NVNcommandHandle nvnCommandBufferEndRecording(NVNcommandBuffer *cmd)
 NVN_API(nvnCommandBufferEndRecording) {
     cmd_t *o = cmd_of(c);
     if (!o->recording || !o->seg) rt_fatal("nvn: EndRecording on command buffer %p, which does not record", (void *)o);
-    if (!o->ctl_size) memory_event(c, o, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_CONTROL_MEMORY, MIN_CONTROL_SIZE);
+    size_t ctl_need = (size_t)(o->cur - o->seg) > 8 ? CTL_PER_RECORDING : 8;
+    if (o->hw_used > o->game_size) {
+        size_t overflow = o->hw_used - o->game_size;
+        memory_event(c, o, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY, MIN_COMMAND_SIZE);
+        if (!o->hw_used && o->game_size) {
+            size_t rem = overflow % o->game_size;
+            o->hw_used = overflow < o->game_size ? overflow : (rem ? rem : min_size(MIN_COMMAND_SIZE, o->game_size));
+        }
+    }
+    if (o->ctl_used + ctl_need > o->ctl_size)
+        memory_event(c, o, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_CONTROL_MEMORY, MIN_CONTROL_SIZE);
     put_hdr(cmd_alloc(o, 8), OP_END, 8);
     o->hw_used -= 8;
     o->recording = 0;
@@ -411,7 +422,7 @@ NVN_API(nvnCommandBufferEndRecording) {
     // Finalizing the recorder does not retire its handle; only reusing the control memory it was recorded in does.
     uintptr_t lo = (uintptr_t)o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
     uintptr_t hi = o->ctl ? lo + 1 : 0;
-    o->ctl_used += CTL_PER_RECORDING;
+    o->ctl_used += ctl_need;
     copy_add(lo, hi, copy);
     nvn_mode_trace(NVN_MODE_END, (uintptr_t)o, (uintptr_t)copy, 0, 0);
     ret_x(c, (uintptr_t)copy);
@@ -421,9 +432,9 @@ NVN_API(nvnCommandBufferIsRecording) { ret_x(c, cmd_of(c)->recording != 0); }
 
 // The called recording is copied into the caller at the call position: the game recycles command memory in small steps,
 // so a handle may be gone by the time the caller is submitted. Deferred binds stay deferred. A copy is OP_BEGIN, its
-// records and OP_END (flatten_recording checked them), so the records go over as one block; usage grows by the same
-// bytes as record by record.
-static void inline_recording(cmd_t *o, uint64_t handle, const char *what) {
+// records and OP_END (flatten_recording checked them), so the records go over as one block; CopyCommands grows command
+// usage by the copied bytes, while CallCommands accounts only a 16-byte call reference.
+static void inline_recording(cmd_t *o, uint64_t handle, const char *what, int is_copy) {
     // A null handle shows up when a prior EndRecording failed (e.g. a shader that did not lower).
     // Skip it instead of aborting so the rest of the frame can still present.
     if (!handle) {
@@ -441,7 +452,7 @@ static void inline_recording(cmd_t *o, uint64_t handle, const char *what) {
     memcpy(o->cur, (const uint8_t *)(uintptr_t)handle + 8, body);
     o->cur += body;
     o->cmd_used += body;
-    o->hw_used += body;
+    o->hw_used += is_copy ? body : 16;
     o->last_rec = 0;
 }
 // void nvnCommandBuffer{Call,Copy}Commands(NVNcommandBuffer *cmd, int n, const NVNcommandHandle *handles)
@@ -449,13 +460,13 @@ NVN_API(nvnCommandBufferCallCommands) {
     cmd_t *o = cmd_of(c);
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);
-    for (int i = 0; i < n; i++) inline_recording(o, h[i], "CallCommands");
+    for (int i = 0; i < n; i++) inline_recording(o, h[i], "CallCommands", 0);
 }
 NVN_API(nvnCommandBufferCopyCommands) {
     cmd_t *o = cmd_of(c);
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);
-    for (int i = 0; i < n; i++) inline_recording(o, h[i], "CopyCommands");
+    for (int i = 0; i < n; i++) inline_recording(o, h[i], "CopyCommands", 1);
 }
 
 // ---------- CommandBuffer: commands with CPU-visible results (performed by the back end in GPU order)
@@ -648,7 +659,7 @@ NVN_API(nvnCommandBufferSetAlphaRef) {
 NVN_API(nvnCommandBufferBindVertexAttribState) {
     cmd_t *o = cmd_of(c);
     int n = (int)arg_x(c, 1);
-    if (n < 0 || n > 16) { rt_log("nvn: BindVertexAttribState n %d", n); return; }
+    if (n < 0 || n > 32) { rt_log("nvn: BindVertexAttribState n %d", n); return; }
     p_bind_vattr *r = RECN(o, OP_BIND_VATTR, p_bind_vattr, st, n);
     r->first = 0;
     r->n = n;
@@ -659,11 +670,18 @@ NVN_API(nvnCommandBufferBindVertexAttribState) {
 NVN_API(nvnCommandBufferBindVertexStreamState) {
     cmd_t *o = cmd_of(c);
     int n = (int)arg_x(c, 1);
-    if (n < 0 || n > 16) { rt_log("nvn: BindVertexStreamState n %d", n); return; }
+    if (n < 0 || n > 32) { rt_log("nvn: BindVertexStreamState n %d", n); return; }
+    const vs_st *st = arg_p(c, 2);
+    if (n > 16) {
+        static int logged;
+        for (int i = 16; i < n && !logged; i++)
+            if (st[i].stride) { logged = 1; rt_log("nvn: BindVertexStreamState n %d (streams 16..31 ignored)", n); }
+        n = 16;
+    }
     p_bind_vstream *r = RECN(o, OP_BIND_VSTREAM, p_bind_vstream, st, n);
     r->first = 0;
     r->n = n;
-    memcpy(r->st, arg_p(c, 2), 8 * (size_t)n);
+    memcpy(r->st, st, 8 * (size_t)n);
     hw_fix(o, 4 * (16 + (size_t)n));
 }
 static void bind_vertex_buffers(cmd_t *o, int first, int n, const NVNbufferRange *rg) {
@@ -946,6 +964,33 @@ NVN_API(nvnCommandBufferDownsample) {
     o->dst = tex_pin(arg_p(c, 2));
     if (o->src) o->sr = (NVNcopyRegion){0, 0, 0, (int)o->src->d.width, (int)o->src->d.height, 1};
     if (o->dst) o->dr = (NVNcopyRegion){0, 0, 0, (int)o->dst->d.width, (int)o->dst->d.height, 1};
+    o->flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;
+}
+void nvn_cmd_copy_tex_blit(NVNcommandBuffer *cmd, const NVNtexture *src, const NVNtextureView *sv,
+                           int sx, int sy, int sw, int sh,
+                           const NVNtexture *dst, const NVNtextureView *dv,
+                           int dx, int dy, int dw, int dh) {
+    if (!cmd || !src || !dst) return;
+    if (((const tex_t *)src)->magic != NVN_TEX_MAGIC || ((const tex_t *)dst)->magic != NVN_TEX_MAGIC) return;
+    const tex_t *s = tex_pin(src), *d = tex_pin(dst);
+    if (!s || !d) return;
+    int full_sw = (int)s->d.width - sx;
+    int full_sh = (int)s->d.height - sy;
+    int full_dw = (int)d->d.width - dx;
+    int full_dh = (int)d->d.height - dy;
+    if (sw <= 0 || sw > full_sw) sw = full_sw;
+    if (sh <= 0 || sh > full_sh) sh = full_sh;
+    if (dw <= 0 || dw > full_dw) dw = full_dw;
+    if (dh <= 0 || dh > full_dh) dh = full_dh;
+    if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
+    if (s == d && sx == dx && sy == dy && sw == dw && sh == dh && sv == dv) return;
+    p_copy_t2t *o = REC((cmd_t *)cmd, OP_COPY_T2T, p_copy_t2t);
+    o->src = s;
+    o->dst = d;
+    copy_view(&o->sv, &o->has_sv, sv);
+    copy_view(&o->dv, &o->has_dv, dv);
+    o->sr = (NVNcopyRegion){sx, sy, 0, sw, sh, 1};
+    o->dr = (NVNcopyRegion){dx, dy, 0, dw, dh, 1};
     o->flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;
 }
 // void nvnCommandBufferSetCopyRowStride(NVNcommandBuffer *cmd, ptrdiff_t stride)

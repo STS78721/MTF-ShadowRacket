@@ -12,10 +12,11 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "game_profile.h"
 #include "host.h"
 #include "platform/platform.h"
 
-#define PREFIX "DKB_"
+#define PREFIX "NS2_"
 #define PREFIX_LEN 4
 #define CFG_MAX_KEYS 512
 
@@ -35,28 +36,27 @@ static const char *const known[] = {
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
-    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA", "COLOR_PRESET", "COLOR_SATURATION", "CORE_DIAG", "CRIT", "CRIT_OUT", "DESC_TEMPLATE", "DEVICE_PROFILE", "DLAA", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET",
+    "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA", "COLOR_PRESET", "COLOR_SATURATION", "CORE_DIAG", "CRIT", "CRIT_OUT", "DESC_TEMPLATE", "DEVICE_PROFILE",
     "DRAW_BISECT", "DUALSENSE", "DUALSENSE_AUDIO", "DUALSENSE_AUDIO_MODE", "DUALSENSE_HAPTICS", "DUALSENSE_TRIGGERS", "DUALSENSE_TRIGGER_STRENGTH", "DUALSENSE_VOL",
     "DUMP", "DUMP_BUF", "DUMP_DIR", "DUMP_LOG", "DUMP_SKIP_RUNS", "DUMP_TEX", "DUMP_UBO",
     "EXEFS", "EXPERIMENTAL_GEOMETRY", "FEEDBACK", "FIX_C0", "FIX_INDIRECT_RESET", "FIX_VS_FAULT", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES", "FLIGHT_SPIKE_MS",
     "FLIGHT_THUMBS", "FMZ", "FMZ_SEL", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAME_GEN", "FREEZE_IDLE", "FREE_CORES", "FULLSCREEN", "GATHER_BIAS", "GEOMETRY_CONTEXT", "GEOMETRY_CONTEXT_ORIGIN", "GPL", "GPL_DRAW_BUILD", "GPU",
-    "GPU_INDEX", "GPU_NAME", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
+    "GPU_DESWIZZLE", "GPU_INDEX", "GPU_NAME", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LIVE_INPUT", "LOCALE", "LOD_GUARD", "LOW_LATENCY", "MEMORY", "MENU_LANG", "MENU_TEST",
     "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MOTION", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE", "NATIVE_GS", "NX2_READ_NOWAIT",
     "NVN2_MODE_TRACE", "NVN2_MODE_TRACE_START_MS", "NVN2_MODE_TRACE_DURATION_MS", "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PAIR_LOG", "PATCH_OUTPUT", "PATCH_SCENE", "PERF_OVERLAY", "PERF_SLOW_GPU_MS", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
     "PRESENT_HOLD", "PREWARM_XLATE", "PROBE_IPC_CHILD", "PROBE_MOVIE", "PROBE_MOVIE_SHOT", "PROBE_NVN_CHILD", "PROBE_SERVICES_CHILD", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
     "PROFILE_MAIN", "PROFILE_RENDER", "PROFILE_SLOW", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_END", "REEXEC", "REFLEX",
-    "RENDER_SCALE", "REPLAY_ASYNC",
+    "RENDER_SCALE", "REPLAY_ASYNC", "RES_HOOK",
     "REPLAY_CHECK", "RESOLVE_CHECK", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
     "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SAVE", "SHADER_CACHE",
     "SHADER_DUMP", "SHADER_FAILURE_DUMP", "SHADER_MEMO", "SHADOW", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR", "SHOTS_FULL", "SKIP_COMPUTE", "SKIP_DRAWS", "SKIP_STAGE", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_US", "STICK_DEADZONE", "SWKBD_ANSWER",
-    "SWKBD_TEST", "TEST_PAD", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_HASH", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TIMER_1MS", "REC_BATCH", "TRACE", "UBO_SNAPSHOT", "UPSCALER", "UPSCALER_PRESET", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
+    "SWKBD_TEST", "TEST_PAD", "TEST_PREPARE_SHADERS", "TEX_ALIAS", "TEX_HASH", "TEX_MEMO", "TEX_VRAM_PRESSURE", "TIMER_1MS", "REC_BATCH", "TRACE", "UBO_SNAPSHOT", "UPSCALER", "UPSCALER_PRESET", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NOOPT", "VK_NO_FLOAT64",
     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
-    "WB_EXACT", "WB_FENCE_LIMIT", "WINDOW_SIZE", "XESS_PRESET", "XLATE", "XLATE_ID", "XLATE_PROCS", "ZSTD_CHECK", "ZSTD_NATIVE",
+    "WB_EXACT", "WB_FENCE_LIMIT", "WINDOW_SIZE", "XESS_PRESET", "XLATE", "XLATE_ID", "XLATE_PROCS", "ZERO_UPLOAD", "ZSTD_CHECK", "ZSTD_NATIVE",
     "ANTILAG2",
     "FG_MODE",
     "FG_MULT",
-    "FG_PRESET",
     "FG_FLOW",
     "FG_STILL",
     "FG_TYPE",
@@ -65,14 +65,7 @@ static const char *const known[] = {
     "SSAO",
     "HBAO",
     "XELL",
-    "XESS_QUALITY",
-    "DLSS_NR",
-    "DLSS_NR_COLOR",
-    "DLSS_NR_MODEL",
-    "DLSS_NR_PRESET",
-    "DLSS_NR_SCALE",
-    "DLSS_NR_SHARPNESS",
-    "DLSS_NR_TRANSFER",};
+    "XESS_QUALITY",};
 
 // The dkb.ini section a key cfg_set may write goes to when the file lacks it (dkb.ini.example's sections).
 static const struct { const char *key, *section; } sections[] = {
@@ -80,13 +73,14 @@ static const struct { const char *key, *section; } sections[] = {
     {"REALTIME", "frame rate"}, {"CLOTH_REALTIME", "frame rate"}, {"HIGHFPS_FIX", "frame rate"},
     {"FULLSCREEN", "display"}, {"WINDOW_SIZE", "display"}, {"PERF_OVERLAY", "display"}, {"VK_PRESENT", "display"},
     {"GPU_INDEX", "display"}, {"OUTPUT_RES", "display"}, {"RENDER_SCALE", "display"}, {"UPSCALER", "display"},
-    {"DLAA", "display"}, {"DLSS", "display"}, {"DLSS_PRESET", "display"}, {"DLSS_CHAR_MASK", "display"}, {"UPSCALER_PRESET", "display"}, {"REFLEX", "display"},
+    {"UPSCALER_PRESET", "display"}, {"REFLEX", "display"},
     {"LOW_LATENCY", "display"}, {"FRAME_GEN", "display"}, {"XESS_PRESET", "display"},
-    {"SHARPNESS", "display"}, {"ASPECT", "display"}, {"FOV", "display"}, {"COLOR_PRESET", "display"},
+    {"SHARPNESS", "display"}, {"ASPECT", "display"}, {"FOV", "display"}, {"RES_HOOK", "display"}, {"OPERATION_MODE", "display"},
+    {"VK_NOOPT", "display"}, {"COLOR_PRESET", "display"},
     {"COLOR_BRIGHTNESS", "display"}, {"COLOR_CONTRAST", "display"}, {"COLOR_SATURATION", "display"},
     {"COLOR_GAMMA", "display"},
     {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
-    {"MENU_LANG", "language"}, {"LANG", "language"}, {"OPERATION_MODE", "language"},
+    {"MENU_LANG", "language"}, {"LANG", "language"},
     {"VOLUME", "audio"}, {"AUDIO_CHANNELS", "audio"},
     {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
     {"PAD_LAYOUT", "input"}, {"STICK_DEADZONE", "input"}, {"MOUSE_SENS", "input"}, {"INPUT_RECORD", "input"},
@@ -104,7 +98,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
     {"EXPERIMENTAL_GEOMETRY", "performance"}, {"NATIVE_GS", "performance"},
     {"REC_BATCH", "performance"},
-    {"TEX_ALIAS", "performance"}, {"TEX_HASH", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_INDIRECT_RESET", "performance"}, {"FIX_VS_FAULT", "performance"}, {"FIX_ZERO", "performance"},
+    {"TEX_ALIAS", "performance"}, {"TEX_HASH", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"ASTC_BC", "performance"}, {"GPU_DESWIZZLE", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_INDIRECT_RESET", "performance"}, {"FIX_VS_FAULT", "performance"}, {"FIX_ZERO", "performance"},
     {"SPIN", "performance"}, {"VRAM_HEADROOM", "performance"}, {"ZSTD_CHECK", "performance"}, {"ZSTD_NATIVE", "performance"},
     {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"DESC_TEMPLATE", "performance"},
     {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
@@ -114,7 +108,6 @@ static const struct { const char *key, *section; } sections[] = {
     {"NVN2_MODE_TRACE", "diagnostics"},
     {"NVN2_MODE_TRACE_START_MS", "diagnostics"}, {"NVN2_MODE_TRACE_DURATION_MS", "diagnostics"},
     {"FG_MODE", "display"},
-    {"FG_PRESET", "display"},
     {"FG_FLOW", "display"},
     {"FG_STILL", "display"},
     {"FG_TYPE", "display"},
@@ -125,9 +118,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"AO", "display"},
     {"AO_INTENSITY", "display"},
     {"XELL", "display"},
-    {"XESS_QUALITY", "display"},
-    {"DLSS_NR", "display"},
-    {"DLSS_NR_PRESET", "display"},};
+    {"XESS_QUALITY", "display"},};
 
 // The settings the menu shows: the value in effect when the key is unset, and what the key accepts. The only place a
 // default lives: consumers read cfg_value / cfg_int / cfg_double / cfg_bool. A row with an empty default has no fixed
@@ -139,19 +130,17 @@ static const CfgMeta metas[] = {
     {"FULLSCREEN", "0", "0|1", LIVE}, {"WINDOW_SIZE", "1920x1080", NULL, LIVE},
     {"VK_PRESENT", "mailbox", "mailbox|fifo|immediate", LIVE}, {"GPU_INDEX", "", NULL, RESTART},
     {"PERF_OVERLAY", "off", "off|fps|full", LIVE},
-    {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "game", "game|33|50|58|67|75|100|125|150|200", RESTART},
+    {"OUTPUT_RES", "1920x1080", NULL, LIVE}, {"RENDER_SCALE", "game", "game|33|50|58|67|75|100|125|150|200", LIVE},
+    {"RES_HOOK", "1", "0|1", LIVE},
+    {"VK_NOOPT", "0", "0|1", RESTART},
     {"UPSCALER", "smrs", "smrs|fsr|bilinear|off", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
     {"UPSCALER_PRESET", "quality", "native|ultra_quality|quality|balanced|performance|ultra_performance", LIVE},
-    {"DLSS_PRESET", "preset_k", "preset_k|preset_j|preset_m|preset_l|preset_e|preset_c|default", LIVE},
-    {"DLSS_CHAR_MASK", "65", "0|35|65|100", LIVE},
-    {"DLAA", "0", "0|1", RESTART}, {"DLSS", "dlaa", "dlaa|quality|balanced|performance|ultra_performance", RESTART},
     {"REFLEX", "boost", "off|on|boost", LIVE},
     {"LOW_LATENCY", "boost", "auto|boost|on|off", LIVE},
     {"FRAME_GEN", "1", "0|1", LIVE},
-    {"FG_MODE", "msm_fg", "off|msm_fg|dlss_fg|fsr3_fg|xefg", LIVE},
+    {"FG_MODE", "msm_fg", "off|msm_fg|fsr3_fg|xefg", LIVE},
     {"FG_MULT", "2x", "2x|3x|4x|6x", LIVE},
     {"FG_TYPE", "fixed", "fixed|adaptive", LIVE},
-    {"FG_PRESET", "drivers_choice", "drivers_choice|preset_c|preset_b|preset_a", LIVE},
     {"FG_STILL", "1", "0|1", LIVE},
     {"FG_FLOW", "80", "10..100", LIVE},
     {"XESS_PRESET", "quality", "native|quality|balanced|performance|ultra_performance", RESTART},
@@ -166,7 +155,7 @@ static const CfgMeta metas[] = {
     {"REALTIME", "1", "0|1", RESTART}, {"CLOTH_REALTIME", "1", "0|1", RESTART},
     {"HIGHFPS_FIX", "1", "0|1", RESTART},
     {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|nl|pt|ru|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant|pt-BR", RESTART},
-    {"OPERATION_MODE", "docked", "docked|handheld", RESTART},
+    {"OPERATION_MODE", "docked", "docked|handheld", LIVE},
     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
     // Sound, Controls, Menu
     {"VOLUME", "100", "0..100", LIVE},
@@ -191,7 +180,7 @@ static const CfgMeta metas[] = {
     {"PIPE_PREBUILD", "1", "0|1", RESTART}, {"PREWARM_XLATE", "", "1..64", RESTART}, {"GPL", "", "0|1", RESTART},
     // textures and memory
     {"ASTC", "auto", "auto|gpu|native|cpu", RESTART}, {"MEMORY", "auto", "auto|import|mirror|verify", RESTART},
-    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_HASH", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"ASTC_BC", "0", "0|1", RESTART}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
+    {"TEX_ALIAS", "1", "0|1", RESTART}, {"TEX_HASH", "1", "0|1", RESTART}, {"TEX_VRAM_PRESSURE", "90", "0..100", RESTART}, {"ASTC_BC", "0", "0|1", RESTART}, {"GPU_DESWIZZLE", "1", "0|1", LIVE}, {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
     {"SPIN", "1", "0|1", RESTART}, {"VRAM_HEADROOM", "1", "0|1", RESTART},
     // render fixes
     {"EXPERIMENTAL_GEOMETRY", "0", "0|1", RESTART}, {"NATIVE_GS", "1", "0|1", RESTART},
@@ -217,9 +206,7 @@ static const CfgMeta metas[] = {
     {"FXAA", "1", "0|1", LIVE},
     {"SMAA", "0", "0|1", LIVE},
     {"AO", "off", "off|ssao|hbao", LIVE},
-    {"AO_INTENSITY", "1.0", "0.0..3.0", LIVE},
-    {"DLSS_NR", "0", "0|1", LIVE},
-    {"DLSS_NR_PRESET", "preset_b", "preset_a|preset_b|preset_c|preset_d|preset_e|preset_f|preset_g", LIVE},};
+    {"AO_INTENSITY", "1.0", "0.0..3.0", LIVE},};
 
 static int is_known(const char *key) {
     for (size_t i = 0; i < sizeof known / sizeof *known; i++)
@@ -241,9 +228,12 @@ static char *trim(char *s) {
 
 static const char *unprefix(const char *name) {
     if (!name) return NULL;
+    if (!strncmp(name, "NS2_", 4)) return name + 4;
+    if (!strncmp(name, "FF_", 3)) return name + 3;
     if (!strncmp(name, "MTF_", 4)) return name + 4;
     if (!strncmp(name, "MKW_", 4)) return name + 4;
     if (!strncmp(name, "DKB_", 4)) return name + 4;
+    if (!strncmp(name, "OOT_", 4)) return name + 4;
     if (!strncmp(name, "TOTK_", 5)) return name + 5;
     return NULL;
 }
@@ -353,17 +343,13 @@ static const char *dkb_alias(const char *name) {
     char alias[96];
     const char *u = unprefix(name);
     if (!u || strlen(u) >= sizeof alias - 6) return NULL;
-    snprintf(alias, sizeof alias, "MTF_%s", u);
-    const char *e = getenv(alias);
-    if (e) return e;
-    snprintf(alias, sizeof alias, "MKW_%s", u);
-    e = getenv(alias);
-    if (e) return e;
-    snprintf(alias, sizeof alias, "DKB_%s", u);
-    e = getenv(alias);
-    if (e) return e;
-    snprintf(alias, sizeof alias, "TOTK_%s", u);
-    return getenv(alias);
+    static const char *const kPrefixes[] = {"NS2", "FF", "MTF", "MKW", "DKB", "OOT", "TOTK"};
+    for (size_t i = 0; i < sizeof kPrefixes / sizeof *kPrefixes; i++) {
+        snprintf(alias, sizeof alias, "%s_%s", kPrefixes[i], u);
+        const char *e = getenv(alias);
+        if (e) return e;
+    }
+    return NULL;
 }
 
 static const char *env_of(const char *name) {
@@ -736,23 +722,18 @@ static int find_ini(void) {
     if (!plat_exe_path(path, sizeof path)) return 0;
     char *cut = plat_last_sep(path);
     if (!cut) cut = strrchr(path, '/');
-    if (!cut || cut + 12 >= path + sizeof path) return 0;
-    strcpy(cut + 1, "mtf.ini");
-    if (plat_file_exists(path)) {
-        snprintf(ini_path, sizeof ini_path, "%s", path);
-        return 1;
+    if (!cut || cut + 24 >= path + sizeof path) return 0;
+    const RtGameProfile *gp = game_profile();
+    const char *const names[] = {gp->ini_name, "ns2.ini", "mtf.ini", "mkw.ini", "dkb.ini", "oot.ini", "totk.ini"};
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++) {
+        if (!names[i] || !*names[i]) continue;
+        strcpy(cut + 1, names[i]);
+        if (plat_file_exists(path)) {
+            snprintf(ini_path, sizeof ini_path, "%s", path);
+            return 1;
+        }
     }
-    strcpy(cut + 1, "mkw.ini");
-    if (plat_file_exists(path)) {
-        snprintf(ini_path, sizeof ini_path, "%s", path);
-        return 1;
-    }
-    strcpy(cut + 1, "dkb.ini");
-    if (plat_file_exists(path)) {
-        snprintf(ini_path, sizeof ini_path, "%s", path);
-        return 1;
-    }
-    strcpy(cut + 1, "mtf.ini");
+    strcpy(cut + 1, gp->ini_name && *gp->ini_name ? gp->ini_name : "ns2.ini");
     snprintf(ini_path, sizeof ini_path, "%s", path);
     return 1;
 }

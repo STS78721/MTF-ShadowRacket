@@ -29,3 +29,22 @@ static inline const char *romfs_path_relative(const char *mount, const char *pat
     while (*path == '/') ++path;
     return romfs_path_valid_relative(path) ? path : NULL;
 }
+
+// Normalize "<mount>:/<path>" into `buf[0..cap-1]`, collapsing consecutive '/' (e.g. "rom:/dir//file")
+// while keeping traversal, backslash and trailing-slash validation intact. Returns `buf` or NULL.
+static inline const char *romfs_path_norm(const char *mount, const char *path, char *buf, size_t cap) {
+    if (!mount || !*mount || !path || !buf || !cap) return NULL;
+    size_t size = strlen(mount);
+    if (strncmp(path, mount, size) || path[size] != ':' || path[size + 1] != '/') return NULL;
+    const char *src = path + size + 2;
+    while (*src == '/') ++src;
+    size_t n = 0;
+    while (*src) {
+        if (*src == '/' && src[1] == '/') { ++src; continue; }
+        if (n + 1 >= cap) return NULL;
+        buf[n++] = *src++;
+    }
+    buf[n] = 0;
+    if (!n || buf[n - 1] == '/') return NULL;
+    return romfs_path_valid_relative(buf) ? buf : NULL;
+}

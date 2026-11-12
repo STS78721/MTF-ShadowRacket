@@ -381,12 +381,14 @@ static void resolve_rt(VkExec *ex) {
     const p_set_rt *r = &ex->rt;
     int n = r->n < 0 ? 0 : r->n > 8 ? 8 : r->n;
     uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = UINT32_MAX, samples = 0;
+    int last_color = 0;
     for (int i = 0; i < 8; i++) {
         VkExecTarget *t = &ex->color[i];
         resolve_target(i < n ? r->color[i] : NULL, &r->cview[i], i < n && r->has_cview[i], 0, t);
         ex->pass_color[i] = t->image ? t->format : VK_FORMAT_UNDEFINED;
         ex->pipe.color_fmt[i] = t->image ? t->nvn_format : 0;
         if (!t->image) continue;
+        last_color = i + 1;
         if (t->width < w) w = t->width;
         if (t->height < h) h = t->height;
         if (t->layers < layers) layers = t->layers;
@@ -413,7 +415,7 @@ static void resolve_rt(VkExec *ex) {
                              ex->vp[0][1], ex->vp[0][2], ex->vp[0][3]);
     }
     ex->pass_w = w, ex->pass_h = h, ex->pass_layers = layers;
-    ex->pass_ncolor = (uint32_t)n;
+    ex->pass_ncolor = (uint32_t)last_color;
     ex->pass_samples = samples ? samples : 1;
     ex->pipe.samples = (uint8_t)ex->pass_samples;
 }

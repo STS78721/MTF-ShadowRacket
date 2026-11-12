@@ -305,48 +305,37 @@ static void use_preload_start(void);
 
 static void init_paths(void *param) {
     (void)param;
+    static const char *const kXlateNames[] = {"ns2", "mtf", "mkw", "dkb", "oot", "totk"};
     char exe[PATH_CAP], root[PATH_CAP] = "", exe_dir[PATH_CAP] = "";
     if (plat_exe_path(exe, sizeof exe)) {
         char *last = plat_last_sep(exe);
         if (last) snprintf(exe_dir, sizeof exe_dir, "%.*s", (int)(last - exe), exe);
-        for (char *cut = plat_last_sep(exe); cut; cut = plat_last_sep(exe)) {
+        for (char *cut = plat_last_sep(exe); cut && !root[0]; cut = plat_last_sep(exe)) {
             *cut = 0;
-            char probe[PATH_CAP + 32];
-            snprintf(probe, sizeof probe, "%s/build/xlate/mtf_xlate" PLAT_EXE_SUFFIX, exe);
-            if (file_exists(probe)) { strcpy(root, exe); break; }
-            snprintf(probe, sizeof probe, "%s/build/xlate/mkw_xlate" PLAT_EXE_SUFFIX, exe);
-            if (file_exists(probe)) { strcpy(root, exe); break; }
-            snprintf(probe, sizeof probe, "%s/build/xlate/dkb_xlate" PLAT_EXE_SUFFIX, exe);
-            if (file_exists(probe)) { strcpy(root, exe); break; }
-            snprintf(probe, sizeof probe, "%s/build/xlate/totk_xlate" PLAT_EXE_SUFFIX, exe);
-            if (file_exists(probe)) { strcpy(root, exe); break; }
+            for (size_t i = 0; i < sizeof kXlateNames / sizeof *kXlateNames; i++) {
+                char probe[PATH_CAP + 48];
+                snprintf(probe, sizeof probe, "%s/build/xlate/%s_xlate" PLAT_EXE_SUFFIX, exe, kXlateNames[i]);
+                if (file_exists(probe)) { strcpy(root, exe); break; }
+            }
         }
     }
-    const char *xlate_cfg = cfg_get("MTF_XLATE");
-    if (!xlate_cfg || !*xlate_cfg) xlate_cfg = cfg_get("MKW_XLATE");
-    if (!xlate_cfg || !*xlate_cfg) xlate_cfg = cfg_get("DKB_XLATE");
-    if (!xlate_cfg || !*xlate_cfg) xlate_cfg = cfg_get("TOTK_XLATE");
-    const char *cache_cfg = cfg_get("MTF_SHADER_CACHE");
-    if (!cache_cfg || !*cache_cfg) cache_cfg = cfg_get("MKW_SHADER_CACHE");
-    if (!cache_cfg || !*cache_cfg) cache_cfg = cfg_get("DKB_SHADER_CACHE");
-    if (!cache_cfg || !*cache_cfg) cache_cfg = cfg_get("TOTK_SHADER_CACHE");
-    char beside_mtf[PATH_CAP + 32], beside_mkw[PATH_CAP + 32], beside[PATH_CAP + 32], beside_old[PATH_CAP + 32];
-    if (exe_dir[0]) {
-        snprintf(beside_mtf, sizeof beside_mtf, "%s/mtf_xlate" PLAT_EXE_SUFFIX, exe_dir);
-        snprintf(beside_mkw, sizeof beside_mkw, "%s/mkw_xlate" PLAT_EXE_SUFFIX, exe_dir);
-        snprintf(beside, sizeof beside, "%s/dkb_xlate" PLAT_EXE_SUFFIX, exe_dir);
-        snprintf(beside_old, sizeof beside_old, "%s/totk_xlate" PLAT_EXE_SUFFIX, exe_dir);
-    }
-    if (xlate_cfg && *xlate_cfg && strlen(xlate_cfg) < sizeof xlate_exe) strcpy(xlate_exe, xlate_cfg);
-    else if (exe_dir[0] && file_exists(beside_mtf)) strcpy(xlate_exe, beside_mtf);
-    else if (exe_dir[0] && file_exists(beside_mkw)) strcpy(xlate_exe, beside_mkw);
-    else if (exe_dir[0] && file_exists(beside)) strcpy(xlate_exe, beside);
-    else if (exe_dir[0] && file_exists(beside_old)) strcpy(xlate_exe, beside_old);
-    else if (root[0]) {
-        snprintf(xlate_exe, sizeof xlate_exe, "%s/build/xlate/mtf_xlate" PLAT_EXE_SUFFIX, root);
-        if (!file_exists(xlate_exe)) snprintf(xlate_exe, sizeof xlate_exe, "%s/build/xlate/mkw_xlate" PLAT_EXE_SUFFIX, root);
-        if (!file_exists(xlate_exe)) snprintf(xlate_exe, sizeof xlate_exe, "%s/build/xlate/dkb_xlate" PLAT_EXE_SUFFIX, root);
-        if (!file_exists(xlate_exe)) snprintf(xlate_exe, sizeof xlate_exe, "%s/build/xlate/totk_xlate" PLAT_EXE_SUFFIX, root);
+    const char *xlate_cfg = cfg_get("NS2_XLATE");
+    const char *cache_cfg = cfg_get("NS2_SHADER_CACHE");
+    if (xlate_cfg && *xlate_cfg && strlen(xlate_cfg) < sizeof xlate_exe) {
+        strcpy(xlate_exe, xlate_cfg);
+    } else {
+        for (size_t i = 0; i < sizeof kXlateNames / sizeof *kXlateNames && !xlate_exe[0]; i++) {
+            char cand[PATH_CAP + 48];
+            if (exe_dir[0]) {
+                snprintf(cand, sizeof cand, "%s/%s_xlate" PLAT_EXE_SUFFIX, exe_dir, kXlateNames[i]);
+                if (file_exists(cand)) strcpy(xlate_exe, cand);
+            }
+        }
+        for (size_t i = 0; i < sizeof kXlateNames / sizeof *kXlateNames && !xlate_exe[0] && root[0]; i++) {
+            char cand[PATH_CAP + 48];
+            snprintf(cand, sizeof cand, "%s/build/xlate/%s_xlate" PLAT_EXE_SUFFIX, root, kXlateNames[i]);
+            if (file_exists(cand)) strcpy(xlate_exe, cand);
+        }
     }
     if (cache_cfg && *cache_cfg && strlen(cache_cfg) < sizeof cache_dir) strcpy(cache_dir, cache_cfg);
     else if (exe_dir[0]) snprintf(cache_dir, sizeof cache_dir, "%s/shader-cache", exe_dir);
@@ -936,6 +925,7 @@ static void add_res(GfxShader *s, int kind, const char *o, const char *e) {
         int bytes = (handle & 0x3fff) * 4, at = (int)nvn2_c0_part(&s->c0, kind == GFX_RES_IMG ? 4 : 3);
         int n = kind == GFX_RES_IMG ? s->c0.images : s->c0.textures;
         r->slot = (int16_t)(bytes >= at && bytes < at + 8 * n && (bytes - at) % 8 == 0 ? (bytes - at) / 8 : -1);
+        if (kind == GFX_RES_IMG && r->slot < 0 && s->c0.images == 1) r->slot = 0;
     }
 }
 
@@ -1535,15 +1525,22 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
     if (a) {
         const char *sep = "";
         o += sprintf(o, ",\"tex\":{");
-        for (int i = 0; i < 32; i++)
-            if (a->tex_type[i] && a->tex_type[i] < COUNT(tex_names)) o += sprintf(o, "%s\"%d\":\"%s\"", sep, i, tex_names[a->tex_type[i]]), sep = ",";
+        for (int i = 0; i < 32; i++) {
+            uint8_t raw = a->tex_type[i], base = raw & GFX_TEX_MASK, num = raw & (GFX_TEX_SINT | GFX_TEX_UINT);
+            if (base && base < COUNT(tex_names)) {
+                const char *sfx = num == GFX_TEX_UINT ? "_uint" : num == GFX_TEX_SINT ? "_sint" : "";
+                o += sprintf(o, "%s\"%d\":\"%s%s\"", sep, i, tex_names[base], sfx), sep = ",";
+            }
+        }
         sep = "";
         o += sprintf(o, "},\"img\":{");
-        for (int i = 0; i < 32; i++)
-            if (a->img_type[i] && a->img_type[i] < COUNT(tex_names)) {
+        for (int i = 0; i < 32; i++) {
+            uint8_t base = a->img_type[i] & GFX_TEX_MASK;
+            if (base && base < COUNT(tex_names)) {
                 const char *f = a->img_format[i] && a->img_format[i] < COUNT(fmt_names) ? fmt_names[a->img_format[i]] : "R8G8B8A8Unorm";
-                o += sprintf(o, "%s\"%d\":{\"type\":\"%s\",\"fmt\":\"%s\"}", sep, i, tex_names[a->img_type[i]], f), sep = ",";
+                o += sprintf(o, "%s\"%d\":{\"type\":\"%s\",\"fmt\":\"%s\"}", sep, i, tex_names[base], f), sep = ",";
             }
+        }
         sep = "";
         o += sprintf(o, "},\"attr\":{");
         for (int i = 0; i < 32; i++)

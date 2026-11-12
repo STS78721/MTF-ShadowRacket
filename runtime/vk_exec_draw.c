@@ -27,6 +27,7 @@
 #include "nvn_hmap.h"
 #include "nvn_geometry_control.h"
 #include "nvn_indirect_reset.h"
+#include "tex.h"
 #include "vk.h"
 #include "vk_exec.h"
 #include "platform/platform.h"
@@ -535,19 +536,118 @@ static int dummy_index(VkImageViewType vt, int ms) {
     }
 }
 
+// Numeric type, byte size and optimal-tiling features for sampled views and integer/sRGB view reinterpretation.
+static int vk_fmt_num_type(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8A8_UINT:
+    case VK_FORMAT_R16_UINT: case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16_UINT: case VK_FORMAT_R16G16B16A16_UINT:
+    case VK_FORMAT_R32_UINT: case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32B32_UINT: case VK_FORMAT_R32G32B32A32_UINT:
+    case VK_FORMAT_A2B10G10R10_UINT_PACK32: case VK_FORMAT_B8G8R8A8_UINT: case VK_FORMAT_S8_UINT:
+        return GFX_TYPE_UINT;
+    case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_R8G8B8A8_SINT:
+    case VK_FORMAT_R16_SINT: case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16_SINT: case VK_FORMAT_R16G16B16A16_SINT:
+    case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT: case VK_FORMAT_R32G32B32_SINT: case VK_FORMAT_R32G32B32A32_SINT:
+    case VK_FORMAT_A2B10G10R10_SINT_PACK32: case VK_FORMAT_B8G8R8A8_SINT:
+        return GFX_TYPE_SINT;
+    default: return GFX_TYPE_FLOAT;
+    }
+}
+
+static int vk_fmt_is_compressed(VkFormat f) {
+    return (f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK) ||
+           (f >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK);
+}
+
+static uint32_t vk_fmt_bytes(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8_UNORM: case VK_FORMAT_R8_SNORM: case VK_FORMAT_R8_UINT: case VK_FORMAT_R8_SINT:
+    case VK_FORMAT_R8_SRGB: case VK_FORMAT_S8_UINT:
+        return 1;
+    case VK_FORMAT_R16_SFLOAT: case VK_FORMAT_R16_UNORM: case VK_FORMAT_R16_SNORM: case VK_FORMAT_R16_UINT:
+    case VK_FORMAT_R16_SINT: case VK_FORMAT_R8G8_UNORM: case VK_FORMAT_R8G8_SNORM: case VK_FORMAT_R8G8_UINT:
+    case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R5G6B5_UNORM_PACK16: case VK_FORMAT_B5G6R5_UNORM_PACK16:
+    case VK_FORMAT_A1R5G5B5_UNORM_PACK16: case VK_FORMAT_R5G5B5A1_UNORM_PACK16: case VK_FORMAT_A4B4G4R4_UNORM_PACK16:
+    case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
+        return 2;
+    case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R16G16_SFLOAT:
+    case VK_FORMAT_R16G16_UNORM: case VK_FORMAT_R16G16_SNORM: case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16_SINT:
+    case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SNORM: case VK_FORMAT_R8G8B8A8_UINT:
+    case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_B8G8R8A8_UNORM:
+    case VK_FORMAT_B8G8R8A8_SRGB: case VK_FORMAT_B8G8R8A8_UINT: case VK_FORMAT_B8G8R8A8_SINT:
+    case VK_FORMAT_A2B10G10R10_UNORM_PACK32: case VK_FORMAT_A2B10G10R10_SNORM_PACK32:
+    case VK_FORMAT_A2B10G10R10_UINT_PACK32: case VK_FORMAT_A2B10G10R10_SINT_PACK32:
+    case VK_FORMAT_B10G11R11_UFLOAT_PACK32: case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32:
+        return 4;
+    case VK_FORMAT_R32G32_SFLOAT: case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32_SINT:
+    case VK_FORMAT_R16G16B16A16_SFLOAT: case VK_FORMAT_R16G16B16A16_UNORM: case VK_FORMAT_R16G16B16A16_SNORM:
+    case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R16G16B16A16_SINT:
+        return 8;
+    case VK_FORMAT_R32G32B32A32_SFLOAT: case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_R32G32B32A32_SINT:
+        return 16;
+    default: return 0;
+    }
+}
+
+static VkFormatFeatureFlags sampled_features_of(VkFormat f) {
+    static VkFormatFeatureFlags known[256];
+    static uint8_t have[256];
+    VkCtx *c = vk_ctx();
+    if (!c) return 0;
+    if ((unsigned)f < 256 && have[f]) return known[f];
+    VkFormatProperties p;
+    vkGetPhysicalDeviceFormatProperties(c->phys, f, &p);
+    if ((unsigned)f < 256) known[f] = p.optimalTilingFeatures, have[f] = 1;
+    return p.optimalTilingFeatures;
+}
+
+static VkFormat sampled_view_format(const VkTexImage *img, const view_t *v, int hv, int storage, TexVkFormat *vf_out,
+                                    int *used_vf) {
+    if (vf_out) memset(vf_out, 0, sizeof *vf_out);
+    if (used_vf) *used_vf = 0;
+    VkFormat fmt = img->format;
+    if (storage) {
+        if (fmt == VK_FORMAT_R8G8B8A8_SRGB) fmt = VK_FORMAT_R8G8B8A8_UNORM;
+        else if (fmt == VK_FORMAT_B8G8R8A8_SRGB) fmt = VK_FORMAT_B8G8R8A8_UNORM;
+        return fmt;
+    }
+    if (hv && v->set_format && !img->block_views && (img->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
+        TexVkFormat vf;
+        if (tex_vk_format(v->format, &vf) && !vf.depth && !vf.stencil && !vf.expand_rgb) {
+            if (vf.astc_bw && (fmt == VK_FORMAT_R8G8B8A8_UNORM || fmt == VK_FORMAT_R8G8B8A8_SRGB)) {
+                fmt = vf.vk;
+            } else if (!vf.astc_bw && !vk_fmt_is_compressed(fmt) && !vk_fmt_is_compressed(vf.vk) &&
+                       vk_fmt_bytes(fmt) && vk_fmt_bytes(fmt) == vk_fmt_bytes(vf.vk)) {
+                fmt = vf.vk;
+                if (vf_out) *vf_out = vf;
+                if (used_vf) *used_vf = 1;
+            }
+        }
+    }
+    return fmt;
+}
+
 // GFX_TEX_* of a bound texture slot (the translator's tex_type / img_type answers).
 static int gfx_type_of(const VkTexImage *img, const view_t *v, int hv) {
-    if (hv && v->set_target) return vk_pipeline_tex_type(v->target);
-    int ms = img->samples > 1;
-    switch (img->view_type) {
-    case VK_IMAGE_VIEW_TYPE_1D: return GFX_TEX_1D;
-    case VK_IMAGE_VIEW_TYPE_1D_ARRAY: return GFX_TEX_1D_ARRAY;
-    case VK_IMAGE_VIEW_TYPE_2D_ARRAY: return ms ? GFX_TEX_2D_MS_ARRAY : GFX_TEX_2D_ARRAY;
-    case VK_IMAGE_VIEW_TYPE_3D: return GFX_TEX_3D;
-    case VK_IMAGE_VIEW_TYPE_CUBE: return GFX_TEX_CUBE;
-    case VK_IMAGE_VIEW_TYPE_CUBE_ARRAY: return GFX_TEX_CUBE_ARRAY;
-    default: return ms ? GFX_TEX_2D_MS : GFX_TEX_2D;
+    int shape;
+    if (hv && v->set_target) shape = vk_pipeline_tex_type(v->target);
+    else {
+        int ms = img->samples > 1;
+        switch (img->view_type) {
+        case VK_IMAGE_VIEW_TYPE_1D: shape = GFX_TEX_1D; break;
+        case VK_IMAGE_VIEW_TYPE_1D_ARRAY: shape = GFX_TEX_1D_ARRAY; break;
+        case VK_IMAGE_VIEW_TYPE_2D_ARRAY: shape = ms ? GFX_TEX_2D_MS_ARRAY : GFX_TEX_2D_ARRAY; break;
+        case VK_IMAGE_VIEW_TYPE_3D: shape = GFX_TEX_3D; break;
+        case VK_IMAGE_VIEW_TYPE_CUBE: shape = GFX_TEX_CUBE; break;
+        case VK_IMAGE_VIEW_TYPE_CUBE_ARRAY: shape = GFX_TEX_CUBE_ARRAY; break;
+        default: shape = ms ? GFX_TEX_2D_MS : GFX_TEX_2D; break;
+        }
     }
+    if (vk_exec_view_aspect(img, v, hv) == VK_IMAGE_ASPECT_STENCIL_BIT) return shape | GFX_TEX_UINT;
+    VkFormat vfmt = sampled_view_format(img, v, hv, 0, NULL, NULL);
+    int nt = vk_fmt_num_type(vfmt);
+    if (nt == GFX_TYPE_UINT) shape |= GFX_TEX_UINT;
+    else if (nt == GFX_TYPE_SINT) shape |= GFX_TEX_SINT;
+    return shape;
 }
 
 static VkComponentSwizzle swz_of(uint8_t s) {
@@ -565,7 +665,9 @@ static VkComponentSwizzle swz_of(uint8_t s) {
 // translator declares every sampled image float and the shader takes the raw bits, as for integer formats (nxnative
 // nvn_mtl.m).
 VkImageAspectFlags vk_exec_view_aspect(const VkTexImage *img, const view_t *v, int hv) {
-    if (hv && v->set_dsmode && v->dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL && (img->aspect & VK_IMAGE_ASPECT_STENCIL_BIT))
+    int use_stencil = (hv && v->set_dsmode) ? (v->dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL)
+                                            : (img->dsmode == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);
+    if (use_stencil && (img->aspect & VK_IMAGE_ASPECT_STENCIL_BIT))
         return VK_IMAGE_ASPECT_STENCIL_BIT;
     return img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT     ? VK_IMAGE_ASPECT_DEPTH_BIT
            : img->aspect & VK_IMAGE_ASPECT_STENCIL_BIT ? VK_IMAGE_ASPECT_STENCIL_BIT
@@ -619,28 +721,41 @@ static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, 
     }
     if (storage && cube) vt = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     uint32_t aspect = vk_exec_view_aspect(img, v, hv);
+    TexVkFormat vf;
+    int used_vf = 0;
+    VkFormat fmt = sampled_view_format(img, v, hv, storage, &vf, &used_vf);
+    if (storage && !(sampled_features_of(fmt) & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) return VK_NULL_HANDLE;
     uint8_t sw[4] = {NVN_TEXTURE_SWIZZLE_R, NVN_TEXTURE_SWIZZLE_G, NVN_TEXTURE_SWIZZLE_B, NVN_TEXTURE_SWIZZLE_A};
     if (!storage) {   // MNG nvn_mtl.m tex_swizzle_sel: view selectors replace the texture's, then the format remap
+        int alpha_one = used_vf ? vf.alpha_one : img->alpha_one;
+        const uint8_t *chan = used_vf ? vf.chan : img->chan;
         memcpy(sw, hv && v->set_swizzle ? v->swz : img->swz, 4);
-        if (img->alpha_one || img->chan[0])
+        if (alpha_one || chan[0])
             for (int i = 0; i < 4; i++) {
-                if (img->alpha_one && sw[i] == NVN_TEXTURE_SWIZZLE_A) sw[i] = NVN_TEXTURE_SWIZZLE_ONE;
-                else if (img->chan[0] && sw[i] >= NVN_TEXTURE_SWIZZLE_R && sw[i] <= NVN_TEXTURE_SWIZZLE_A)
-                    sw[i] = img->chan[sw[i] - NVN_TEXTURE_SWIZZLE_R];
+                if (alpha_one && sw[i] == NVN_TEXTURE_SWIZZLE_A) sw[i] = NVN_TEXTURE_SWIZZLE_ONE;
+                else if (chan[0] && sw[i] >= NVN_TEXTURE_SWIZZLE_R && sw[i] <= NVN_TEXTURE_SWIZZLE_A)
+                    sw[i] = chan[sw[i] - NVN_TEXTURE_SWIZZLE_R];
             }
     }
     uint32_t swz = (uint32_t)sw[0] | (uint32_t)sw[1] << 8 | (uint32_t)sw[2] << 16 | (uint32_t)sw[3] << 24;
-    ViewKey k = {img->image, img->format, vt, aspect, l0, nl, y0, ny, swz};
+    ViewKey k = {img->image, fmt, vt, aspect, l0, nl, y0, ny, swz};
     if (!view_of.klen) nvn_hm_init(&view_of, sizeof(ViewKey)), nvn_hm_init(&views_by_image, sizeof(VkImage));
     VkImageView found = (VkImageView)nvn_hm_get(&view_of, &k);
     if (found) return found;
     VkImageViewCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img->image, .viewType = vt,
-                                .format = img->format,
+                                .format = fmt,
                                 .components = {swz_of(sw[0]), swz_of(sw[1]), swz_of(sw[2]), swz_of(sw[3])},
                                 .subresourceRange = {aspect, l0, nl, y0, ny}};
     VkImageViewUsageCreateInfo use = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
-                                      .usage = VK_IMAGE_USAGE_SAMPLED_BIT};
-    if (img->block_views) ci.pNext = &use;   // the image's COLOR_ATTACHMENT usage is its block views' (vk_texture.c)
+                                      .usage = img->block_views ? VK_IMAGE_USAGE_SAMPLED_BIT
+                                                                : (img->usage & ~VK_IMAGE_USAGE_STORAGE_BIT)};
+    // Restrict view usage for block-view BC images, sampled views over STORAGE images (sRGB views lack STORAGE_IMAGE_BIT),
+    // or format-reinterpreted storage views (e.g. R32_UINT over R8G8B8A8_SRGB, where SAMPLED/ATTACHMENT bits may be invalid).
+    if (img->block_views || (!storage && (img->usage & VK_IMAGE_USAGE_STORAGE_BIT))) ci.pNext = &use;
+    else if (storage && fmt != img->format) {
+        use.usage = VK_IMAGE_USAGE_STORAGE_BIT;
+        ci.pNext = &use;
+    }
     VkImageView view;
     if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS) return VK_NULL_HANDLE;
     ViewNode *n = malloc(sizeof *n);
@@ -667,9 +782,8 @@ VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageV
         VkImageViewUsageCreateInfo use = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
                                           .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
         if (blocks) ci.pNext = &use;   // not the BC image's sampling and transfer usages
-        // A view in another format (an sRGB target over a UNORM texture) drops the image's storage usage, which that
-        // format may lack: every colour texture that allows it is made with storage usage (vk_texture.c create_tex).
-        else if (format != img->format && (img->usage & VK_IMAGE_USAGE_STORAGE_BIT))
+        // Attachment views never use storage and sRGB images carry mutable storage usage from vk_texture.c create_tex.
+        else if (img->usage & VK_IMAGE_USAGE_STORAGE_BIT)
             use.usage = img->usage & ~VK_IMAGE_USAGE_STORAGE_BIT, ci.pNext = &use;
         if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS)
             rt_fatal("vk: render target view (format %d) could not be created", (int)format);
@@ -829,8 +943,8 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
         uint64_t tt = tmiss ? token_of(ex, h) : 0, it = imiss ? token_of(ex, hi) : 0;
         if ((tmiss || imiss || check) && !locked) vk_texture_lock(), locked = 1, BS.ac_miss++;
         if (tmiss) c->tt[slot] = type_of_handle(ex, h), c->tex[slot] = h, c->ttok[slot] = tt, c->tgen[slot] = gen;
-        if (imiss) c->it[slot] = type_of_handle(ex, hi), c->img[slot] = hi, c->itok[slot] = it, c->igen[slot] = gen;
-        if (check && (type_of_handle(ex, h) != c->tt[slot] || type_of_handle(ex, hi) != c->it[slot]))   // TOTK_SHADER_MEMO=check
+        if (imiss) c->it[slot] = type_of_handle(ex, hi) & GFX_TEX_MASK, c->img[slot] = hi, c->itok[slot] = it, c->igen[slot] = gen;
+        if (check && (type_of_handle(ex, h) != c->tt[slot] || (type_of_handle(ex, hi) & GFX_TEX_MASK) != c->it[slot]))   // TOTK_SHADER_MEMO=check
             rt_fatal("vk_exec: kept texture types of stage %d slot %d differ from a lookup", st, slot);
         a->tex_type[slot] = c->tt[slot], a->img_type[slot] = c->it[slot];
     }
@@ -969,10 +1083,10 @@ static void count_use(int cls, int use, uint64_t n) {
 
 // A buffer descriptor for [addr, addr+size) of guest memory: its backing (a pool's VRAM mirror when it has one) when
 // aligned, a copy in transient memory when the backing is host memory with an unaligned offset. 0 when neither works.
-// written: the shader stores into it (a mirror's range goes back to guest memory at the end of the submission).
+// written: the shader stores into it; writeback: schedule a mirror -> host copy at the end of the submission.
 // direct_only: guarded aliases must share the real backing; a transient copy would lose writes and alias coherence.
 static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, uint64_t max, int use, int written,
-                      int direct_only, VkDescriptorBufferInfo *out) {
+                      int writeback, int direct_only, VkDescriptorBufferInfo *out) {
     VkMemSpan sp;
     if (!addr || !vk_mem_resolve(addr, 1, &sp)) return 0;
     uint64_t n = size && size < sp.avail ? size : sp.avail;
@@ -981,7 +1095,8 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     if (sp.offset % align == 0) {
         VK_MEM_USE(sp);
         *out = (VkDescriptorBufferInfo){sp.buffer, sp.offset, n};
-        if (written) vk_mem_gpu_wrote(&sp, n), vk_usnap_drop(addr, n);
+        if (writeback) vk_mem_gpu_wrote(&sp, n);
+        if (written) vk_usnap_drop(addr, n);
         count_use(sp.cls, use, n);
         VK_MEM_BOUND(sp);
         return 1;
@@ -1092,7 +1207,7 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         uint32_t len, c1;
         if (find_stage(ex->prog, st, &ctl, &code, &len)) {
             memcpy(&c1, ctl + 0x700, 4);
-            if (c1 < len && bind_range(ex, (uint64_t)(uintptr_t)code + c1, len - c1, align, max, VK_MUSE_UBO, 0, 0, &bi))
+            if (c1 < len && bind_range(ex, (uint64_t)(uintptr_t)code + c1, len - c1, align, max, VK_MUSE_UBO, 0, 0, 0, &bi))
                 return bi;
             if (c1 < len && len - c1 <= max) {   // NVN 2 stages: the lowered code (nvn2_lower.cpp) is host memory
                 VkBuffer b;
@@ -1128,7 +1243,7 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
             count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, bi.range);
             return bi;
         }
-        if (bind_range(ex, b->addr, b->size, align, max, VK_MUSE_UBO, 0, 0, &bi)) return bi;
+        if (bind_range(ex, b->addr, b->size, align, max, VK_MUSE_UBO, 0, 0, 0, &bi)) return bi;
     }
     return zero_info(max);
 }
@@ -1198,6 +1313,8 @@ static uint64_t ubo_ptr(const VkExec *ex, int st, const GfxShaderRes *r) {
     uint64_t off = (uint64_t)r->handle * 4, a = 0;
     VkMemSpan sp;
     if (!u->addr || u->size < off + 8 || upd_read(ex, u->addr + off, &a, 8)) return a;
+    const uint8_t *sb = vk_usnap_bytes(u->addr + off, 8);
+    if (sb) { memcpy(&a, sb, 8); return a; }
     if (vk_mem_resolve(u->addr + off, 8, &sp)) memcpy(&a, (const void *)(uintptr_t)(u->addr + off), 8);
     return a;
 }
@@ -1242,6 +1359,15 @@ static p_bind_buf guarded_storage_binding(const VkExec *ex, int st, const GfxSha
     return b;
 }
 
+// Explicit NVN 2 compute storage-buffer table slots (c0 part 2..3) carry the exact byte size passed to
+// nvnCommandBufferBindStorageBuffer, unlike speculative root/c1/UBO pointer candidates whose unbounded pool remainder
+// would overwrite adjacent CPU-written buffers if mirrored back to host RAM.
+static int guarded_is_declared_ssbo(int st, const GfxShaderRes *r, const p_bind_buf *b) {
+    if (st != NVN_STAGE_CS || !c0_lay || r->cbuf_slot != 0 || !b || !b->size) return 0;
+    size_t sb = nvn2_c0_part(c0_lay, 2), end = nvn2_c0_part(c0_lay, 3), off = (size_t)r->handle * 4;
+    return off >= sb && off < end && (off - sb) % 16 == 0;
+}
+
 static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *r, int written) {
     if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
     uint64_t max = LIM.sbo_max, align = LIM.sbo_align;
@@ -1257,9 +1383,10 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
     if (b) {
         // vk_caps.c: shaders translated for sbuf_align address the buffer from its address rounded down to it.
         uint64_t lead = vk_caps.sbuf_align ? b->addr & (vk_caps.sbuf_align - 1) : 0;
+        int writeback = written && (!guarded || guarded_is_declared_ssbo(st, r, b));
         if (bind_range(ex, b->addr - lead, b->size ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
-                       written, guarded, &bi)) {
-            if (written && bi.buffer != VK_NULL_HANDLE) {
+                       written, writeback, guarded, &bi)) {
+            if (writeback && bi.buffer != VK_NULL_HANDLE) {
                 note_written(ex, b->addr - lead, bi.range);
                 const uint8_t *ctl, *code;
                 uint32_t len;
@@ -1394,19 +1521,28 @@ static int geometry_feedback_safe(VkExec *ex, const GfxShader *vs, const GfxShad
 }
 
 // Before the pipeline lookup of a draw with fragment shader fs: learns and restarts as the mode says. Returns the
-// sampled attachments in the feedback layout (the pipeline's feedback flag and feedback_barrier).
+// sampled attachments in the feedback layout (the pipeline's feedback flag and feedback_barrier). Even when no draw in
+// the open pass has written the attachment yet (fb_dirty == 0, e.g. read-only depth decals while depth is bound as an
+// attachment in GENERAL), Vulkan requires ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT and the pipeline feedback flag whenever
+// a shader samples an attachment of the active render pass (VUID-vkCmdDraw-None-09000), otherwise Hi-Z/ZCULL or DCC
+// compression on discrete GPUs can return stale or uncompressed values.
 static uint32_t feedback_prepare(VkExec *ex, const GfxShader *fs) {
     int mode = vk_ctx()->feedback;
     if (mode == VK_FEEDBACK_OFF || !fs || !ex->in_pass) return 0;
     uint32_t m = feedback_scan(ex, fs);
     uint32_t d = m & ex->fb_dirty;
     if (d) vk_exec_frame.fb_draws++;
-    if (d & ~(mode == VK_FEEDBACK_LAYOUT ? ex->fbl_mask : 0)) {
-        if (mode == VK_FEEDBACK_LAYOUT)
-            for (uint32_t i = 0; i < 9; i++) {
-                const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
-                if ((d >> i & 1) && t->img && t->img->fb_usage) ((VkTexImage *)t->img)->fb_learned = 1;
+    uint32_t learn = 0;
+    if (mode == VK_FEEDBACK_LAYOUT && (m & ~ex->fbl_mask)) {
+        for (uint32_t i = 0; i < 9; i++) {
+            const VkExecTarget *t = i < 8 ? &ex->color[i] : &ex->depth;
+            if (((m & ~ex->fbl_mask) >> i & 1) && t->img && t->img->fb_usage) {
+                ((VkTexImage *)t->img)->fb_learned = 1;
+                learn |= 1u << i;
             }
+        }
+    }
+    if (learn || (d & ~(mode == VK_FEEDBACK_LAYOUT ? ex->fbl_mask : 0))) {
         vk_exec_pass_end(ex);
         vk_exec_pass_begin(ex);   // learned targets now in the feedback layout; the full barrier cleared fb_dirty
         vk_exec_frame.fb_restarts++;
@@ -1509,9 +1645,13 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
         if (!storage && !separate) {
             // A depth texture sampled without a compare reads one texel on the Switch, whatever the sampler's filter:
             // blending neighbouring depths puts reconstructed positions in mid-air at object edges (shadow masks).
+            // Integer formats (UINT/SINT and STENCIL) cannot use linear filtering in Vulkan.
             int sid = (int)(h >> 20 & 0xfff);
-            int point = img && (img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && !(r->type & 0x400) &&
-                        vk_exec_view_aspect(img, &v, hv) != VK_IMAGE_ASPECT_STENCIL_BIT;
+            VkFormat vfmt = img ? sampled_view_format(img, &v, hv, 0, NULL, NULL) : VK_FORMAT_UNDEFINED;
+            int is_int = img && (vk_exec_view_aspect(img, &v, hv) == VK_IMAGE_ASPECT_STENCIL_BIT ||
+                                 vk_fmt_num_type(vfmt) != GFX_TYPE_FLOAT);
+            int point = img && (is_int || ((img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && !(r->type & 0x400) &&
+                                           vk_exec_view_aspect(img, &v, hv) != VK_IMAGE_ASPECT_STENCIL_BIT));
             samp = point ? vk_sampler_point_by_id_locked(&ex->samp_pool, sid) : vk_sampler_by_id_locked(&ex->samp_pool, sid);
         }
     }
@@ -2384,10 +2524,11 @@ static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const Gf
     // Legitimate 3D world meshes (skybox, cave walls, terrain) use per-vertex attributes (divisor == 0).
     if (count > 0 && count <= 6) {
         int all_instanced = 1, active_streams = 0;
-        for (int l = 0; l < 16; l++) {
+        for (int l = 0; l < 32; l++) {
             if (!(used >> l & 1)) continue;
             va_st va = {0};
-            memcpy(&va, &ex->pipe.vattr[l], sizeof va);
+            uint32_t w = vk_pipe_vattr_word(&ex->pipe, l);
+            memcpy(&va, &w, sizeof va);
             if (!va.fmt || va.stream >= 16) continue;
             active_streams++;
             if (ex->pipe.vstream[va.stream].divisor == 0) {
@@ -2839,17 +2980,67 @@ static int restart_for(const VkExec *ex, int prim, int itype) {
     return 0;
 }
 
+static inline uint32_t read_idx(const void *p, int itype, uint32_t i) {
+    if (itype == NVN_INDEX_TYPE_UNSIGNED_BYTE) return ((const uint8_t *)p)[i];
+    if (itype == NVN_INDEX_TYPE_UNSIGNED_SHORT) return ((const uint16_t *)p)[i];
+    return ((const uint32_t *)p)[i];
+}
+
 static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     c0_binst = (uint32_t)d->base_instance;
     static const uint32_t isize[3] = {1, 2, 4};
     if (d->itype < 0 || d->itype > 2) return warn_once(W_INDEX, "index type %d is unknown: draw skipped", d->itype);
+    if (d->prim == NVN_DRAW_PRIMITIVE_QUADS && d->count < 4) return;
     int restart = restart_for(ex, d->prim, d->itype);
     if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, restart)) return;
     vk_exec_frame.draws++;
     uint64_t bytes = (uint64_t)d->count * isize[d->itype];
     VkMemSpan sp;
     if (!vk_mem_resolve(d->ibuf, bytes, &sp)) return warn_once(W_INDEX, "index buffer %#llx is not backed: draws with it are skipped", (unsigned long long)d->ibuf);
-    if (d->itype == NVN_INDEX_TYPE_UNSIGNED_BYTE) {   // no uint8 index type here: widen (host-readable backing only)
+    uint32_t draw_count = (uint32_t)d->count;
+    if (d->prim == NVN_DRAW_PRIMITIVE_QUADS) {   // quads become two triangles each; v3 stays last (provoking) vertex
+        if (sp.alloc) return warn_once(W_INDEX, "quad indices in device-local memory: draw skipped");
+        if (sp.offset % isize[d->itype])
+            return warn_once(W_INDEX, "index buffer %#llx is not aligned to its index size: draw skipped", (unsigned long long)d->ibuf);
+        uint32_t max_q = (uint32_t)d->count / 4;
+        uint32_t *ix = malloc(sizeof *ix * 6 * max_q);
+        if (!ix) rt_fatal("vk: out of memory");
+        const void *src = (const void *)(uintptr_t)d->ibuf;
+        uint32_t out = 0, q[4], qn = 0;
+        int pr_on = ex->prim_restart.enable;
+        uint32_t pr_val = ex->prim_restart.index;
+        for (uint32_t i = 0; i < (uint32_t)d->count; i++) {
+            uint32_t v = read_idx(src, d->itype, i);
+            if (pr_on && v == pr_val) { qn = 0; continue; }
+            q[qn++] = v;
+            if (qn == 4) {
+                ix[out++] = q[0]; ix[out++] = q[1]; ix[out++] = q[3];
+                ix[out++] = q[1]; ix[out++] = q[2]; ix[out++] = q[3];
+                qn = 0;
+            }
+        }
+        if (!out) { free(ix); return; }
+        vk_mem_count(sp.cls, VK_MUSE_CPU_READ, bytes);
+        vk_mem_count(VK_MCLS_SCRATCH, VK_MUSE_IB, sizeof *ix * out);
+        bind_index(ex, ix, sizeof *ix * out, VK_INDEX_TYPE_UINT32);
+        free(ix);
+        draw_count = out;
+    } else if (d->prim == NVN_DRAW_PRIMITIVE_LINE_LOOP && d->count >= 2) {   // a strip that returns to its first vertex
+        if (sp.alloc) return warn_once(W_INDEX, "line-loop indices in device-local memory: draw skipped");
+        if (sp.offset % isize[d->itype])
+            return warn_once(W_INDEX, "index buffer %#llx is not aligned to its index size: draw skipped", (unsigned long long)d->ibuf);
+        uint32_t n = (uint32_t)d->count;
+        uint32_t *ix = malloc(sizeof *ix * (n + 1));
+        if (!ix) rt_fatal("vk: out of memory");
+        const void *src = (const void *)(uintptr_t)d->ibuf;
+        for (uint32_t i = 0; i < n; i++) ix[i] = read_idx(src, d->itype, i);
+        ix[n] = ix[0];
+        vk_mem_count(sp.cls, VK_MUSE_CPU_READ, bytes);
+        vk_mem_count(VK_MCLS_SCRATCH, VK_MUSE_IB, sizeof *ix * (n + 1));
+        bind_index(ex, ix, sizeof *ix * (n + 1), VK_INDEX_TYPE_UINT32);
+        free(ix);
+        draw_count = n + 1;
+    } else if (d->itype == NVN_INDEX_TYPE_UNSIGNED_BYTE) {   // no uint8 index type here: widen (host-readable backing only)
         if (sp.alloc) return warn_once(W_INDEX, "byte indices in device-local memory: draw skipped");
         vk_mem_count(sp.cls, VK_MUSE_CPU_READ, bytes);
         vk_mem_count(VK_MCLS_SCRATCH, VK_MUSE_IB, 2 * bytes);
@@ -2870,10 +3061,10 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
         vk_mem_count(sp.cls, VK_MUSE_IB, bytes);
         VK_MEM_BOUND(sp);
     }
-    vkCmdDrawIndexed(ex->cb, (uint32_t)d->count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
+    vkCmdDrawIndexed(ex->cb, draw_count, d->instances > 0 ? (uint32_t)d->instances : 1, 0, d->base_vertex,
                      (uint32_t)d->base_instance);
     ex->recorded++;
-    note_work(ex, 0, (uint64_t)d->count * (uint64_t)(d->instances > 0 ? d->instances : 1));
+    note_work(ex, 0, (uint64_t)draw_count * (uint64_t)(d->instances > 0 ? d->instances : 1));
 }
 
 // DrawElementsIndirect: the arguments are read by the GPU from the pool buffer (they are often written by an earlier
@@ -3190,9 +3381,14 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     }
     case OP_BIND_VATTR: {
         const p_bind_vattr *b = payload;
-        if (b->first < 0 || b->n < 0 || b->first + b->n > 16) break;
+        if (b->first < 0 || b->n < 0 || b->first + b->n > 32) break;
         memset(ex->pipe.vattr, 0, sizeof ex->pipe.vattr);   // MNG: the new list replaces the old one
-        memcpy(&ex->pipe.vattr[b->first], b->st, sizeof(uint32_t) * (size_t)b->n);
+        memset(ex->pipe.vattr_hi, 0, sizeof ex->pipe.vattr_hi);
+        for (int i = 0; i < b->n; i++) {
+            int loc = b->first + i;
+            if (loc < 16) ex->pipe.vattr[loc] = b->st[i];
+            else ex->pipe.vattr_hi[loc - 16] = b->st[i];
+        }
         break;
     }
     case OP_BIND_VSTREAM: {

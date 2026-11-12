@@ -242,9 +242,6 @@ static void save_shot(const tex_t *t, const int crop[4], const char *path) {
         cy = crop[1] < 0 ? 0 : crop[1];
         cw = crop[2] > (int)w - cx ? (int)w - cx : crop[2];
         ch = crop[3] > (int)h - cy ? (int)h - cy : crop[3];
-    } else if (w == 3840 && h == 2160) {
-        cw = 1706;
-        ch = 960;
     }
     if (cw > 0 && ch > 0 && (cx != 0 || cy != 0 || cw != (int)w || ch != (int)h)) {
         uint8_t *crop_px = malloc(4ull * (uint32_t)cw * (uint32_t)ch);

@@ -19,6 +19,7 @@
 #include <SDL3/SDL_vulkan.h>
 
 #include "cfg.h"
+#include "game_profile.h"
 #include "gfx.h"
 #include "gfx_wsys.h"
 #include "input.h"
@@ -253,7 +254,10 @@ static void open_window(void *arg) {
     (void)arg;
     int w, h;
     gfx_cfg_window_size(&w, &h);
-    g_win = SDL_CreateWindow("Mario Tennis Fever (PC Recomp)", w, h, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    char title[128];
+    const char *dn = game_profile()->display_name;
+    snprintf(title, sizeof title, "%s (PC Recomp)", (dn && *dn) ? dn : "Universal NS2 Title");
+    g_win = SDL_CreateWindow(title, w, h, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!g_win) {
         rt_log("gfx: SDL_CreateWindow failed (%s)", SDL_GetError());
         return;

@@ -247,7 +247,12 @@ void vk_mem_pick(VkMemSpan *sp);
 #define VK_MEM_PICK(sp) do { if (vk_mirror_on && (sp).pool) vk_mem_pick(&(sp)); } while (0)
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size);
 // Uniform blocks as of the submit call (vk_usnap.c): vk_exec_record copies the uniform ranges a submission binds before
-// it records, ubo bindings take the copy (0: not copied, bind memory), GPU writes of the replay drop the copies they touch.
+// it records (or vk_usnap_take captures them on the submitting thread when TOTK_REPLAY_ASYNC=1), ubo bindings take the
+// copy (0: not copied, bind memory), GPU writes of the replay drop the copies they touch.
+typedef struct VkUsnap VkUsnap;
+VkUsnap *vk_usnap_take(const uint64_t *handles, int n);
+void vk_usnap_install(VkUsnap *snap);
+void vk_usnap_discard(VkUsnap *snap);
 void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
 void vk_usnap_end(uint64_t fence);
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
@@ -303,6 +308,7 @@ int vk_fix_zero(void);
 VkCommandBuffer vk_upload_begin(void);
 void vk_upload_end(void);
 void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc);
+void *vk_staging_upload(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc);
 uint64_t vk_upload_flush(int wait);
 // Upload batch figures since the previous call (the perf line): GPU time of the timed ones, batches submitted, time
 // threads waited in vk_upload_flush(1), bytes of staging allocated.
@@ -332,6 +338,20 @@ typedef struct { VkDeviceSize src; uint32_t w, h, slices, level, layer; VkOffset
 int vk_astc_record(VkCommandBuffer cb, VkBuffer src, VkDeviceSize src_size, const VkAstcRegion *rg, int n, uint32_t bw,
                    uint32_t bh, int srgb, int bc, VkImage img, VkImageAspectFlags aspect, VkBuffer readback);
 void vk_astc_stats(uint64_t *dispatches, uint64_t *texels);   // since start
+
+// ---- GPU block-linear deswizzle (gob_deswizzle.comp in vk_astc.c).
+// Each region covers one tight mip level / array layer in src_bl at byte offset bl_src.
+typedef struct {
+    VkDeviceSize bl_src;
+    uint64_t bl_bytes;
+    uint32_t row_bytes, rows, slices, th, td;
+    uint32_t w, h, level, layer;
+} VkBlRegion;
+int vk_deswizzle_gpu_on(void);
+int vk_deswizzle_upload(VkCommandBuffer cb, VkBuffer src_bl, const VkBlRegion *rg, int n, VkImage img,
+                        VkImageAspectFlags aspect, int astc_bw, int astc_bh, int astc_srgb, int astc_bc,
+                        uint32_t bw, uint32_t bh, uint32_t bpb);
+void vk_deswizzle_stats(uint64_t *dispatches, uint64_t *bytes);
 // TOTK_ASTC_TIME=1: GPU timestamps around each vk_astc_record's dispatches (logged per footprint and the largest one)
 void vk_astc_time_enable(int on);
 int vk_astc_time_get(uint32_t bw, uint32_t bh, uint64_t *texels, uint64_t *calls, double *us);   // totals so far
@@ -368,6 +388,7 @@ typedef struct {
     uint8_t fb_usage;              // created with ATTACHMENT_FEEDBACK_LOOP usage (VK_FEEDBACK_LAYOUT, attachable images)
     uint8_t fb_learned;            // a draw sampled it while it was a written attachment of the open pass: its passes
                                    // attach it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (vk_exec.c vk_exec_pass_begin)
+    uint8_t dsmode;                // NVNtextureDepthStencilMode recorded from builder defaults/SetDepthStencilMode
 } VkTexImage;
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).
@@ -502,7 +523,11 @@ typedef struct VkPipeState {
     float alpha_ref;                       // OP_BIND_STATE kind 7: reference of color.alpha_func's test. After gs, so not in
                                            // the pipeline-key records: a prebuilt alpha-test pipeline has reference 0 and
                                            // goes unused, and the draw builds its own
+    uint32_t vattr_hi[16];                 // OP_BIND_VATTR locations 16..31 (after legacy prefix so pipeline-keys.bin stays valid)
 } VkPipeState;
+static inline uint32_t vk_pipe_vattr_word(const VkPipeState *s, int i) {
+    return (unsigned)i < 16u ? s->vattr[i] : (unsigned)i < 32u ? s->vattr_hi[i - 16] : 0u;
+}
 void vk_pipe_state_defaults(VkPipeState *s);   // NVN defaults of every state object (shaders and formats left 0)
 enum { VK_PIPE_SUPPORT = GFX_RES_KINDS };      // VkPipeBinding.kind of the support buffer
 #define VK_PIPE_ZERO_BINDING 16                // vertex binding of shader inputs without an attribute: bind a zeroed

@@ -233,8 +233,9 @@ static void window_settings_live(void) {
     unsigned v = cfg_version();
     if (started && v == seen) return;
     seen = v;
+    res_apply_live();
     res_fov_live();
-    const char *e = cfg_value("DKB_VK_PRESENT");
+    const char *e = cfg_value("NS2_VK_PRESENT");
     if (!started || strncmp(e, present, sizeof present - 1)) {
         snprintf(present, sizeof present, "%s", e);
         if (started) plat_xchg32(&g_dirty, 1);
@@ -277,11 +278,6 @@ static void reflex_apply_locked(void) {
     }
     const char *m = cfg_value("DKB_REFLEX");
     int mode = !strcmp(m, "boost") ? 2 : !strcmp(m, "on") ? 1 : 0;
-    // Decoupled safety: if DLSS FG is active, reflex must stay at least 'on' to prevent driver crash
-    const char *fg_mode = cfg_value("DKB_FG_MODE");
-    if (!strcmp(fg_mode, "dlss_fg") && mode == 0) {
-        mode = 1;
-    }
     double hz = frame_step_limit_hz();
     uint32_t min_us = hz > 0 ? (uint32_t)(1000000.0 / hz + 0.5) : 0;
     if (mode == g_reflex_mode && min_us == g_reflex_min_us) return;
@@ -400,7 +396,7 @@ void vk_antilag_sleep(void) {
     g_antilag_update(c->device, &ad);
 }
 
-// ---- Hardware-Aware Frame Generation (Nodix Super Motion MSM-FG, DLSS MFG, FSR 3.1 FG, XeSS FG)
+// ---- Hardware-Aware Frame Generation (Nodix Super Motion MSM-FG, FSR 3.1 FG, XeSS FG)
 static int g_fg_mult = 1;
 static char g_fg_logged[160];
 
@@ -408,7 +404,6 @@ static void fg_apply_locked(void) {
     VkCtx *c = vk_ctx();
     if (!c) return;
     const char *mode = cfg_value("DKB_FG_MODE");
-    const char *preset = cfg_value("DKB_FG_PRESET");
     const char *mult_s = cfg_value("DKB_FG_MULT");
     if (!mode || !*mode || !strcmp(mode, "off")) {
         const char *fg_en = cfg_value("DKB_FRAME_GEN");
@@ -424,32 +419,18 @@ static void fg_apply_locked(void) {
             return;
         }
     }
-    const char *eff_mode = mode;
-    const char *hw_gate = "OK";
-    if (!strcmp(mode, "dlss_fg") && !c->gpu_is_nvidia) {
-        eff_mode = "msm_fg";
-        hw_gate = "FALLBACK (DLSS MFG requires NVIDIA RTX GPU -> running Nodix Super Motion)";
-    }
+    const char *eff_mode = !strcmp(mode, "dlss_fg") ? "msm_fg" : mode;
     int mult = !strcmp(mult_s, "6x") ? 6 : !strcmp(mult_s, "4x") ? 4 : !strcmp(mult_s, "3x") ? 3 : 2;
-    if (mult > 2 && !strcmp(eff_mode, "dlss_fg") && !c->gpu_is_rtx50) {
-        mult = 2;
-        hw_gate = "GATED (DLSS MFG 3x/4x/6x requires RTX 50 Series -> clamped to 2x)";
-    }
     __atomic_store_n(&g_fg_mult, mult, __ATOMIC_RELAXED);
     char sig[160];
-    snprintf(sig, sizeof sig, "%s|%s|%d|%s", eff_mode, preset, mult, hw_gate);
+    snprintf(sig, sizeof sig, "%s|%d", eff_mode, mult);
     if (strcmp(sig, g_fg_logged)) {
         snprintf(g_fg_logged, sizeof g_fg_logged, "%s", sig);
-        const char *mname = !strcmp(eff_mode, "dlss_fg") ? (c->gpu_is_rtx50 && mult > 2 ? "NVIDIA DLSS 4.5 Multi-Frame Gen" : "NVIDIA DLSS Frame Generation")
-                          : !strcmp(eff_mode, "xefg") ? "Intel XeSS Frame Generation"
+        const char *mname = !strcmp(eff_mode, "xefg") ? "Intel XeSS Frame Generation"
                           : !strcmp(eff_mode, "fsr3_fg") ? "AMD FidelityFX FSR 3.1 Frame Generation"
                           : "Nodix Super Motion (SMFG 1.3 Compute)";
-        const char *pname = !strcmp(preset, "preset_c") ? "Performance · Preset C"
-                          : !strcmp(preset, "preset_b") ? "Quality · Preset B (Optical Flow)"
-                          : !strcmp(preset, "preset_a") ? "Balanced · Preset A (Transformer)"
-                          : "Driver's choice";
-        vk_upscaler_log("SUPER MOTION: ENGAGED -> %s | Profile='%s' | Multiplier=%dx (%d generated frame(s) per render) | HardwareCheck='%s' | GPU='%s'",
-                        mname, pname, mult, mult - 1, hw_gate, c->props.deviceName);
+        vk_upscaler_log("SUPER MOTION: ENGAGED -> %s | Multiplier=%dx (%d generated frame(s) per render) | GPU='%s'",
+                        mname, mult, mult - 1, c->props.deviceName);
     }
 }
 
@@ -814,6 +795,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     if (cy < 0) cy = 0;
     if (cx + cw > w) cw = w - cx;
     if (cy + ch > h) ch = h - cy;
+    res_record_game_surface((uint32_t)w, (uint32_t)h, cx, cy, cw, ch);
     window_settings_live();
     // The menu overlay: laid out before recording (its first frame starts the ImGui back end and uploads the font)
     const char *menu_shot = NULL;

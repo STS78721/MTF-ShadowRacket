@@ -23,9 +23,12 @@
 #include "cfg.h"
 #include "dispatch.h"
 #include "fs.h"
+#include "game_profile.h"
 #include "host.h"
 #include "ov.h"
+#include "ov_pl_ext_font.h"
 #include "platform/platform.h"
+#include "sha256.h"
 
 #define NFP_R_DEVICE_NOT_FOUND 0x8073u     // nfp: no NFC reader on the host
 #define ACCOUNT_R_INVALID 0x7c67u          // MacNativeGames' result for an unknown user handle or uid
@@ -68,7 +71,7 @@ static const char *switch_language(const char *tag) {
     }
     // Bananza ships Portuguese only as Mals/USpt (the Americas), with no EUpt for plain "pt", so every Portuguese
     // locale, Portugal's included, asks for pt-BR; "pt" alone would fall back to English.
-    if (!strcmp(lang, "pt") && !rt_game_version) return "pt-BR";
+    if (!strcmp(lang, "pt") && game_profile_has(GAME_QUIRK_PT_BR)) return "pt-BR";
     if (!strcmp(lang, "ja") || !strcmp(lang, "de") || !strcmp(lang, "it") || !strcmp(lang, "nl") ||
         !strcmp(lang, "ru") || !strcmp(lang, "ko") || !strcmp(lang, "pt"))
         return !strcmp(lang, "ja") ? "ja" : !strcmp(lang, "de") ? "de" : !strcmp(lang, "it") ? "it"
@@ -137,20 +140,31 @@ static void ov_cpu_boost(Cpu *c) {
     if (mode < 0 || mode > 2) rt_fatal("nn::oe::SetCpuBoostMode: unknown mode %lld", (long long)mode);
 }
 
+static uint64_t s_res_change_ev;
+static volatile int32_t s_scale_notify;
+
 static void ov_operation_mode(Cpu *c) { ret_x(c, ov_handheld() ? 0 : 1); }
 static void ov_performance_mode(Cpu *c) { ret_x(c, ov_handheld() ? 0 : 1); }
 
 static void ov_get_default_display_resolution(Cpu *c) {
     int32_t *w = (int32_t *)arg_p(c, 0);
     int32_t *h = (int32_t *)arg_p(c, 1);
-    if (w) *w = ov_handheld() ? 1280 : 1920;
-    if (h) *h = ov_handheld() ? 720 : 1080;
+    if (ov_handheld()) {
+        if (w) *w = (int32_t)game_profile()->handheld_w;
+        if (h) *h = (int32_t)game_profile()->handheld_h;
+        return;
+    }
+    unsigned want[2] = {0, 0};
+    res_wanted(want);
+    if (w) *w = (int32_t)(want[0] ? want[0] : game_profile()->docked_w);
+    if (h) *h = (int32_t)(want[1] ? want[1] : game_profile()->docked_h);
 }
 
 static void ov_display_resolution_change_event(Cpu *c) {
     uint64_t ev = arg_x(c, 0);
     if (!ev) rt_fatal("nn::oe::GetDefaultDisplayResolutionChangeEvent: null event");
     kern_bind_system_event(c, ev, 0);
+    __atomic_store_n(&s_res_change_ev, ev, __ATOMIC_RELEASE);
 }
 
 // void SetFocusHandlingMode(FocusHandlingMode mode): the nnMain checkpoint of --boot
@@ -187,6 +201,16 @@ static volatile int32_t notify_resume, notify_operation, notify_performance;
 static void ov_resume_enabled(Cpu *c) { plat_xchg32(&notify_resume, (int32_t)(arg_x(c, 0) & 0xff)); }
 static void ov_operation_enabled(Cpu *c) { plat_xchg32(&notify_operation, (int32_t)(arg_x(c, 0) & 0xff)); }
 static void ov_performance_enabled(Cpu *c) { plat_xchg32(&notify_performance, (int32_t)(arg_x(c, 0) & 0xff)); }
+
+void ov_notify_operation_mode_changed(void) {
+    int hh = ov_handheld();
+    if (__atomic_load_n(&notify_operation, __ATOMIC_RELAXED)) oe_push_message(0x1eu);
+    if (__atomic_load_n(&notify_performance, __ATOMIC_RELAXED)) oe_push_message(0x1fu);
+    uint64_t ev = __atomic_load_n(&s_res_change_ev, __ATOMIC_ACQUIRE);
+    if (ev) kern_signal_system_event(ev);
+    rt_log("oe: live mode switch -> %s (op_notify=%d perf_notify=%d res_ev=%d)",
+           hh ? "Handheld" : "Docked", notify_operation, notify_performance, ev != 0);
+}
 
 // ==== nn::oe, applet, am, prepo, nfp, err (applet_host.c)
 static PlatMutex lock = PLAT_MUTEX_INIT;
@@ -851,11 +875,13 @@ static void ov_user_difference(Cpu *c) {
 // as in MNG. The load state is always Loaded: the game spins until it is, so missing files stop with a named fatal at
 // Address/Size instead of a hang. TOTK_SHARED_FONTS=<dir> overrides <romfs>/../../firmware/shared-fonts.
 #define SHARED_FONT_TYPES 6
+#define SHARED_FONT_SLOTS 7
 #define BFTTF_MAGIC 0x7f9a0218u
-static const char *const font_files[SHARED_FONT_TYPES] = {
+static const char *const font_files[SHARED_FONT_SLOTS] = {
     "0-standard.bfttf", "1-chinese-simplified.bfttf", "2-chinese-simplified-extension.bfttf",
-    "3-chinese-traditional.bfttf", "4-korean.bfttf", "5-nintendo-extension.bfttf"};
-static struct { PlatMutex lock; const uint8_t *file[SHARED_FONT_TYPES]; uint64_t size[SHARED_FONT_TYPES]; } fonts;
+    "3-chinese-traditional.bfttf", "4-korean.bfttf", "5-nintendo-extension.bfttf",
+    "6-nintendo-extension-2.bfttf"};
+static struct { PlatMutex lock; const uint8_t *file[SHARED_FONT_SLOTS]; uint64_t size[SHARED_FONT_SLOTS]; } fonts;
 
 const char *ov_shared_font_dir(char *buf, size_t n) {
     const char *e = cfg_get("TOTK_SHARED_FONTS");
@@ -886,22 +912,107 @@ static const char *font_type_name(int64_t t) { return font_files[t] + 2; }
 
 static int64_t font_type(Cpu *c, const char *fn) {
     int64_t t = (int32_t)arg_x(c, 0);
-    if (t < 0 || t >= SHARED_FONT_TYPES) rt_fatal("nn::pl::%s: invalid shared font type %lld", fn, (long long)t);
+    if (t < 0 || t >= SHARED_FONT_SLOTS) rt_fatal("nn::pl::%s: invalid shared font type %lld", fn, (long long)t);
     return t;
 }
+static void ov_font_request_load(Cpu *c) { font_type(c, "RequestSharedFontLoad"); }
 static void ov_font_state(Cpu *c) { font_type(c, "GetSharedFontLoadState"); ret_x(c, 1); }
 
-// The font of type t, read and checked on first use; a named fatal when it is missing or damaged.
+static int find_fallback_font(int64_t t, char *out, size_t cap) {
+    const char *lang = NULL;
+    if (t == 1 || t == 2) lang = "zh-Hans";
+    else if (t == 3) lang = "zh-Hant";
+    else if (t == 4) lang = "ko";
+    if (lang && plat_font_path(lang, out, cap)) return 1;
+    char exe[PLAT_PATH_MAX];
+    int len = plat_exe_path(exe, sizeof exe);
+    char *cut = len && (size_t)len < sizeof exe ? plat_last_sep(exe) : NULL;
+    if (cut) {
+        *cut = 0;
+        if (snprintf(out, cap, "%s/Roboto-Medium.ttf", exe) < (int)cap && plat_file_exists(out)) return 1;
+        if (snprintf(out, cap, "%s/../../runtime/ui/fonts/Roboto-Medium.ttf", exe) < (int)cap && plat_file_exists(out)) return 1;
+    }
+    if (plat_file_exists("runtime/ui/fonts/Roboto-Medium.ttf")) {
+        snprintf(out, cap, "runtime/ui/fonts/Roboto-Medium.ttf");
+        return 1;
+    }
+    if (plat_font_path("ja", out, cap)) return 1;
+#ifdef _WIN32
+    static const char *const win_fonts[] = {
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+    };
+    for (size_t i = 0; i < sizeof win_fonts / sizeof *win_fonts; i++) {
+        if (plat_file_exists(win_fonts[i])) {
+            snprintf(out, cap, "%s", win_fonts[i]);
+            return 1;
+        }
+    }
+#endif
+    return 0;
+}
+
+// The font of type t, read and checked on first use; falls back to a host TrueType/OpenType font when firmware BFTTFs
+// are absent and TOTK_SHARED_FONTS is not explicitly set.
 static const uint8_t *font_data(Cpu *c, const char *fn, int64_t t) {
     plat_mutex_lock(&fonts.lock);
     if (!fonts.file[t]) {
         char dir[PLAT_PATH_MAX], path[PLAT_PATH_MAX + 64], lr[96];
         snprintf(path, sizeof path, "%s/%s", ov_shared_font_dir(dir, sizeof dir), font_files[t]);
         FILE *f = fopen(path, "rb");
-        if (!f)
+        if (!f) {
+            const char *explicit_dir = cfg_get("TOTK_SHARED_FONTS");
+            char fb_path[PLAT_PATH_MAX];
+            if (!(explicit_dir && *explicit_dir) && (t == 5 || t == 6)) {
+                size_t ext_len = 0;
+                uint8_t *ext = ov_build_nintendo_ext_ttf(&ext_len);
+                if (ext && ext_len >= 12) {
+                    uint8_t *p = mem_kernel_alloc((uint64_t)ext_len + 8, 16);
+                    uint32_t m = BFTTF_MAGIC, sz = (uint32_t)ext_len;
+                    p[0] = (uint8_t)(m >> 24); p[1] = (uint8_t)(m >> 16); p[2] = (uint8_t)(m >> 8); p[3] = (uint8_t)m;
+                    p[4] = (uint8_t)(sz >> 24); p[5] = (uint8_t)(sz >> 16); p[6] = (uint8_t)(sz >> 8); p[7] = (uint8_t)sz;
+                    memcpy(p + 8, ext, ext_len);
+                    free(ext);
+                    fonts.size[t] = (uint64_t)ext_len;
+                    __atomic_store_n(&fonts.file[t], p, __ATOMIC_RELEASE);
+                    rt_log("pl: shared font %lld (%s) missing at %s; synthesized Nintendo extended PUA font (%llu bytes)",
+                           (long long)t, font_type_name(t), path, (unsigned long long)ext_len);
+                    plat_mutex_unlock(&fonts.lock);
+                    return p;
+                }
+                free(ext);
+            }
+            if (!(explicit_dir && *explicit_dir) && find_fallback_font(t, fb_path, sizeof fb_path)) {
+                FILE *ff = fopen(fb_path, "rb");
+                if (ff) {
+                    plat_fseek64(ff, 0, SEEK_END);
+                    int64_t flen = plat_ftell64(ff);
+                    plat_fseek64(ff, 0, SEEK_SET);
+                    if (flen >= 12 && flen <= (64 << 20)) {
+                        uint8_t *p = mem_kernel_alloc((uint64_t)flen + 8, 16);
+                        size_t got = fread(p + 8, 1, (size_t)flen, ff);
+                        fclose(ff);
+                        uint32_t sfnt = got == (size_t)flen ? be32(p + 8) : 0;
+                        if (sfnt == 0x00010000u || sfnt == 0x4f54544fu || sfnt == 0x74746366u) {
+                            uint32_t m = BFTTF_MAGIC, sz = (uint32_t)flen;
+                            p[0] = (uint8_t)(m >> 24); p[1] = (uint8_t)(m >> 16); p[2] = (uint8_t)(m >> 8); p[3] = (uint8_t)m;
+                            p[4] = (uint8_t)(sz >> 24); p[5] = (uint8_t)(sz >> 16); p[6] = (uint8_t)(sz >> 8); p[7] = (uint8_t)sz;
+                            fonts.size[t] = (uint64_t)flen;
+                            __atomic_store_n(&fonts.file[t], p, __ATOMIC_RELEASE);
+                            rt_log("pl: shared font %lld (%s) missing at %s; using host fallback %s (%llu bytes)",
+                                   (long long)t, font_type_name(t), path, fb_path, (unsigned long long)flen);
+                            plat_mutex_unlock(&fonts.lock);
+                            return p;
+                        }
+                    } else {
+                        fclose(ff);
+                    }
+                }
+            }
             rt_fatal("nn::pl::%s(%lld) from %s: no shared font %s (needed for Chinese and Korean text); run "
                      "tools/extract_fonts.py --firmware <firmware NCA dir> or set TOTK_SHARED_FONTS", fn, (long long)t,
                      caller(c, lr, sizeof lr), path);
+        }
         plat_fseek64(f, 0, SEEK_END);
         int64_t len = plat_ftell64(f);
         plat_fseek64(f, 0, SEEK_SET);
@@ -911,17 +1022,19 @@ static const uint8_t *font_data(Cpu *c, const char *fn, int64_t t) {
         fclose(f);
         uint64_t size = got == (size_t)len ? ov_bfttf_size(p, (uint64_t)len) : 0;
         if (!size) rt_fatal("nn::pl: shared font %s is not a BFTTF font", path);
-        // Decode the BFTTF XOR scrambling in-place so word0 is BFTTF_MAGIC (0x7f9a0218, or 0x18029a7f in little-endian)
-        // and the payload at p+8 is a valid TrueType/OpenType font.
+        // Decode the BFTTF payload words in-place while preserving the original 8-byte header at [0..8)
+        // so GetSharedFontAddress(t) = p + 8 points directly at the decoded TrueType/OpenType sfnt bytes.
         uint32_t key = be32(p) ^ BFTTF_MAGIC;
-        for (uint64_t i = 0; i + 4 <= (uint64_t)len; i += 4) {
+        for (uint64_t i = 8; i + 4 <= (uint64_t)len; i += 4) {
             uint32_t w = be32(p + i) ^ key;
             p[i]     = (uint8_t)(w >> 24);
             p[i + 1] = (uint8_t)(w >> 16);
             p[i + 2] = (uint8_t)(w >> 8);
             p[i + 3] = (uint8_t)w;
         }
-        fonts.size[t] = (uint64_t)len;
+        for (uint64_t i = ((uint64_t)len & ~3ull); i < (uint64_t)len; i++)
+            p[i] ^= (uint8_t)(key >> (24 - 8 * (i & 3)));
+        fonts.size[t] = size;
         __atomic_store_n(&fonts.file[t], p, __ATOMIC_RELEASE);
         rt_log("pl: shared font %lld (%s): %llu bytes from %s", (long long)t, font_type_name(t),
                (unsigned long long)size, path);
@@ -932,12 +1045,54 @@ static const uint8_t *font_data(Cpu *c, const char *fn, int64_t t) {
 }
 static void ov_font_address(Cpu *c) {
     int64_t t = font_type(c, "GetSharedFontAddress");
-    ret_x(c, (uint64_t)(uintptr_t)font_data(c, "GetSharedFontAddress", t));
+    ret_x(c, (uint64_t)(uintptr_t)(font_data(c, "GetSharedFontAddress", t) + 8));
 }
 static void ov_font_size(Cpu *c) {
     int64_t t = font_type(c, "GetSharedFontSize");
     font_data(c, "GetSharedFontSize", t);
     ret_x(c, fonts.size[t]);
+}
+
+typedef struct {
+    int32_t type;
+    int32_t pad;
+    uint64_t address;
+    uint64_t size;
+} SharedFontData;
+
+static void ov_get_shared_font(Cpu *c) {
+    int32_t *loaded_count = arg_p(c, 0);
+    SharedFontData *out = arg_p(c, 1);
+    int32_t max_count = (int32_t)arg_x(c, 2);
+    if (!loaded_count || !out || max_count <= 0) { ret_x(c, 0); return; }
+    int32_t count = max_count < SHARED_FONT_TYPES ? max_count : SHARED_FONT_TYPES;
+    for (int32_t i = 0; i < count; i++) {
+        const uint8_t *p = font_data(c, "GetSharedFont", i);
+        out[i].type = i;
+        out[i].pad = 0;
+        out[i].address = (uint64_t)(uintptr_t)(p + 8);
+        out[i].size = fonts.size[i];
+    }
+    *loaded_count = count;
+    ret_x(c, 1);
+}
+
+static void ov_get_shared_font_priority(Cpu *c) {
+    int32_t *loaded_count = arg_p(c, 0);
+    int32_t *types = arg_p(c, 1);
+    uint64_t *addresses = arg_p(c, 2);
+    uint64_t *sizes = arg_p(c, 3);
+    int32_t max_count = (int32_t)arg_x(c, 4);
+    if (!loaded_count || max_count <= 0) { ret_x(c, 0); return; }
+    int32_t count = max_count < SHARED_FONT_TYPES ? max_count : SHARED_FONT_TYPES;
+    for (int32_t i = 0; i < count; i++) {
+        const uint8_t *p = font_data(c, "GetSharedFontInOrderOfPriority", i);
+        if (types) types[i] = i;
+        if (addresses) addresses[i] = (uint64_t)(uintptr_t)(p + 8);
+        if (sizes) sizes[i] = fonts.size[i];
+    }
+    *loaded_count = count;
+    ret_x(c, 1);
 }
 
 // int nn::audio::detail::ListVirtualInputDevices(AudioDeviceName *out, int max): no virtual microphone input on host
@@ -1004,9 +1159,16 @@ static void ov_sock_eventfd_rw(Cpu *c) {
 // int nn::oe::GetCurrentGraphicsScale(): an enum 0-2; main+0x4686d4 maps it through a float table {3, 12, 16} and
 // ignores anything above 2. The host is a docked console with the most to give, so the highest value. Unverified
 // against hardware: what the three levels mean is not known.
-static void ov_graphics_scale(Cpu *c) { ret_x(c, 2); }
-// void nn::oe::SetGraphicsScaleChangedNotificationEnabled(bool): the scale never changes on the host
-static void ov_graphics_scale_notify(Cpu *c) { (void)c; }
+static void ov_graphics_scale(Cpu *c) {
+    if (!ov_handheld()) {
+        ret_x(c, 2);
+        return;
+    }
+    int pct = atoi(cfg_value("NS2_RENDER_SCALE"));
+    ret_x(c, (pct > 0 && pct <= 50) ? 0 : 1);
+}
+// void nn::oe::SetGraphicsScaleChangedNotificationEnabled(bool)
+static void ov_graphics_scale_notify(Cpu *c) { plat_xchg32(&s_scale_notify, (int32_t)(arg_x(c, 0) & 0xff)); }
 // void nn::oe::SetAlbumImageOrientation(album::ImageOrientation): there is no capture album
 static void ov_album_orientation(Cpu *c) { (void)c; }
 // void nn::oe::{Enter,Leave}ExitRequestHandlingSection(): no exit request ever arrives from a host system applet
@@ -1134,9 +1296,17 @@ HOST_OVERRIDE("_ZN2nn4time21GetDeviceLocationNameEPNS0_12LocationNameE", ov_get_
 HOST_OVERRIDE("_ZN2nn8settings6system29GetDeviceTimeZoneLocationNameEPNS_4time12LocationNameE", ov_get_device_location_name);
 HOST_OVERRIDE("_ZN2nn8settings6detail29GetDeviceTimeZoneLocationNameEPNS_4time12LocationNameE", ov_get_device_location_name);
 
+HOST_OVERRIDE("_ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE", ov_font_request_load);
 HOST_OVERRIDE("_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE", ov_font_state);
 HOST_OVERRIDE("_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE", ov_font_address);
 HOST_OVERRIDE("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", ov_font_size);
+HOST_OVERRIDE("_ZN2nn2pl13GetSharedFontEPiPNS0_14SharedFontDataEiNS_8settings12LanguageCodeE", ov_get_shared_font);
+HOST_OVERRIDE("_ZN2nn2pl30GetSharedFontInOrderOfPriorityEPiPNS0_14SharedFontTypeEPPKvPmiNS_8settings12LanguageCodeE", ov_get_shared_font_priority);
+HOST_OVERRIDE("_ZN2nn2pl39GetSharedFontInOrderOfPriorityForSystemEPiPNS0_23SharedFontTypeForSystemEPPKvPmiNS_8settings12LanguageCodeE", ov_get_shared_font_priority);
+HOST_OVERRIDE("_ZN2nn2pl8IsVrModeEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn2pl11BeginVrModeEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn2pl9EndVrModeEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn2pl16IsRunningOnOunceEv", ov_ret_one);
 
 HOST_OVERRIDE("_ZN2nn5audio6detail23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi", ov_list_virtual_input);
 
@@ -1217,16 +1387,23 @@ static void ov_ro_load_module(Cpu *c) {
     rt_log("ro: LoadModule(mod=%#llx, image=%#llx, buffer=%#llx, size=%llu, flag=%d)",
            (unsigned long long)mod, (unsigned long long)image, (unsigned long long)buffer,
            (unsigned long long)size, flag);
-    uint32_t magic = *(const uint32_t *)(uintptr_t)(image + 0x10);
-    uint32_t nro_size = *(const uint32_t *)(uintptr_t)(image + 0x18);
-    rt_log("ro: NRO header magic: 0x%08x (%.4s), nro_size=%u bytes (%.2f MiB)",
-           magic, (const char *)(uintptr_t)(image + 0x10), nro_size, (double)nro_size / (1024.0 * 1024.0));
-    FILE *f = fopen("C:/Games/MTF PC/dumped_game.nro", "wb");
-    if (f) {
-        size_t dump_sz = (nro_size > 0x1000 && nro_size < 200 * 1024 * 1024) ? nro_size : (48 * 1024 * 1024);
-        fwrite((const void *)(uintptr_t)image, 1, dump_sz, f);
-        fclose(f);
-        rt_log("ro: Dumped decrypted NRO (%zu bytes) to C:/Games/MTF PC/dumped_game.nro!", dump_sz);
+    if (image && plat_mem_readable(image + 0x10, 0x30)) {
+        uint32_t magic = *(const uint32_t *)(uintptr_t)(image + 0x10);
+        uint32_t nro_size = *(const uint32_t *)(uintptr_t)(image + 0x18);
+        rt_log("ro: NRO header magic: 0x%08x, nro_size=%u bytes (%.2f MiB)",
+               magic, nro_size, (double)nro_size / (1024.0 * 1024.0));
+        const char *dump_path = getenv("NS2_DUMP_NRO");
+        if (dump_path && *dump_path && magic == 0x304f524eu &&
+            nro_size >= 0x100u && nro_size <= (256u << 20) &&
+            plat_mem_readable(image, nro_size)) {
+            FILE *f = fopen(dump_path, "wb");
+            if (f) {
+                size_t wrote = fwrite((const void *)(uintptr_t)image, 1, nro_size, f);
+                fclose(f);
+                rt_log("ro: captured runtime NRO (%zu bytes) -> %s", wrote, dump_path);
+                if (wrote == nro_size) exit(0);
+            }
+        }
     }
     ret_x(c, 0);
 }
@@ -1345,7 +1522,7 @@ HOST_OVERRIDE("_ZN2nn4chat6detail24DestroyUserServiceByHipcEv", ov_noop);
 
 static void ov_gs_check_init(Cpu *c) {
     rt_log("gs: CheckGraphicsSystemInitialized called");
-    if (rt_application_id == 0x0400C3F00006E000ull) {
+    if (game_profile_has(GAME_QUIRK_MKW_VTABLES)) {
         *(uint32_t *)(uintptr_t)0x70052db828ull = 1;
     }
 }
@@ -1459,6 +1636,379 @@ HOST_OVERRIDE("_ZN2nn7friends21StartFriendInvitationENS0_24FriendInvitationViewM
 HOST_OVERRIDE("_ZN2nn7friends21StartFriendInvitationERKNS_7account3UidEiRKNS0_35FriendInvitationGameModeDescriptionEPKvm", ov_result_ok);
 HOST_OVERRIDE("_ZN2nn7friends28StartSendingFriendInvitationERKNS_7account3UidEPKNS1_23NetworkServiceAccountIdEiRKNS0_35FriendInvitationGameModeDescriptionEPKvm", ov_result_ok);
 HOST_OVERRIDE("_ZN2nn7friends28ShowReceivedInvitationDetailERKNS_7account3UidERKNS0_18FriendInvitationIdERKNS0_23FriendInvitationGroupIdE", ov_result_ok);
+HOST_OVERRIDE("_ZN2nn7friends12AsyncContext14GetSystemEventEPNS_2os11SystemEventE", ov_async_event);
+HOST_OVERRIDE("_ZN2nn7friends7ProfileC1Ev", ov_noop);
+
+// ---- Universal Switch 2 offline & SDK 20/21 service overrides
+// Synthesized from mkw-recomp (MIT) and MacNativeGames ns2_host.c / offline_host.c (MIT).
+#define LDN_R_DISABLED (203u | (22u << 9))
+#define SSL_R_UNAVAILABLE (123u | (204u << 9))
+#define BCAT_R_UNAVAILABLE 0x1u
+
+static void ov_pseudo_device_id(Cpu *c) {
+    uint8_t *uuid = arg_p(c, 0);
+    if (!uuid) return;
+    uint64_t uid[2] = {0};
+    account_uid(uid);
+    uint64_t title = game_profile()->title_id;
+    Sha256 s;
+    uint8_t digest[32];
+    sha256_init(&s);
+    sha256_update(&s, uid, sizeof uid);
+    sha256_update(&s, &title, sizeof title);
+    sha256_final(&s, digest);
+    memcpy(uuid, digest, 16);
+}
+
+static void ov_cached_account_info(Cpu *c) {
+    void *out = arg_p(c, 0);
+    if (out) memset(out, 0, 0x88);
+    ret_x(c, 0x1f4000u | 124u);
+}
+
+static void ov_time_load_rule(Cpu *c) {
+    void *out = arg_p(c, 0);
+    if (out) memset(out, 0, 0x4000);
+    ret_x(c, 0);
+}
+
+static void ov_to_calendar_with_rule(Cpu *c) {
+    CalendarTime *out = arg_p(c, 0);
+    CalendarInfo *info = arg_p(c, 1);
+    const int64_t *t = arg_p(c, 2);
+    if (!out || !t) { ret_x(c, TIME_R_INVALID); return; }
+    CalendarTime ct;
+    CalendarInfo ci;
+    if (!local_calendar(*t, &ct, &ci)) { ret_x(c, TIME_R_INVALID); return; }
+    *out = ct;
+    if (info) *info = ci;
+    ret_x(c, 0);
+}
+
+static void ov_to_posix_local(Cpu *c) {
+    int32_t *count = arg_p(c, 0);
+    int64_t *out = arg_p(c, 1);
+    int32_t n = (int32_t)arg_x(c, 2);
+    const CalendarTime *ct = arg_p(c, 3);
+    if (!ct) { ret_x(c, TIME_R_INVALID); return; }
+    struct tm tm_val = {
+        .tm_year = ct->year - 1900,
+        .tm_mon = ct->month - 1,
+        .tm_mday = ct->day,
+        .tm_hour = ct->hour,
+        .tm_min = ct->minute,
+        .tm_sec = ct->second,
+        .tm_isdst = -1,
+    };
+    time_t v = mktime(&tm_val);
+    if (count) *count = n > 0 ? 1 : 0;
+    if (n > 0 && out) out[0] = (int64_t)v;
+    ret_x(c, 0);
+}
+
+static void ov_to_posix_with_rule(Cpu *c) {
+    int32_t *count = arg_p(c, 0);
+    int64_t *out = arg_p(c, 1);
+    int32_t n = (int32_t)arg_x(c, 2);
+    const CalendarTime *ct = arg_p(c, 3);
+    if (!ct) { ret_x(c, TIME_R_INVALID); return; }
+    struct tm tm_val = {
+        .tm_year = ct->year - 1900,
+        .tm_mon = ct->month - 1,
+        .tm_mday = ct->day,
+        .tm_hour = ct->hour,
+        .tm_min = ct->minute,
+        .tm_sec = ct->second,
+        .tm_isdst = -1,
+    };
+    time_t v = mktime(&tm_val);
+    if (count) *count = n > 0 ? 1 : 0;
+    if (n > 0 && out) out[0] = (int64_t)v;
+    ret_x(c, 0);
+}
+
+static void ov_net_clock_task_start(Cpu *c) {
+    uint64_t finish_fn = ldr_symbol("_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask14GetFinishEventEv");
+    uint64_t signal_fn = ldr_symbol("_ZN2nn2os17SignalSystemEventEPNS0_15SystemEventTypeE");
+    if (finish_fn && signal_fn) {
+        uint64_t self = arg_x(c, 0);
+        uint64_t ev = rt_call(c, finish_fn, 1, self);
+        if (ev) rt_call(c, signal_fn, 1, ev);
+    }
+    ret_x(c, 0);
+}
+
+static void ov_ldn_disabled(Cpu *c) { ret_x(c, LDN_R_DISABLED); }
+static void ov_ldn_attach_event(Cpu *c) {
+    uint64_t ev = arg_x(c, 0);
+    if (ev) kern_bind_system_event(c, ev, 0);
+}
+
+static void ov_ssl_unavailable(Cpu *c) { ret_x(c, SSL_R_UNAVAILABLE); }
+static void ov_bcat_unavailable(Cpu *c) { ret_x(c, BCAT_R_UNAVAILABLE); }
+
+static void ov_ngc_check(Cpu *c) {
+    uint32_t *masks = arg_p(c, 1);
+    uint32_t count = (uint32_t)arg_x(c, 2);
+    if (masks && count) memset(masks, 0, (size_t)count * sizeof *masks);
+    ret_x(c, 0);
+}
+
+static void ov_ngc_check_static(Cpu *c) {
+    uint32_t *masks = arg_p(c, 0);
+    uint32_t count = (uint32_t)arg_x(c, 1);
+    if (masks && count) memset(masks, 0, (size_t)count * sizeof *masks);
+    ret_x(c, 0);
+}
+
+static void ov_crypto_random(Cpu *c) {
+    void *out = arg_p(c, 0);
+    uint64_t n = arg_x(c, 1);
+    if (out && n) need(plat_random(out, (size_t)n), "nn::crypto::GenerateCryptographicallyRandomBytes");
+}
+
+static void ov_settings_lang_eq(Cpu *c) {
+    static const char *const codes[] = {
+        "ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "nl", "pt", "ru", "zh-TW",
+        "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR"
+    };
+    const int32_t *lang = arg_p(c, 0);
+    const char *code = arg_p(c, 1);
+    if (!lang || !code || *lang < 0 || *lang >= (int32_t)(sizeof codes / sizeof *codes)) {
+        ret_x(c, 0);
+        return;
+    }
+    ret_x(c, strncmp(codes[*lang], code, 8) == 0 ? 1 : 0);
+}
+
+static void ov_stpl_mem_size(Cpu *c) { ret_x(c, 0x1000); }
+static void ov_stpl_conn_event(Cpu *c) {
+    static uint64_t s_stpl_ev[16] = {0};
+    static volatile int32_t s_bound = 0;
+    uint64_t ev = (uint64_t)(uintptr_t)s_stpl_ev;
+    if (!plat_xchg32(&s_bound, 1)) kern_bind_system_event(c, ev, 0);
+    ret_x(c, ev);
+}
+static void ov_stpl_zero_out32(Cpu *c) {
+    uint32_t *out = arg_p(c, 0);
+    if (out) *out = 0;
+    ret_x(c, 0);
+}
+static void ov_stpl_zero_out64(Cpu *c) {
+    uint64_t *out = arg_p(c, 0);
+    if (out) *out = 0;
+    ret_x(c, 0);
+}
+static void ov_stpl_nickname(Cpu *c) {
+    char *out = arg_p(c, 0);
+    if (out) *out = 0;
+    ret_x(c, 0);
+}
+static void ov_stpl_open_session(Cpu *c) {
+    void *info = arg_p(c, 0);
+    if (info) memset(info, 0, 0x40);
+    ret_x(c, 0);
+}
+static volatile uint32_t s_stpl_styles, s_stpl_hold;
+static void ov_stpl_set_styles(Cpu *c) { __atomic_store_n(&s_stpl_styles, (uint32_t)arg_x(c, 0), __ATOMIC_RELAXED); }
+static void ov_stpl_get_styles(Cpu *c) { ret_x(c, __atomic_load_n(&s_stpl_styles, __ATOMIC_RELAXED)); }
+static void ov_stpl_set_hold(Cpu *c) { __atomic_store_n(&s_stpl_hold, (uint32_t)arg_x(c, 0), __ATOMIC_RELAXED); }
+static void ov_stpl_get_hold(Cpu *c) { ret_x(c, __atomic_load_n(&s_stpl_hold, __ATOMIC_RELAXED)); }
+
+static void ov_ec_size(Cpu *c) {
+    uint64_t *n = arg_p(c, 1);
+    if (n) *n = 0;
+    ret_x(c, BCAT_R_UNAVAILABLE);
+}
+static void ov_app_error(Cpu *c) {
+    (void)c;
+    rt_log("err: ShowApplicationError suppressed on host");
+}
+
+// nn::oe & nn::err & nn::pctl & nn::album
+HOST_OVERRIDE("_ZN2nn2oe17GetPseudoDeviceIdEPNS_4util4UuidE", ov_pseudo_device_id);
+HOST_OVERRIDE("_ZN2nn2oe17EnableCrashReportEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn2oe18DisableCrashReportEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn2oe24GetServerEnvironmentTypeEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn2oe40SendServerMaintenanceOverlayNotificationENS_4time9PosixTimeES2_", ov_noop);
+HOST_OVERRIDE("_ZN2nn3err20ShowApplicationErrorERKNS0_19ApplicationErrorArgE", ov_app_error);
+HOST_OVERRIDE("_ZN2nn3aoc25ShowAddOnContentLostErrorEPKii", ov_noop);
+HOST_OVERRIDE("_ZN2nn4pctl25TryBeginFreeCommunicationEb", ov_ret_one);
+HOST_OVERRIDE("_ZN2nn4pctl20EndFreeCommunicationEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4pctl27CheckStereoVisionPermissionEb", ov_ret_one);
+HOST_OVERRIDE("_ZN2nn5album10InitializeEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn5album8FinalizeEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn5album14SaveScreenshotEPKvmNS0_9ImageSizeENS0_17AlbumReportOptionE", ov_bcat_unavailable);
+HOST_OVERRIDE("_ZN2nn3nfp7UnmountERKNS0_12DeviceHandleE", ov_nfp_no_device);
+HOST_OVERRIDE("_ZN2nn7account29LoadCachedNintendoAccountInfoEPNS0_25CachedNintendoAccountInfoERKNS0_10UserHandleEPvm", ov_cached_account_info);
+
+// nn::time timezone rules & async network clock task
+HOST_OVERRIDE("_ZN2nn4time16LoadTimeZoneRuleEPNS0_12TimeZoneRuleERKNS0_12LocationNameE", ov_time_load_rule);
+HOST_OVERRIDE("_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeERKNS0_12TimeZoneRuleE", ov_to_calendar_with_rule);
+HOST_OVERRIDE("_ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeE", ov_to_posix_local);
+HOST_OVERRIDE("_ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeERKNS0_12TimeZoneRuleE", ov_to_posix_with_rule);
+HOST_OVERRIDE("_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask9StartTaskEv", ov_net_clock_task_start);
+HOST_OVERRIDE("_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask9GetResultEv", ov_ret_zero);
+
+// nn::nifm & nn::socket C++ wrappers & nn::ssl C++ Context
+HOST_OVERRIDE("_ZN2nn4nifm19SetLocalNetworkModeEb", ov_noop);
+HOST_OVERRIDE("_ZN2nn4nifm20SubmitNetworkRequestEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4nifm22IsNetworkRequestOnHoldEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn4nifm22GetCurrentIpConfigInfoEP7in_addrS2_S2_S2_S2_", ov_nifm_error_result);
+HOST_OVERRIDE("_ZN2nn4nifm26GetCurrentPrimaryIpAddressEPNS_6socket6InAddrE", ov_nifm_error_result);
+HOST_OVERRIDE("_ZN2nn6socket10InitializeEPvmmi", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn6socket12GetLastErrorEv", ov_sock_get_errno);
+HOST_OVERRIDE("_ZN2nn6socket12GetLastErrnoEv", ov_sock_get_errno);
+HOST_OVERRIDE("_ZN2nn6socket6SocketEiii", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket6SocketENS0_6FamilyENS0_4TypeENS0_8ProtocolE", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket5CloseEi", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn6socket7ConnectEiPK8sockaddrj", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket4BindEiPK8sockaddrj", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket4BindEiPKNS0_8SockAddrEj", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket6ListenEii", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket6AcceptEiP8sockaddrPj", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket4SendEiPKvmi", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket4RecvEiPvmi", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket4ReadEiPvm", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket5WriteEiPKvm", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket6SendToEiPKvmiPK8sockaddrj", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket6SendToEiPKvmNS0_7MsgFlagEPKNS0_8SockAddrEj", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket8RecvFromEiPvmiP8sockaddrPj", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket8RecvFromEiPvmNS0_7MsgFlagEPNS0_8SockAddrEPj", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket8ShutdownEii", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn6socket4PollEP6pollfdmi", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn6socket6SelectEiPNS0_5FdSetES2_S2_PNS0_7TimeValE", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket10GetSockOptEiiiPvPj", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket10SetSockOptEiiiPKvj", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn6socket11GetPeerNameEiP8sockaddrPj", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket11GetSockNameEiP8sockaddrPj", ov_sock_fail);
+HOST_OVERRIDE("_ZN2nn6socket5FcntlEiNS0_12FcntlCommandEz", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn6socket11GetAddrInfoEPKcS2_PK8addrinfoPPS3_", ov_sock_gai);
+HOST_OVERRIDE("_ZN2nn6socket11GetAddrInfoEPKcS2_PKNS0_8AddrInfoEPPS3_", ov_sock_gai);
+HOST_OVERRIDE("_ZN2nn6socket12FreeAddrInfoEP8addrinfo", ov_noop);
+HOST_OVERRIDE("_ZN2nn6socket12FreeAddrInfoEPNS0_8AddrInfoE", ov_noop);
+HOST_OVERRIDE("_ZN2nn6socket9InetHtonlEj", ov_sock_htonl);
+HOST_OVERRIDE("_ZN2nn6socket9InetHtonsEt", ov_sock_htons);
+HOST_OVERRIDE("_ZN2nn6socket9InetNtohsEt", ov_sock_htons);
+HOST_OVERRIDE("_ZN2nn3ssl7ContextC1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn3ssl7ContextD1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn3ssl7Context6CreateENS1_10SslVersionE", ov_ssl_unavailable);
+HOST_OVERRIDE("_ZN2nn3ssl7Context7DestroyEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn3ssl7Context15ImportClientPkiEPmPKcS4_jj", ov_ssl_unavailable);
+HOST_OVERRIDE("_ZN2nn3ssl7Context15ImportServerPkiEPmPKcjNS0_17CertificateFormatE", ov_ssl_unavailable);
+HOST_OVERRIDE("_ZN2nn3ssl7Context9ImportCrlEPmPKcj", ov_ssl_unavailable);
+HOST_OVERRIDE("_ZN2nn3ssl14BuiltInManager28GetBuiltInCertificateBufSizeEPjPNS0_15CaCertificateIdEj", ov_ssl_unavailable);
+HOST_OVERRIDE("_ZN2nn3ssl14BuiltInManager22GetBuiltInCertificatesEPPNS0_26BuiltInCertificateInfoBaseEPhjPNS0_15CaCertificateIdEj", ov_ssl_unavailable);
+
+// nn::ldn (local wireless disabled)
+HOST_OVERRIDE("_ZN2nn3ldn10InitializeEv", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn8FinalizeEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn3ldn8GetStateEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn3ldn19GetDisconnectReasonEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn3ldn10DisconnectEv", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn11OpenStationEv", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn12CloseStationEv", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn15OpenAccessPointEv", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn16CloseAccessPointEv", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn14DestroyNetworkEv", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn11ScanPrivateEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn13CreateNetworkERKNS0_13NetworkConfigERKNS0_14SecurityConfigERKNS0_10UserConfigE", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn20CreateNetworkPrivateERKNS0_13NetworkConfigERKNS0_14SecurityConfigERKNS0_17SecurityParameterERKNS0_10UserConfigEiPKNS0_12AddressEntryE", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn7ConnectERKNS0_11NetworkInfoERKNS0_14SecurityConfigERKNS0_10UserConfigEiNS0_13ConnectOptionE", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn14ConnectPrivateERKNS0_13NetworkConfigERKNS0_14SecurityConfigERKNS0_17SecurityParameterERKNS0_10UserConfigEiNS0_13ConnectOptionE", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn14GetIpv4AddressEPNS0_11Ipv4AddressEPNS0_10SubnetMaskE", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn14GetNetworkInfoEPNS0_11NetworkInfoE", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn20GetSecurityParameterEPNS0_17SecurityParameterE", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn16SetAdvertiseDataEPKvm", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn20AddAcceptFilterEntryENS0_10MacAddressE", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn22SetStationAcceptPolicyENS0_12AcceptPolicyE", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn6RejectENS0_11Ipv4AddressE", ov_ldn_disabled);
+HOST_OVERRIDE("_ZN2nn3ldn22AttachStateChangeEventEPNS_2os15SystemEventTypeE", ov_ldn_attach_event);
+
+// nn::bcat, nn::ec, nn::ngc, nn::crypto, nn::settings, nn::prepo
+HOST_OVERRIDE("_ZN2nn4bcat10InitializeEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4bcat25MountDeliveryCacheStorageEv", ov_bcat_unavailable);
+HOST_OVERRIDE("_ZN2nn4bcat27UnmountDeliveryCacheStorageEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn4bcat21DeliveryCacheProgressC1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn4bcat21DeliveryCacheProgressD1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn4bcat24RequestSyncDeliveryCacheEPNS0_21DeliveryCacheProgressE", ov_bcat_unavailable);
+HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFileC1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFileD1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFile4OpenEPKc", ov_bcat_unavailable);
+HOST_OVERRIDE("_ZN2nn4bcat17DeliveryCacheFile4OpenERKNS0_13DirectoryNameERKNS0_8FileNameE", ov_bcat_unavailable);
+HOST_OVERRIDE("_ZN2nn4bcat22DeliveryCacheDirectoryC1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn4bcat22DeliveryCacheDirectoryD1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn4bcat22DeliveryCacheDirectory4OpenERKNS0_13DirectoryNameE", ov_bcat_unavailable);
+HOST_OVERRIDE("_ZN2nn2ec33InitializeForShopServiceAccessorsEPvm", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn2ec31FinalizeForShopServiceAccessorsEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn2ec19ShopServiceAccessorC1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn2ec19ShopServiceAccessorD1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn2ec19ShopServiceAccessor10InitializeERKNS0_11ShopServiceE", ov_bcat_unavailable);
+HOST_OVERRIDE("_ZN2nn2ec19ShopServiceAccessor7RequestEPNS1_13AsyncResponseERKNS_7account3UidENS0_11ShopService6MethodEPKcRKNS1_8PostDataENS_8TimeSpanE", ov_bcat_unavailable);
+HOST_OVERRIDE("_ZN2nn2ec19ShopServiceAccessor13AsyncResponseC1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn2ec19ShopServiceAccessor13AsyncResponseD1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn2ec19ShopServiceAccessor13AsyncResponse7GetSizeEPm", ov_ec_size);
+HOST_OVERRIDE("_ZN2nn2ec19ShopServiceAccessor13AsyncResponse3GetEPvm", ov_bcat_unavailable);
+HOST_OVERRIDE("_ZN2nn2ec22ShowShopProductDetailsENS0_5NsUidERKNS_7account10UserHandleE", ov_bcat_unavailable);
+HOST_OVERRIDE("_ZN2nn3ngc15ProfanityFilterC1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn3ngc15ProfanityFilterD1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn3ngc15ProfanityFilter10InitializeEPvm", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn3ngc15ProfanityFilter10InitializeEPvmb", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn3ngc15ProfanityFilter8FinalizeEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn3ngc15ProfanityFilter22SetNormalizationOptionEi", ov_noop);
+HOST_OVERRIDE("_ZN2nn3ngc15ProfanityFilter19CheckProfanityWordsEPjjPPKcm", ov_ngc_check);
+HOST_OVERRIDE("_ZN2nn3ngc15ProfanityFilter19CheckProfanityWordsEPjjPPKDsm", ov_ngc_check);
+HOST_OVERRIDE("_ZN2nn3ngc19CheckProfanityWordsEPjjPPKcm", ov_ngc_check_static);
+HOST_OVERRIDE("_ZN2nn6crypto36GenerateCryptographicallyRandomBytesEPvm", ov_crypto_random);
+HOST_OVERRIDE("_ZN2nn8settingseqERKNS0_8LanguageERKNS0_12LanguageCodeE", ov_settings_lang_eq);
+HOST_OVERRIDE("_ZN2nn5prepo10PlayReportC1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn5prepo10PlayReportC1EPKc", ov_noop);
+HOST_OVERRIDE("_ZN2nn5prepo10PlayReportD1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn5prepo10PlayReport10SetEventIdEPKc", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn5prepo10PlayReport9SetBufferEPvm", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn5prepo10PlayReport3AddEPKcl", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn5prepo10PlayReport3AddEPKcf", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn5prepo10PlayReport3AddEPKcb", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn5prepo10PlayReport3AddEPKcS3_", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn5prepo10PlayReport3AddEPKcRKNS0_5ArrayE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn5prepo5ArrayC1Ev", ov_noop);
+HOST_OVERRIDE("_ZN2nn5prepo5Array9SetBufferEPvm", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn5prepo5Array3AddEl", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn5prepo5Array3AddEf", ov_ret_zero);
+
+// nn::streamplay (GameShare / GameChat streaming: idle host)
+HOST_OVERRIDE("_ZN2nn10streamplay21GetRequiredMemorySizeENS0_14StreamPlayTypeENS0_13StreamingModeEi", ov_stpl_mem_size);
+HOST_OVERRIDE("_ZN2nn10streamplay10InitializeENS0_14StreamPlayTypeENS0_13StreamingModeEPvm", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay8FinalizeEv", ov_noop);
+HOST_OVERRIDE("_ZN2nn10streamplay30GetConnectionStateChangedEventEv", ov_stpl_conn_event);
+HOST_OVERRIDE("_ZN2nn10streamplay18GetConnectionStateEPNS0_15ConnectionStateE", ov_stpl_zero_out32);
+HOST_OVERRIDE("_ZN2nn10streamplay29SetSupportedGuestNpadStyleSetENS_4util10BitFlagSetILi32ENS_3hid12NpadStyleTagEEE", ov_stpl_set_styles);
+HOST_OVERRIDE("_ZN2nn10streamplay29GetSupportedGuestNpadStyleSetEv", ov_stpl_get_styles);
+HOST_OVERRIDE("_ZN2nn10streamplay23SetGuestNpadJoyHoldTypeENS_3hid15NpadJoyHoldTypeE", ov_stpl_set_hold);
+HOST_OVERRIDE("_ZN2nn10streamplay23GetGuestNpadJoyHoldTypeEv", ov_stpl_get_hold);
+HOST_OVERRIDE("_ZN2nn10streamplay25SetSupportedHidFeatureSetENS_4util10BitFlagSetILi32ENS0_13HidFeatureTagEEE", ov_noop);
+HOST_OVERRIDE("_ZN2nn10streamplay19GetGuestPadStyleSetERKNS0_10GuestPadIdE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid16NpadFullKeyStateEEEiRKNS0_10GuestPadIdE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid17NpadHandheldStateEEEiRKNS0_10GuestPadIdE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid16NpadJoyDualStateEEEiRKNS0_10GuestPadIdE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid17NpadJoyRightStateEEEiRKNS0_10GuestPadIdE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay17GetGuestPadStatesEPNS0_13GuestPadStateINS_3hid16NpadJoyLeftStateEEEiRKNS0_10GuestPadIdE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay28GetGuestSixAxisSensorHandlesEPNS0_24GuestSixAxisSensorHandleEiRKNS0_10GuestPadIdENS_4util10BitFlagSetILi32ENS_3hid12NpadStyleTagEEE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay27GetGuestSixAxisSensorStatesEPNS0_23GuestSixAxisSensorStateEiRKNS0_24GuestSixAxisSensorHandleE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay30GetGuestVibrationDeviceHandlesEPNS0_26GuestVibrationDeviceHandleEiRKNS0_10GuestPadIdENS_4util10BitFlagSetILi32ENS_3hid12NpadStyleTagEEE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay27GetGuestVibrationDeviceInfoEPNS_3hid19VibrationDeviceInfoERKNS0_26GuestVibrationDeviceHandleE", ov_stpl_zero_out64);
+HOST_OVERRIDE("_ZN2nn10streamplay18GetGuestJcmsHandleERKNS0_10GuestPadIdERKNS_3hid8JcmsTypeE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay18GetGuestJcmsStatesEPNS0_14GuestJcmsStateEiRKNS0_15GuestJcmsHandleE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay12CloseSessionEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay14StartStreamingEv", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay24CreateIndividualDisplaysEi", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay21GetNativeWindowHandleENS0_7GuestIdE", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay21WriteGuestAudioStreamENS0_7GuestIdEPKvi", ov_ret_zero);
+HOST_OVERRIDE("_ZN2nn10streamplay13GetGuestNsaIdEPNS_7account23NetworkServiceAccountIdENS0_7GuestIdE", ov_stpl_zero_out64);
+HOST_OVERRIDE("_ZN2nn10streamplay16GetGuestNicknameEPNS_7account8NicknameENS0_7GuestIdE", ov_stpl_nickname);
+HOST_OVERRIDE("_ZN2nn10streamplay31OpenSessionWithMatchmakeSupportEPNS0_11SessionInfoERKNS0_15MatchmakeConfigE", ov_stpl_open_session);
 
 static PlatMutex s_fallback_lock;
 static uint64_t g_heap_fallback_bump = 0;
@@ -1817,7 +2367,7 @@ void __wrap_f_7000192d60(Cpu *c) {
 }
 
 void ov_system_post_load(void) {
-    if (rt_application_id == 0x0400C3F00006E000ull) {
+    if (game_profile_has(GAME_QUIRK_MKW_VTABLES)) {
         s_noop_hook_addr = hostfn_register("mkw_noop", ov_noop);
         s_expheap_hook_addr = hostfn_register("sead__ExpHeap__alloc", ov_expheap_alloc_hook);
         uint64_t *vtable1 = (uint64_t *)(uintptr_t)0x700363a330ull;
@@ -1838,7 +2388,7 @@ void ov_system_post_load(void) {
 }
 
 void ov_system_on_inits_done(void) {
-    if (rt_application_id == 0x0400C3F00006E000ull) {
+    if (game_profile_has(GAME_QUIRK_MKW_VTABLES)) {
         if (s_expheap_hook_addr) {
             *(uint64_t *)(uintptr_t)0x700363a330ull = s_expheap_hook_addr;
             *(uint64_t *)(uintptr_t)0x70036e1e18ull = s_expheap_hook_addr;

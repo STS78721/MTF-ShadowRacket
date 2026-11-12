@@ -22,9 +22,48 @@
 enum { T_CLOSE = 2, T_REQUEST = 4, T_CONTROL = 5, T_REQUEST_CTX = 6, T_CONTROL_CTX = 7, T_TIPC_CLOSE = 15,
        T_TIPC_BASE = 16 };
 
-static void fsp_srv_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
-    rt_log("ipc: fsp-srv cmd %u (type %u)", rq->cmd, rq->type);
+static void fsp_sub_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    if (rt_trace & RT_TRACE_IPC) rt_log("ipc: %s cmd %u (type %u)", s->name, rq->cmd, rq->type);
     rs->result = 0;
+}
+
+static void fsp_srv_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    (void)s;
+    if (rt_trace & RT_TRACE_IPC) rt_log("ipc: fsp-srv cmd %u (type %u)", rq->cmd, rq->type);
+    switch (rq->cmd) {
+    case 1:   // SetCurrentProcess(u64 pid)
+    case 1006: // OutputAccessLogToSdCard
+        rs->result = 0;
+        return;
+    case 18:   // OpenCurrentProcess -> IStorage
+    case 200:  // OpenDataStorageByCurrentProcess -> IStorage
+    case 202:  // OpenDataStorageByDataId -> IStorage
+    case 203:  // OpenPatchDataStorageByCurrentProcess -> IStorage
+        rs->move[rs->nmove++] = ipc_session_new("fsp:IStorage", fsp_sub_handler, NULL, NULL);
+        rs->result = 0;
+        return;
+    case 51:   // OpenSaveDataFileSystem -> IFileSystem
+    case 52:   // OpenSaveDataFileSystemBySystemSaveDataId -> IFileSystem
+    case 53:   // OpenReadOnlySaveDataFileSystem -> IFileSystem
+        rs->move[rs->nmove++] = ipc_session_new("fsp:IFileSystem", fsp_sub_handler, NULL, NULL);
+        rs->result = 0;
+        return;
+    case 61:   // OpenSaveDataInfoReader -> ISaveDataInfoReader
+    case 62:   // OpenSaveDataInfoReaderBySaveDataSpaceId -> ISaveDataInfoReader
+    case 63:   // OpenSaveDataInfoReaderOnlyCacheStorage -> ISaveDataInfoReader
+        rs->move[rs->nmove++] = ipc_session_new("fsp:ISaveDataInfoReader", fsp_sub_handler, NULL, NULL);
+        rs->result = 0;
+        return;
+    case 1005: { // GetGlobalAccessLogMode -> u32 mode = 0
+        uint32_t mode = 0;
+        IPC_OUT(rs, mode);
+        rs->result = 0;
+        return;
+    }
+    default:
+        rs->result = 0;
+        return;
+    }
 }
 
 // Services sm: hands out. Anything else is a named fatal.
@@ -41,11 +80,55 @@ static _Thread_local const Cpu *t_req;   // guest context of the request being s
 long ipc_sessions_live(void) { return plat_cas32(&g_live, 0, 0); }
 uint64_t ipc_sessions_released(void) { return (uint64_t)plat_cas64(&g_released, 0, 0); }
 
-// ---- sessions
+// ---- sessions and CMIF domains
+#define IPC_DOMAIN_MAX 64
+struct IpcDomain {
+    PlatMutex lock;
+    IpcSession *objs[IPC_DOMAIN_MAX];   // 1-based object IDs: objs[1] is the root session (unretained self-link)
+};
+
+static uint32_t domain_alloc(IpcSession *root, IpcSession *child) {
+    struct IpcDomain *d = root->domain;
+    plat_mutex_lock(&d->lock);
+    for (uint32_t id = 2; id < IPC_DOMAIN_MAX; id++)
+        if (!d->objs[id]) {
+            ipc_session_retain(child);
+            d->objs[id] = child;
+            plat_mutex_unlock(&d->lock);
+            return id;
+        }
+    plat_mutex_unlock(&d->lock);
+    rt_fatal("ipc: domain %s full (%u objects)", root->name, (unsigned)IPC_DOMAIN_MAX);
+}
+
+static IpcSession *domain_acquire(IpcSession *root, uint32_t id) {
+    struct IpcDomain *d = root->domain;
+    if (!d || id == 0 || id >= IPC_DOMAIN_MAX) return NULL;
+    if (id == 1) {
+        ipc_session_retain(root);
+        return root;
+    }
+    plat_mutex_lock(&d->lock);
+    IpcSession *sub = d->objs[id];
+    if (sub) ipc_session_retain(sub);
+    plat_mutex_unlock(&d->lock);
+    return sub;
+}
+
+static void domain_close_id(IpcSession *root, uint32_t id) {
+    struct IpcDomain *d = root->domain;
+    if (!d || id <= 1 || id >= IPC_DOMAIN_MAX) return;
+    plat_mutex_lock(&d->lock);
+    IpcSession *sub = d->objs[id];
+    d->objs[id] = NULL;
+    plat_mutex_unlock(&d->lock);
+    if (sub) ipc_session_release(sub);
+}
+
 uint32_t ipc_session_new(const char *name, IpcHandler handler, void *state, void (*close)(void *state)) {
     IpcSession *s = calloc(1, sizeof *s);
     if (!s) rt_fatal("ipc: session allocation");
-    *s = (IpcSession){name, handler, state, close, 1};
+    *s = (IpcSession){name, handler, state, close, 1, NULL};
     plat_inc32(&g_live);
     return kern_handle_new(KERN_SESSION, s);
 }
@@ -62,6 +145,12 @@ void ipc_session_retain(IpcSession *s) {
 void ipc_session_release(IpcSession *s) {
     if (plat_dec32(&s->refs)) return;
     if (rt_trace & RT_TRACE_IPC) rt_log("ipc: %s closed", s->name);
+    if (s->domain) {
+        for (uint32_t id = 2; id < IPC_DOMAIN_MAX; id++)
+            if (s->domain->objs[id]) ipc_session_release(s->domain->objs[id]);
+        free(s->domain);
+        s->domain = NULL;
+    }
     if (s->close) s->close(s->state);
     free(s);
     plat_dec32(&g_live);
@@ -172,7 +261,8 @@ static void parse(const uint32_t *m, IpcRequest *rq, const uint32_t **data_words
     if ((const uint8_t *)recv - (const uint8_t *)m > IPC_MSG_BYTES) rt_fatal("ipc: request exceeds the message buffer");
 }
 
-static void respond(uint32_t *m, int tipc, const IpcResponse *rs) {
+static void respond_ex(uint32_t *m, int tipc, int dom_mode, const uint32_t *dom_out_ids, unsigned dom_nout,
+                       const IpcResponse *rs) {
     uint32_t out[IPC_MSG_BYTES / 4];
     memset(out, 0, sizeof out);
     unsigned special = rs->ncopy || rs->nmove;
@@ -189,30 +279,64 @@ static void respond(uint32_t *m, int tipc, const IpcResponse *rs) {
         p[1] = (uint32_t)a;
     }
     uint8_t *words = (uint8_t *)p, *payload;
-    unsigned header = tipc ? 4 : 16;
+    unsigned dom_hdr = dom_mode ? 16u : 0u;
+    unsigned header = tipc ? 4u : (dom_mode == 2 ? 0u : 16u);
+    unsigned tail = dom_mode == 1 ? dom_nout * 4u : 0u;
     payload = tipc ? words : (uint8_t *)out + (((words - (uint8_t *)out) + 15) & ~15);
-    unsigned used = (unsigned)(payload - words) + header + rs->data_size;
+    unsigned used = (unsigned)(payload - words) + dom_hdr + header + rs->data_size + tail;
     unsigned nwords = tipc ? (used + 3) / 4 : (used + 16 + 3) / 4;   // CMIF keeps alignment slack like libnx
     if ((size_t)(words - (uint8_t *)out) + nwords * 4 > IPC_MSG_BYTES) rt_fatal("ipc: response exceeds the message buffer");
-    if (tipc) memcpy(payload, &rs->result, 4);
-    else {
+    if (tipc) {
+        memcpy(payload, &rs->result, 4);
+        memcpy(payload + 4, rs->data, rs->data_size);
+    } else if (dom_mode == 2) {
+        uint32_t dh[4] = {0, 0, 0, 0};
+        memcpy(payload, dh, 16);
+    } else {
+        if (dom_mode == 1) {
+            uint32_t dh[4] = {dom_nout, 0, 0, 0};
+            memcpy(payload, dh, 16);
+        }
         uint32_t h[4] = {CMIF_OUT_MAGIC, 0, rs->result, 0};
-        memcpy(payload, h, 16);
+        memcpy(payload + dom_hdr, h, 16);
+        memcpy(payload + dom_hdr + 16, rs->data, rs->data_size);
+        if (tail) memcpy(payload + dom_hdr + 16 + rs->data_size, dom_out_ids, tail);
     }
-    memcpy(payload + header, rs->data, rs->data_size);
     out[0] = (rs->nxout & 0xf) << 16;
     out[1] = (nwords & 0x3ff) | (special ? 1u << 31 : 0);
     memcpy(m, out, IPC_MSG_BYTES);
 }
 
-// CMIF control requests. Domains are not implemented: MNG boots 1.2.1 without them.
+// CMIF control requests, including ConvertCurrentObjectToDomain (0) and CopyFromCurrentDomain (1).
 static void control(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
     switch (rq->cmd) {
+    case 0: {   // ConvertCurrentObjectToDomain -> u32 object_id = 1
+        if (!s->domain) {
+            struct IpcDomain *d = calloc(1, sizeof *d);
+            if (!d) rt_fatal("ipc: domain allocation");
+            plat_mutex_init(&d->lock);
+            d->objs[1] = s;
+            s->domain = d;
+        }
+        uint32_t obj_id = 1;
+        IPC_OUT(rs, obj_id);
+        return;
+    }
+    case 1: {   // CopyFromCurrentDomain(u32 object_id) -> move handle
+        uint32_t obj_id = IPC_ARG(rq, uint32_t, 0);
+        IpcSession *sub = domain_acquire(s, obj_id);
+        if (!sub) {
+            rs->result = IPC_R_BAD_HANDLE;
+            return;
+        }
+        rs->move[rs->nmove++] = kern_handle_new(KERN_SESSION, sub);
+        return;
+    }
     case 3: { uint16_t n = POINTER_BUFFER_SIZE; IPC_OUT(rs, n); return; }   // QueryPointerBufferSize
     case 2: case 4: rs->move[rs->nmove++] = session_clone(s); return;          // CloneCurrentObject(Ex)
     default:
         ipc_backtrace();
-        rt_fatal("ipc: %s control command %u is not implemented (domains are not served)", s->name, rq->cmd);
+        rt_fatal("ipc: %s control command %u is not implemented", s->name, rq->cmd);
     }
 }
 
@@ -226,18 +350,58 @@ static void dispatch(IpcSession *s, uint32_t *m) {
     IpcResponse rs;
     memset(&rs, 0, sizeof rs);
     int tipc = rq.type >= T_TIPC_BASE;
+    int is_ctrl = (rq.type == T_CONTROL || rq.type == T_CONTROL_CTX);
+    int dom_mode = 0;
+    uint32_t dom_out_ids[8] = {0};
+    unsigned dom_nout = 0;
+    IpcSession *target = s;
+    int target_acquired = 0;
     const uint8_t *bytes = (const uint8_t *)words, *end = bytes + ndata * 4;
     if (tipc) {
         rq.cmd = rq.type - T_TIPC_BASE;
         rq.data = bytes;
         rq.data_size = (uint32_t)(end - bytes);
-    } else if (rq.type == T_REQUEST || rq.type == T_REQUEST_CTX || rq.type == T_CONTROL || rq.type == T_CONTROL_CTX) {
+    } else if (!is_ctrl && s->domain && (rq.type == T_REQUEST || rq.type == T_REQUEST_CTX)) {
+        const uint8_t *payload = (const uint8_t *)m + (((bytes - (const uint8_t *)m) + 15) & ~15);
+        if (payload + 16 > end) rt_fatal("ipc: %s: truncated domain header", s->name);
+        uint8_t dom_type = payload[0];
+        uint16_t dom_data_size;
+        uint32_t dom_obj_id;
+        memcpy(&dom_data_size, payload + 2, 2);
+        memcpy(&dom_obj_id, payload + 4, 4);
+        if (dom_type == 2) {   // CloseVirtualHandle
+            domain_close_id(s, dom_obj_id);
+            respond_ex(m, 0, 2, NULL, 0, &rs);
+            return;
+        }
+        if (dom_type != 1) rt_fatal("ipc: %s: unknown domain command type %u", s->name, dom_type);
+        const uint8_t *sfci = payload + 16;
+        uint32_t h[4];
+        if (sfci + 16 > end) rt_fatal("ipc: %s: truncated domain CMIF header", s->name);
+        memcpy(h, sfci, 16);
+        if (h[0] != CMIF_IN_MAGIC) {
+            ipc_backtrace();
+            rt_fatal("ipc: %s: domain CMIF magic %#x", s->name, h[0]);
+        }
+        rq.cmd = h[2];
+        rq.data = sfci + 16;
+        uint32_t avail = sfci + 16 <= end ? (uint32_t)(end - (sfci + 16)) : 0;
+        rq.data_size = (dom_data_size >= 16 && (uint32_t)(dom_data_size - 16) <= avail) ? (uint32_t)(dom_data_size - 16) : avail;
+        target = domain_acquire(s, dom_obj_id);
+        if (!target) {
+            rs.result = IPC_R_BAD_HANDLE;
+            respond_ex(m, 0, 1, NULL, 0, &rs);
+            return;
+        }
+        target_acquired = 1;
+        dom_mode = 1;
+    } else if (rq.type == T_REQUEST || rq.type == T_REQUEST_CTX || is_ctrl) {
         const uint8_t *payload = (const uint8_t *)m + (((bytes - (const uint8_t *)m) + 15) & ~15);
         uint32_t h[4];
         memcpy(h, payload, 16);
         if (h[0] != CMIF_IN_MAGIC) {
             ipc_backtrace();
-            rt_fatal("ipc: %s: CMIF magic %#x (domain sessions are not served)", s->name, h[0]);
+            rt_fatal("ipc: %s: CMIF magic %#x", s->name, h[0]);
         }
         rq.cmd = h[2];
         rq.data = payload + 16;
@@ -250,15 +414,26 @@ static void dispatch(IpcSession *s, uint32_t *m) {
         ipc_backtrace();
         rt_fatal("ipc: %s message type %u is not implemented", s->name, rq.type);
     }
-    if (rq.type == T_CONTROL || rq.type == T_CONTROL_CTX) control(s, &rq, &rs);
-    else s->handler(s, &rq, &rs);
+    if (is_ctrl) control(s, &rq, &rs);
+    else target->handler(target, &rq, &rs);
+    if (dom_mode == 1 && rs.nmove > 0) {
+        for (unsigned i = 0; i < rs.nmove; i++) {
+            IpcSession *child = kern_session_acquire(rs.move[i]);
+            if (!child) rt_fatal("ipc: domain %s moved non-session handle %#x", s->name, rs.move[i]);
+            dom_out_ids[dom_nout++] = domain_alloc(s, child);
+            ipc_session_release(child);
+            kern_handle_close(rs.move[i]);
+        }
+        rs.nmove = 0;
+    }
     if (rt_trace & RT_TRACE_IPC) {
         char d[160];
-        rt_log("ipc: %s %s %u -> %#x (copy %u move %u) from %s", s->name,
-               tipc ? "tipc" : rq.type == T_CONTROL || rq.type == T_CONTROL_CTX ? "control" : "cmd", rq.cmd,
-               rs.result, rs.ncopy, rs.nmove, t_req ? ldr_describe(t_req->x[30], d, sizeof d) : "host");
+        rt_log("ipc: %s %s %u -> %#x (copy %u move %u dom_out %u) from %s", target->name,
+               tipc ? "tipc" : is_ctrl ? "control" : dom_mode ? "dom_cmd" : "cmd", rq.cmd,
+               rs.result, rs.ncopy, rs.nmove, dom_nout, t_req ? ldr_describe(t_req->x[30], d, sizeof d) : "host");
     }
-    respond(m, tipc, &rs);
+    if (target_acquired) ipc_session_release(target);
+    respond_ex(m, tipc, dom_mode, dom_out_ids, dom_nout, &rs);
 }
 
 // ---- sm: service manager (CMIF, and TIPC as the SDK's sm client speaks it since 12.0.0)
@@ -851,6 +1026,23 @@ static void lifetime_request(void *state) {
     p->handled = lifetime_send(&p->cpu, p->svc, p->handle, p->message);
 }
 
+static void domain_probe_sub_handler(IpcSession *session, const IpcRequest *rq, IpcResponse *rs) {
+    (void)session;
+    uint32_t in_val = IPC_ARG(rq, uint32_t, 0);
+    uint32_t out_val = in_val ^ 0x55aa55aau;
+    IPC_OUT(rs, out_val);
+}
+
+static void domain_probe_root_handler(IpcSession *session, const IpcRequest *rq, IpcResponse *rs) {
+    (void)session;
+    if (rq->cmd == 18) {
+        rs->move[rs->nmove++] = ipc_session_new("domain-sub", domain_probe_sub_handler, NULL, NULL);
+        return;
+    }
+    uint32_t out_val = 0x12345678u;
+    IPC_OUT(rs, out_val);
+}
+
 int probe_ipc_lifetime(void) {
     int before = failures;
     unsigned trace = rt_trace;
@@ -911,6 +1103,99 @@ int probe_ipc_lifetime(void) {
         CHECK(plat_cas32(&close.closes, 0, 0) == 1 && ipc_sessions_live() == live &&
               ipc_sessions_released() == released + 2, "svc %#x close message leaked a reference", svc);
         printf("ipc lifetime: svc %#x last-close, clone, invalid handle and close-message checks complete\n", svc);
+    }
+    {
+        long live = ipc_sessions_live();
+        uint64_t released = ipc_sessions_released();
+        uint32_t root = ipc_session_new("domain-root", domain_probe_root_handler, NULL, NULL);
+        Cpu dcpu = {0};
+        _Alignas(16) uint32_t dm[IPC_MSG_BYTES / 4];
+        Msg to_dom = {.type = T_CONTROL, .cmd = 0};
+        msg_build(dm, &to_dom);
+        int handled = lifetime_send(&dcpu, 0x21, root, dm);
+        Reply dr;
+        msg_parse(dm, 0, &dr);
+        uint32_t root_id = 0;
+        if (!dr.result) memcpy(&root_id, dr.data, 4);
+        CHECK(handled && !dcpu.x[0] && !dr.result && root_id == 1, "ConvertCurrentObjectToDomain");
+
+        // Domain SendMessage (type 1) to root object 1, cmd 18 -> allocates sub-object ID >= 2.
+        memset(dm, 0, sizeof dm);
+        dm[0] = T_REQUEST;
+        dm[1] = 12;
+        uint8_t *pl = (uint8_t *)(dm + 4);
+        pl[0] = 1;
+        uint16_t dsz = 16;
+        memcpy(pl + 2, &dsz, 2);
+        memcpy(pl + 4, &root_id, 4);
+        uint32_t sfci[4] = {CMIF_IN_MAGIC, 0, 18, 0};
+        memcpy(pl + 16, sfci, 16);
+        handled = lifetime_send(&dcpu, 0x21, root, dm);
+        pl = (uint8_t *)(dm + 4);
+        uint32_t nout = 0, sfco[4] = {0}, sub_id = 0;
+        memcpy(&nout, pl, 4);
+        memcpy(sfco, pl + 16, 16);
+        memcpy(&sub_id, pl + 32, 4);
+        CHECK(handled && !dcpu.x[0] && sfco[0] == CMIF_OUT_MAGIC && !sfco[2] && nout == 1 && sub_id >= 2,
+              "domain open sub-object (nout=%u sub_id=%u)", nout, sub_id);
+
+        // Domain SendMessage (type 1) to sub_id, cmd 1 with u32 payload -> returns payload ^ 0x55aa55aa.
+        memset(dm, 0, sizeof dm);
+        dm[0] = T_REQUEST;
+        dm[1] = 13;
+        pl = (uint8_t *)(dm + 4);
+        pl[0] = 1;
+        dsz = 20;
+        memcpy(pl + 2, &dsz, 2);
+        memcpy(pl + 4, &sub_id, 4);
+        uint32_t sfci_sub[4] = {CMIF_IN_MAGIC, 0, 1, 0};
+        uint32_t in_arg = 0x11223344u;
+        memcpy(pl + 16, sfci_sub, 16);
+        memcpy(pl + 32, &in_arg, 4);
+        handled = lifetime_send(&dcpu, 0x21, root, dm);
+        uint32_t out_val = 0;
+        memcpy(&nout, pl, 4);
+        memcpy(sfco, pl + 16, 16);
+        memcpy(&out_val, pl + 32, 4);
+        CHECK(handled && !dcpu.x[0] && sfco[0] == CMIF_OUT_MAGIC && !sfco[2] && nout == 0 &&
+              out_val == (0x11223344u ^ 0x55aa55aau), "domain sub-object dispatch (%#x)", out_val);
+
+        // CopyFromCurrentDomain(sub_id) -> standalone session handle, then close it.
+        Msg copy_dom = {.type = T_CONTROL, .cmd = 1, .data = &sub_id, .size = 4};
+        msg_build(dm, &copy_dom);
+        handled = lifetime_send(&dcpu, 0x21, root, dm);
+        msg_parse(dm, 0, &dr);
+        CHECK(handled && !dcpu.x[0] && !dr.result && dr.nmove == 1, "CopyFromCurrentDomain");
+        if (dr.nmove == 1) kern_handle_close(dr.move[0]);
+
+        // CloseVirtualHandle (type 2) on sub_id, verify further calls to sub_id fail with IPC_R_BAD_HANDLE.
+        memset(dm, 0, sizeof dm);
+        dm[0] = T_REQUEST;
+        dm[1] = 8;
+        pl = (uint8_t *)(dm + 4);
+        pl[0] = 2;
+        memcpy(pl + 4, &sub_id, 4);
+        handled = lifetime_send(&dcpu, 0x21, root, dm);
+        CHECK(handled && !dcpu.x[0] && ipc_sessions_live() == live + 1, "domain CloseVirtualHandle");
+
+        memset(dm, 0, sizeof dm);
+        dm[0] = T_REQUEST;
+        dm[1] = 12;
+        pl = (uint8_t *)(dm + 4);
+        pl[0] = 1;
+        dsz = 16;
+        memcpy(pl + 2, &dsz, 2);
+        memcpy(pl + 4, &sub_id, 4);
+        memcpy(pl + 16, sfci_sub, 16);
+        handled = lifetime_send(&dcpu, 0x21, root, dm);
+        memcpy(sfco, pl + 16, 16);
+        CHECK(handled && !dcpu.x[0] && sfco[0] == CMIF_OUT_MAGIC && sfco[2] == IPC_R_BAD_HANDLE,
+              "domain closed sub-object rejected");
+
+        kern_handle_close(root);
+        CHECK(ipc_sessions_live() == live && ipc_sessions_released() == released + 2,
+              "domain root close leaked sessions");
+        printf("ipc lifetime: CMIF domain conversion, sub-object dispatch, copy and virtual-close checks complete\n");
     }
     rt_trace = trace;
     printf("probe-ipc-lifetime: %s (%d failures)\n", failures == before ? "passed" : "FAILED", failures - before);

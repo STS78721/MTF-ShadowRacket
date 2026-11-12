@@ -51,7 +51,17 @@ Lowered *lower(const uint8_t *control, const uint8_t *code) {
         const auto r = capture.Observe(insn, static_cast<uint32_t>(native.size() - 1));
         if (r != Shader::Ampere::ProgramCaptureState::Result::Continue) break;
     }
-    const auto lowered = Shader::Ampere::LowerToMaxwell(native, "full");
+    // Pass geometry_stage only when the stage is not a passthrough GS (w0 bit 24): passthrough geometry stages omit
+    // explicit emission (OUT), while non-passthrough Ampere geometry stages install a 0x34e exit envelope whose OUT
+    // finalizer GeometryExitEnvelope lowers to Maxwell branches.
+    const bool geom = gfx && ((w0 >> 10) & 15) == 4 && !(w0 & (1u << 24));
+    // SPH shader types 2 and 3 are tessellation control and evaluation: they read per-vertex inputs through
+    // ISBERD-mapped handles like geometry stages (Mario Tennis Fever's court tessellation).
+    const uint32_t sph_type = (w0 >> 10) & 15;
+    const bool tess = gfx && (sph_type == 2 || sph_type == 3);
+    const auto lowered = Shader::Ampere::LowerToMaxwell(
+        native, Shader::Ampere::LoweringOptions{.geometry_stage = geom, .support_cooperative_matrix = true,
+                                                .tessellation_stage = tess});
     if (!lowered) {
         rt_log("nvn2: Ampere lowering failed shader %016llx stage %u code %#x at +%#x: %.*s",
                (unsigned long long)gfx_shader_nvn2_hash(control, code), (w0 >> 10) & 15, code_len,

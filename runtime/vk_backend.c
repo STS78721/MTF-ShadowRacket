@@ -159,6 +159,7 @@ typedef struct {
     int kind, n, has_crop, crop[4];
     uint64_t value, submit_no, at, queued, submitted_ticks;
     uint64_t *h;
+    VkUsnap *usnap;
     const tex_t *tex;   // RI_RELEASE: a copy the item owns (the game may reuse the object's memory)
                         // RI_WRITE_BACK: at is the guest address, queued the size
 } ReplayItem;
@@ -223,6 +224,7 @@ static void replay_main(void *arg) {
         plat_cond_broadcast(&rcv);
         plat_mutex_unlock(&rl);
         if (it.kind == RI_SUBMIT) {
+            vk_usnap_install(it.usnap);
             uint64_t f = submit_sync(it.h, it.n, it.submitted_ticks);
             if (f != it.value)
                 rt_fatal("vk: replayed submission signalled %llu, queued as %llu", (unsigned long long)f,
@@ -376,6 +378,8 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
 
 // vk_pipeline.c drops a released program's pipelines here.
 WEAK void vk_program_release(const prog_t *p) { (void)p; }
+WEAK VkUsnap *vk_usnap_take(const uint64_t *handles, int n) { (void)handles, (void)n; return NULL; }
+WEAK void vk_usnap_install(VkUsnap *snap) { (void)snap; }
 
 static int vk_be_pool_init(pool_t *p) { vk_sync_start(); return vk_pool_init(p); }
 static void vk_be_pool_fini(pool_t *p) { vk_sync_start(); replay_drain(DR_POOL_FINI); vk_present_drain(); vk_pool_fini(p); }
@@ -418,6 +422,7 @@ static uint64_t vk_be_submit(const uint64_t *handles, int n, uint64_t submitted_
         it.h = malloc(sizeof *it.h * (size_t)n);
         if (!it.h) rt_fatal("vk: out of memory (replay queue)");
         memcpy(it.h, handles, sizeof *it.h * (size_t)n);
+        it.usnap = vk_usnap_take(it.h, n);
     }
     return replay_enqueue(&it);
 }

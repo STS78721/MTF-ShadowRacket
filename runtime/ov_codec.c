@@ -279,6 +279,12 @@ static void ov_vp8_init_tm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xff
 static void ov_vp8_init_rm(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 2) & 0xffff, arg_x(c, 3) & 0xffff, 0, 1); }
 // Result InitializeVp9Decoder(Vp9DecoderType *, size_t, size_t, u16 w, u16 h, u32, input, output fmt)
 static void ov_vp9_init_nowork(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 3) & 0xffff, arg_x(c, 4) & 0xffff, 0, 0); }
+// Result InitializeVp9Decoder(Vp9DecoderType *, size_t, u16 w, u16 h, u32, input, output fmt)
+static void ov_vp9_init_1sz(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 2) & 0xffff, arg_x(c, 3) & 0xffff, 0, 0); }
+static void ov_av1_init_legacy(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xffff, arg_x(c, 5) & 0xffff, 1, 0); }
+static void ov_av1_init_nowork(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 3) & 0xffff, arg_x(c, 4) & 0xffff, 1, 0); }
+static void ov_vp8_init_legacy(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 4) & 0xffff, arg_x(c, 5) & 0xffff, 0, 1); }
+static void ov_vp8_init_nowork(Cpu *c) { vp9_init(c, arg_x(c, 0), arg_x(c, 3) & 0xffff, arg_x(c, 4) & 0xffff, 0, 1); }
 
 // SDK 20's image preference is an indirect 0x20-byte return.  The SDK stores width-1 and height-1 at +8/+10;
 // ov_pool_init consumes those fields to report the guest-visible image dimensions.
@@ -677,10 +683,28 @@ HOST_OVERRIDE("_ZN2nn5codec23GetAacDecoderSampleRateEPKNS0_14AacDecoderTypeE", o
 HOST_OVERRIDE("_ZN2nn5codec25GetAacDecoderChannelCountEPKNS0_14AacDecoderTypeE", ov_aac_value);
 HOST_OVERRIDE("_ZN2nn5codec25MakeDecodeImagePreferenceEttNS0_24VideoDecoderOutputFormatENS0_15ImageTilingModeE",
               ov_make_image_preference);
+HOST_OVERRIDE("_ZN2nn5codec25MakeDecodeImagePreferenceEttNS0_24VideoDecoderOutputFormatENS0_9CodecModeE",
+              ov_make_image_preference);
+HOST_OVERRIDE("_ZN2nn5codec3sdk34MakeDecodeImagePreferenceForCompatEttNS0_24VideoDecoderOutputFormatENS0_9CodecModeE",
+              ov_make_image_preference);
 HOST_OVERRIDE("_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_"
               "24VideoDecoderOutputFormatE", ov_vp9_init);
 HOST_OVERRIDE("_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEmmttjNS0_23VideoDecoderInputFormatENS0_"
               "24VideoDecoderOutputFormatE", ov_vp9_init_nowork);
+HOST_OVERRIDE("_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_"
+              "24VideoDecoderOutputFormatE", ov_vp9_init_1sz);
+HOST_OVERRIDE("_ZN2nn5codec20InitializeAv1DecoderEPNS0_14Av1DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_"
+              "24VideoDecoderOutputFormatE", ov_av1_init_legacy);
+HOST_OVERRIDE("_ZN2nn5codec20InitializeAv1DecoderEPNS0_14Av1DecoderTypeEmmttjNS0_23VideoDecoderInputFormatENS0_"
+              "24VideoDecoderOutputFormatE", ov_av1_init_nowork);
+HOST_OVERRIDE("_ZN2nn5codec20InitializeVp8DecoderEPNS0_14Vp8DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_"
+              "24VideoDecoderOutputFormatE", ov_vp8_init_legacy);
+HOST_OVERRIDE("_ZN2nn5codec20InitializeVp8DecoderEPNS0_14Vp8DecoderTypeEmmttjNS0_23VideoDecoderInputFormatENS0_"
+              "24VideoDecoderOutputFormatE", ov_vp8_init_nowork);
+HOST_OVERRIDE("_ZN2nn5codec21InitializeH264DecoderEPNS0_15H264DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_"
+              "24VideoDecoderOutputFormatEPKvm", ov_h264_unsupported);
+HOST_OVERRIDE("_ZN2nn5codec21InitializeH264DecoderEPNS0_15H264DecoderTypeEmmttjNS0_23VideoDecoderInputFormatENS0_"
+              "24VideoDecoderOutputFormatEPKvm", ov_h264_unsupported);
 HOST_OVERRIDE("_ZN2nn5codec18FinalizeVp9DecoderEPNS0_14Vp9DecoderTypeE", ov_vp9_fini);
 HOST_OVERRIDE("_ZN2nn5codec15StartVp9DecoderEPNS0_14Vp9DecoderTypeE", ov_vp9_start);
 HOST_OVERRIDE("_ZN2nn5codec14StopVp9DecoderEPNS0_14Vp9DecoderTypeE", ov_ok);

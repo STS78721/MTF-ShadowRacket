@@ -294,8 +294,10 @@ static void init_image(Tex *e, VkCommandBuffer cb) {
 }
 
 // defer_init: the caller records the image's first transition (init_image or alias_copy).
+static int evict_vram_oom(int include_gpu_owned);
+
 static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
-    static volatile int32_t n_unmapped, n_unsupported, n_failed, n_unbound, n_thick;
+    static volatile int32_t n_unmapped, n_unsupported, n_failed, n_unbound, n_thick, n_oom_evict;
     VkCtx *c = vk_ctx();
     const nvn_texdesc *d = &t->d;
     if (!c || d->target == NVN_TEXTURE_TARGET_BUFFER) return NULL;
@@ -411,8 +413,34 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
         }
     }
     if (!img) {
+        uint64_t v_used = 0, v_budget = 0;
+        int v_exact = 0;
+        if (vk_mem_vram(&v_used, &v_budget, &v_exact) && v_budget && v_used > v_budget / 20 * 17) {
+            if (rel_head) evict_vram_oom(0);
+            if (f.astc_bw && !f.astc_bc && vk_astc_mode() == VK_ASTC_GPU &&
+                vk_mem_vram(&v_used, &v_budget, &v_exact) && v_used > v_budget / 20 * 17) {
+                f.vk = f.astc_srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+                f.astc_bc = 1;
+                ci.format = f.vk;
+                e->f = f;
+                log_limited(&n_oom_evict,
+                            "vk: VRAM usage %llu/%llu MiB (>85%%); compressing ASTC %ux%u to BC3",
+                            (unsigned long long)(v_used >> 20), (unsigned long long)(v_budget >> 20), w, h);
+            }
+        }
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         VkResult r = vmaCreateImage(c->vma, &ci, &ai, &img, &e->alloc, NULL);
+        if (r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY) {
+            int n_evict = evict_vram_oom(0);
+            r = vmaCreateImage(c->vma, &ci, &ai, &img, &e->alloc, NULL);
+            if (r != VK_SUCCESS) {
+                n_evict += evict_vram_oom(1);
+                r = vmaCreateImage(c->vma, &ci, &ai, &img, &e->alloc, NULL);
+            }
+            if (r == VK_SUCCESS)
+                log_limited(&n_oom_evict, "vk: VRAM OOM for %ux%ux%u fmt %#x; evicted %d released textures and recovered",
+                            w, h, depth, d->format, n_evict);
+        }
         if (r != VK_SUCCESS && f.astc_bw && !f.astc_bc) {
             f.vk = f.astc_srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
             f.astc_bc = 1;
@@ -454,6 +482,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     p->bound = e->bound_to != NULL;
     p->block_views = (uint8_t)block_views;
     p->fb_usage = (uint8_t)fb_usage;
+    p->dsmode = (uint8_t)(d->set_dsmode ? d->dsmode : NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH);
 
     if (!defer_init) {
         init_image(e, vk_upload_begin());
@@ -576,6 +605,21 @@ static void sweep_pressure(void) {   // tex_lock held
     }
 }
 
+static int evict_vram_oom(int include_gpu_owned) {
+    int dropped = 0;
+    for (Tex *e = rel_head, *next; e; e = next) {
+        next = e->rel_next;
+        if (!include_gpu_owned && (!e->pub.mirrored || e->pub.gpu_owned || e->gpu_dirty)) continue;
+        destroy_tex(e);
+        dropped++;
+    }
+    if (dropped || !include_gpu_owned) {
+        vk_upload_flush(1);
+        vk_mem_collect();
+    }
+    return dropped;
+}
+
 // ---------------------------------------------------------------- uploads
 static uint32_t texel_alpha_one(int format, uint32_t *elem) {
     switch (format) {
@@ -646,6 +690,53 @@ static void astc_check(const Tex *e, const uint8_t *raw, const VkAstcRegion *ar,
                (unsigned long long)n_texels, (unsigned long long)n_diff_tex);
 }
 
+// Large (>= 32 MiB) non-compressed, non-expanded whole-texture uploads whose backing storage is entirely zero
+// (e.g. 12288x12288 D16 shadow maps at scene transitions) clear on the GPU via vkCmdClear*Image instead of
+// unswizzling zero bytes on the CPU. Ported from Hookshot 4d68bc8 (GPL-3.0-or-later). TOTK_ZERO_UPLOAD=0 disables.
+static int upload_all_zero(Tex *e) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = cfg_get("TOTK_ZERO_UPLOAD");
+        enabled = !(v && !strcmp(v, "0"));
+    }
+    const tex_t *t = &e->t;
+    const nvn_texdesc *d = &t->d;
+    if (!enabled || !t->mem || nvn_gpu_only((uintptr_t)t->mem) || t->L.size < (32ull << 20)) return 0;
+    if (!e->pub.image || e->f.astc_bw || e->f.expand_rgb || format_compressed(e->f.vk) ||
+        d->target == NVN_TEXTURE_TARGET_3D || (d->format >= 0x41 && d->format <= 0x50))
+        return 0;
+    uint64_t t0 = kern_now_ns();
+    const uint8_t *p = t->mem;
+    uint64_t total = t->L.size;
+    for (uint64_t at = 0; at < total; at += 65536) {
+        uint64_t end = at + 65536 < total ? at + 65536 : total;
+        uint64_t acc = 0, k = at;
+        for (; k + 8 <= end; k += 8) {
+            uint64_t w;
+            memcpy(&w, p + k, 8);
+            acc |= w;
+        }
+        for (; k < end; k++) acc |= p[k];
+        if (acc) return 0;
+    }
+    VkCommandBuffer cb = vk_upload_begin();
+    barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkImageSubresourceRange rg = {e->pub.aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+    if (e->pub.aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+        VkClearDepthStencilValue zero = {0.0f, 0};
+        vkCmdClearDepthStencilImage(cb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+    } else {
+        VkClearColorValue zero = {{0}};
+        vkCmdClearColorImage(cb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+    }
+    barrier(cb, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
+    vk_upload_end();
+    static volatile int32_t n_zero_logged;
+    log_limited(&n_zero_logged, "upload: %ux%u fmt %#x (%llu MiB) is all zero: cleared on GPU (checked in %.2f ms)",
+                d->width, d->height, d->format, (unsigned long long)(total >> 20), (kern_now_ns() - t0) / 1e6);
+    return 1;
+}
+
 // Copies the whole storage into the image (every level and layer the image has).
 static void upload(Tex *e) {
     static volatile int32_t n_bad, n_undecoded;
@@ -659,83 +750,141 @@ static void upload(Tex *e) {
     int astc = e->f.astc_bw != 0, rgb = e->f.expand_rgb;
     int agpu = astc && vk_astc_gpu(), acheck = agpu && vk_astc_mode() == VK_ASTC_CHECK;   // raw blocks to the GPU
     uint32_t n = levels * layers, k = 0;
-    VkBufferImageCopy *rg = calloc(n, sizeof *rg);
-    VkAstcRegion *ar = agpu ? calloc(n, sizeof *ar) : NULL;
-    VkDeviceSize total = 0, decoded = 0;
-    for (uint32_t lv = 0; lv < levels; lv++)
-        for (uint32_t ly = 0; ly < layers; ly++) {
-            uint32_t w = mip(d->width, lv), h = one_d ? 1 : mip(d->height, lv), sl = is3d ? mip(d->depth, lv) : 1;
-            uint64_t texels = (uint64_t)w * h * sl, raw = (uint64_t)(w + bw - 1) / bw * bpb * ((h + bh - 1) / bh) * sl;
-            uint64_t out = agpu ? raw : astc ? texels * 4 : rgb ? texels * (uint64_t)bpb / 3 * 4 : raw;
-            rg[k++] = (VkBufferImageCopy){.bufferOffset = total, .imageSubresource = {e->pub.aspect, lv, ly, 1},
-                                          .imageExtent = {w, h, sl}};
-            total += (out + 15) & ~15ull;
-            decoded += texels * 4;
-        }
-    VkCommandBuffer cb = vk_upload_begin();
-    VkBuffer sb, rbuf = VK_NULL_HANDLE;
-    VmaAllocation ralloc = NULL;
-    uint8_t *stg = vk_staging(total, &sb, NULL), *rmap = acheck ? vk_staging(decoded, &rbuf, &ralloc) : NULL;
-    k = 0;
-    for (uint32_t lv = 0; lv < levels; lv++)
-        for (uint32_t ly = 0; ly < layers; ly++, k++) {
-            uint32_t w = rg[k].imageExtent.width, h = rg[k].imageExtent.height, sl = rg[k].imageExtent.depth;
-            uint32_t rb = (w + bw - 1) / bw * (uint32_t)bpb, rows = (h + bh - 1) / bh;
-            size_t raw = (size_t)rb * rows * sl;
-            uint8_t *dst = stg + rg[k].bufferOffset, *tmp = (astc && !agpu) || rgb ? malloc(raw) : NULL;
-            if (nvn_deswizzle(d, lv, ly, t->mem, tmp ? tmp : dst, rb)) {
-                log_limited(&n_bad, "texture %#llx fmt %#x target %d: level %u layer %u has no CPU layout; uploaded as zeros",
-                            (unsigned long long)e->pub.addr, d->format, d->target, lv, ly);
-                memset(tmp ? tmp : dst, 0, raw);
+    VkDeviceSize up_sz = 0;
+    int bl_gpu = !linear && !rgb && !acheck && !(e->f.depth && e->f.stencil) && (!astc || agpu) && vk_deswizzle_gpu_on();
+    int gpu_done = !acheck && upload_all_zero(e);
+    if (!gpu_done && bl_gpu) {
+        VkBlRegion *bl_rg = calloc(n, sizeof *bl_rg);
+        uint64_t *bl_mem = calloc(n, sizeof *bl_mem);
+        if (!bl_rg || !bl_mem) rt_fatal("vk: out of memory (BL regions)");
+        VkDeviceSize total_bl = 0;
+        k = 0;
+        for (uint32_t lv = 0; lv < levels && bl_gpu; lv++)
+            for (uint32_t ly = 0; ly < layers && bl_gpu; ly++, k++) {
+                uint32_t w = mip(d->width, lv), h = one_d ? 1 : mip(d->height, lv);
+                uint32_t rb, rows, slices, bpb_g;
+                uint64_t base;
+                unsigned th, td;
+                if (nvn_deswizzle_geom(d, lv, ly, &rb, &rows, &slices, &base, &th, &td, &bpb_g) ||
+                    (rb & 3u) || !rb || !rows || !slices) {
+                    bl_gpu = 0;
+                    break;
+                }
+                uint32_t gobs_x = (rb + 63u) >> 6;
+                uint32_t blocks_y = (rows + (8u << th) - 1u) / (8u << th);
+                uint32_t blocks_z = (slices + (1u << td) - 1u) >> td;
+                uint64_t bl_bytes = ((uint64_t)gobs_x * blocks_y * blocks_z) << (9u + th + td);
+                if (base + bl_bytes > t->L.size) { bl_gpu = 0; break; }
+                bl_rg[k] = (VkBlRegion){.bl_src = total_bl, .bl_bytes = bl_bytes, .row_bytes = rb, .rows = rows,
+                                        .slices = slices, .th = th, .td = td, .w = w, .h = h, .level = lv, .layer = ly};
+                bl_mem[k] = base;
+                total_bl += bl_bytes;
             }
-            if (agpu) {
-                ar[k] = (VkAstcRegion){.src = rg[k].bufferOffset, .w = w, .h = h, .slices = sl, .level = lv, .layer = ly};
-            } else if (astc) {
-                uint64_t a0 = perf_begin();
-                for (uint32_t z = 0; z < sl; z++)
-                    astc_decode_ldr_mt(tmp + (size_t)z * rb * rows, w, h, e->f.astc_bw, e->f.astc_bh, e->f.astc_srgb,
-                                       dst + (size_t)z * w * h * 4);
-                perf_end(PERF_ASTC, a0);
-                rg[k].bufferRowLength = w, rg[k].bufferImageHeight = h;
-            } else if (rgb) {
-                expand_rgb(d->format, tmp, dst, (size_t)w * h * sl);
-                rg[k].bufferRowLength = w, rg[k].bufferImageHeight = h;
-            } else {
-                rg[k].bufferRowLength = rb / (uint32_t)bpb * (uint32_t)bw, rg[k].bufferImageHeight = rows * (uint32_t)bh;
+        if (bl_gpu && total_bl >= 4096) {
+            VkCommandBuffer cb = vk_upload_begin();
+            VkBuffer sb;
+            uint8_t *stg = vk_staging(total_bl, &sb, NULL);
+            for (uint32_t i = 0; i < n; i++) memcpy(stg + bl_rg[i].bl_src, t->mem + bl_mem[i], bl_rg[i].bl_bytes);
+            barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            uint64_t a0 = astc ? perf_begin() : 0;
+            gpu_done = vk_deswizzle_upload(cb, sb, bl_rg, (int)n, e->pub.image, e->pub.aspect, e->f.astc_bw, e->f.astc_bh,
+                                           e->f.astc_srgb, e->f.astc_bc, (uint32_t)bw, (uint32_t)bh, (uint32_t)bpb);
+            if (astc) perf_end(PERF_ASTC, a0);
+            if (gpu_done) barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
+            vk_upload_end();
+            if (gpu_done) up_sz = total_bl;
+        }
+        free(bl_rg);
+        free(bl_mem);
+    }
+    if (!gpu_done) {
+        VkBufferImageCopy *rg = calloc(n, sizeof *rg);
+        VkAstcRegion *ar = agpu ? calloc(n, sizeof *ar) : NULL;
+        VkDeviceSize total = 0, decoded = 0;
+        k = 0;
+        for (uint32_t lv = 0; lv < levels; lv++)
+            for (uint32_t ly = 0; ly < layers; ly++) {
+                uint32_t w = mip(d->width, lv), h = one_d ? 1 : mip(d->height, lv), sl = is3d ? mip(d->depth, lv) : 1;
+                uint64_t texels = (uint64_t)w * h * sl, raw = (uint64_t)(w + bw - 1) / bw * bpb * ((h + bh - 1) / bh) * sl;
+                uint64_t out = agpu ? raw : astc ? texels * 4 : rgb ? texels * (uint64_t)bpb / 3 * 4 : raw;
+                rg[k++] = (VkBufferImageCopy){.bufferOffset = total, .imageSubresource = {e->pub.aspect, lv, ly, 1},
+                                              .imageExtent = {w, h, sl}};
+                total += (out + 15) & ~15ull;
+                decoded += texels * 4;
             }
-            free(tmp);
+        VkCommandBuffer cb = vk_upload_begin();
+        VkBuffer sb, rbuf = VK_NULL_HANDLE;
+        VmaAllocation ralloc = NULL;
+        uint8_t *stg = vk_staging(total, &sb, NULL), *rmap = acheck ? vk_staging(decoded, &rbuf, &ralloc) : NULL;
+        k = 0;
+        for (uint32_t lv = 0; lv < levels; lv++)
+            for (uint32_t ly = 0; ly < layers; ly++, k++) {
+                uint32_t w = rg[k].imageExtent.width, h = rg[k].imageExtent.height, sl = rg[k].imageExtent.depth;
+                uint32_t rb = (w + bw - 1) / bw * (uint32_t)bpb, rows = (h + bh - 1) / bh;
+                size_t raw = (size_t)rb * rows * sl;
+                uint8_t *dst = stg + rg[k].bufferOffset, *tmp = (astc && !agpu) || rgb ? malloc(raw) : NULL;
+                if (nvn_deswizzle(d, lv, ly, t->mem, tmp ? tmp : dst, rb)) {
+                    log_limited(&n_bad, "texture %#llx fmt %#x target %d: level %u layer %u has no CPU layout; uploaded as zeros",
+                                (unsigned long long)e->pub.addr, d->format, d->target, lv, ly);
+                    memset(tmp ? tmp : dst, 0, raw);
+                }
+                if (agpu) {
+                    ar[k] = (VkAstcRegion){.src = rg[k].bufferOffset, .w = w, .h = h, .slices = sl, .level = lv, .layer = ly};
+                } else if (astc) {
+                    uint64_t a0 = perf_begin();
+                    for (uint32_t z = 0; z < sl; z++)
+                        astc_decode_ldr_mt(tmp + (size_t)z * rb * rows, w, h, e->f.astc_bw, e->f.astc_bh, e->f.astc_srgb,
+                                           dst + (size_t)z * w * h * 4);
+                    perf_end(PERF_ASTC, a0);
+                    rg[k].bufferRowLength = w, rg[k].bufferImageHeight = h;
+                } else if (rgb) {
+                    expand_rgb(d->format, tmp, dst, (size_t)w * h * sl);
+                    rg[k].bufferRowLength = w, rg[k].bufferImageHeight = h;
+                } else {
+                    rg[k].bufferRowLength = rb / (uint32_t)bpb * (uint32_t)bw, rg[k].bufferImageHeight = rows * (uint32_t)bh;
+                }
+                free(tmp);
+            }
+        uint8_t *raw_copy = acheck ? malloc(total) : NULL;
+        if (raw_copy) memcpy(raw_copy, stg, total);
+        barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        int checked = 0;
+        if (agpu) {
+            uint64_t a0 = perf_begin();
+            checked = vk_astc_record(cb, sb, total, ar, (int)n, e->f.astc_bw, e->f.astc_bh, e->f.astc_srgb, e->f.astc_bc, e->pub.image,
+                                     e->pub.aspect, rbuf);
+            perf_end(PERF_ASTC, a0);
+            if (!checked)
+                log_limited(&n_undecoded, "ASTC texture %#llx (fmt %#x %ux%u) not decoded on the GPU: left as it was",
+                            (unsigned long long)e->pub.addr, d->format, d->width, d->height);
+        } else {
+            vkCmdCopyBufferToImage(cb, sb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, n, rg);
         }
-    uint8_t *raw_copy = acheck ? malloc(total) : NULL;
-    if (raw_copy) memcpy(raw_copy, stg, total);
-    barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    int checked = 0;
-    if (agpu) {
-        uint64_t a0 = perf_begin();
-        checked = vk_astc_record(cb, sb, total, ar, (int)n, e->f.astc_bw, e->f.astc_bh, e->f.astc_srgb, e->f.astc_bc, e->pub.image,
-                                 e->pub.aspect, rbuf);
-        perf_end(PERF_ASTC, a0);
-        if (!checked)
-            log_limited(&n_undecoded, "ASTC texture %#llx (fmt %#x %ux%u) not decoded on the GPU: left as it was",
-                        (unsigned long long)e->pub.addr, d->format, d->width, d->height);
-    } else {
-        vkCmdCopyBufferToImage(cb, sb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, n, rg);
-    }
-    barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
-    vk_upload_end();
-    if (total > (64ull << 20)) {
-        vk_upload_flush(1);
-    }
-    if (acheck) {   // waits for the GPU
-        vk_upload_flush(1);
-        if (checked) {
-            vmaInvalidateAllocation(vk_ctx()->vma, ralloc, 0, VK_WHOLE_SIZE);
-            astc_check(e, raw_copy, ar, (int)n, rmap);
+        barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
+        vk_upload_end();
+        up_sz = total;
+        if (acheck) {   // waits for the GPU
+            vk_upload_flush(1);
+            if (checked) {
+                vmaInvalidateAllocation(vk_ctx()->vma, ralloc, 0, VK_WHOLE_SIZE);
+                astc_check(e, raw_copy, ar, (int)n, rmap);
+            }
+            vmaDestroyBuffer(vk_ctx()->vma, rbuf, ralloc);
         }
-        vmaDestroyBuffer(vk_ctx()->vma, rbuf, ralloc);
+        free(raw_copy);
+        free(ar);
+        free(rg);
     }
-    free(raw_copy);
-    free(ar);
-    free(rg);
+    static uint64_t batch_up_bytes;
+    batch_up_bytes += up_sz;
+    if (up_sz > (64ull << 20) || batch_up_bytes >= (64ull << 20)) {
+        uint64_t vu = 0, vb = 0;
+        int ve = 0;
+        int high = vk_mem_vram(&vu, &vb, &ve) && vb && vu > vb / 20 * 17;
+        vk_upload_flush(up_sz > (64ull << 20) || high ? 1 : 0);
+        vk_mem_collect();
+        batch_up_bytes = 0;
+    }
     uint64_t dt = kern_now_ns() - u0;
     if (e->uploaded) {
         n_reuploads++, perf_count(PERF_CNT_TEX_REUP);
@@ -874,18 +1023,26 @@ static void make_fresh_snap(Tex *e) {
 static int img_block(const Tex *e, int *bw, int *bh) {
     if (e->f.astc_bc) { *bw = *bh = 4; return 16; }
     if (e->f.astc_bw) { *bw = *bh = 1; return 4; }
+    if (e->f.depth && e->f.stencil) { *bw = *bh = 1; return e->f.vk == VK_FORMAT_D32_SFLOAT_S8_UINT ? 5 : 4; }
+    if (e->f.depth && !e->f.stencil && e->f.vk == VK_FORMAT_D32_SFLOAT) { *bw = *bh = 1; return 4; }
     int b = nvn_fmt_bpb(e->t.d.format, bw, bh);
     if (e->f.expand_rgb) { *bw = *bh = 1; return b / 3 * 4; }
     return e->f.vk == e->f.ideal ? b : 0;
 }
 
-// The new entry e can take src's content texel for texel: colour, one sample, the same shape and storage layout, and
-// image formats of one block size.
+// The new entry e can take src's content texel for texel: single-sample, same shape and storage layout, compatible
+// aspects (including depth/stencil <-> matching-size formats or matched D24S8/D32S8), and equal block size.
 static int alias_compatible(const Tex *e, const Tex *src) {
     const VkTexImage *p = &e->pub, *q = &src->pub;
-    if (e->f.depth || e->f.stencil || src->f.depth || src->f.stencil || p->samples > 1 || q->samples > 1) return 0;
+    if (p->samples > 1 || q->samples > 1) return 0;
     if (p->type != q->type || p->width != q->width || p->height != q->height || p->depth != q->depth) return 0;
     if (e->t.L.size != src->t.L.size || nvn_tex_is_linear(&e->t.d) != nvn_tex_is_linear(&src->t.d)) return 0;
+    int e_ds = e->f.depth && e->f.stencil, s_ds = src->f.depth && src->f.stencil;
+    if (e_ds != s_ds) return 0;
+    if (e_ds && e->f.vk != src->f.vk) return 0;
+    // Emulated D24X8 -> D32_SFLOAT can alias another D24X8, not raw 32-bit color bits.
+    int e_any_ds = e->f.depth || e->f.stencil, s_any_ds = src->f.depth || src->f.stencil;
+    if (e_any_ds != s_any_ds && (e->t.d.format == 0x33 || src->t.d.format == 0x33)) return 0;
     int ew, eh, sw, sh, eb = img_block(e, &ew, &eh), sb = img_block(src, &sw, &sh);
     return eb && eb == sb && ew == sw && eh == sh;
 }
@@ -908,26 +1065,45 @@ static int alias_copy(Tex *e, const Tex *src) {
     VkCommandBuffer cb = vk_exec_inline_begin(&reopen);
     if (!cb) return 0;
     int bw, bh, bpb = img_block(e, &bw, &bh);
+    int packed_ds = e->f.depth && e->f.stencil;
     uint32_t levels = e->pub.levels < src->pub.levels ? e->pub.levels : src->pub.levels;
-    uint32_t layers = e->pub.layers < src->pub.layers ? e->pub.layers : src->pub.layers, n = levels * layers, k = 0;
-    VkBufferImageCopy *rg = calloc(n, sizeof *rg);
-    if (!rg) rt_fatal("vk: out of memory for an alias copy");
+    uint32_t layers = e->pub.layers < src->pub.layers ? e->pub.layers : src->pub.layers;
+    uint32_t n = levels * layers, rn = packed_ds ? 2 * n : n, k = 0;
+    VkBufferImageCopy *rg_src = calloc(2 * (size_t)rn, sizeof *rg_src);
+    if (!rg_src) rt_fatal("vk: out of memory for an alias copy");
+    VkBufferImageCopy *rg_dst = rg_src + rn;
     VkDeviceSize total = 0;
     for (uint32_t lv = 0; lv < levels; lv++)
-        for (uint32_t ly = 0; ly < layers; ly++, k++) {
+        for (uint32_t ly = 0; ly < layers; ly++) {
             uint32_t w = mip(e->pub.width, lv), h = mip(e->pub.height, lv), z = mip(e->pub.depth, lv);
-            rg[k] = (VkBufferImageCopy){.bufferOffset = total, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, ly, 1},
-                                        .imageExtent = {w, h, z}};
-            total += ((VkDeviceSize)(w + bw - 1) / bw * ((h + bh - 1) / bh) * z * bpb + 15) & ~15ull;
+            if (packed_ds) {
+                rg_src[k] = rg_dst[k] = (VkBufferImageCopy){.bufferOffset = total,
+                                                            .imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, lv, ly, 1},
+                                                            .imageExtent = {w, h, z}};
+                total += ((VkDeviceSize)w * h * z * 4 + 15) & ~15ull;
+                k++;
+                rg_src[k] = rg_dst[k] = (VkBufferImageCopy){.bufferOffset = total,
+                                                            .imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, lv, ly, 1},
+                                                            .imageExtent = {w, h, z}};
+                total += ((VkDeviceSize)w * h * z + 15) & ~15ull;
+                k++;
+            } else {
+                rg_src[k] = (VkBufferImageCopy){.bufferOffset = total, .imageSubresource = {src->pub.aspect, lv, ly, 1},
+                                                .imageExtent = {w, h, z}};
+                rg_dst[k] = (VkBufferImageCopy){.bufferOffset = total, .imageSubresource = {e->pub.aspect, lv, ly, 1},
+                                                .imageExtent = {w, h, z}};
+                total += ((VkDeviceSize)(w + bw - 1) / bw * ((h + bh - 1) / bh) * z * bpb + 15) & ~15ull;
+                k++;
+            }
         }
     VkBuffer buf = vk_exec_inline_buffer(total);
     if (!buf) {
-        free(rg);
+        free(rg_src);
         vk_exec_inline_end(reopen);
         return 0;
     }
     barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-    vkCmdCopyImageToBuffer(cb, src->pub.image, VK_IMAGE_LAYOUT_GENERAL, buf, n, rg);
+    vkCmdCopyImageToBuffer(cb, src->pub.image, VK_IMAGE_LAYOUT_GENERAL, buf, rn, rg_src);
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT};
@@ -936,14 +1112,14 @@ static int alias_copy(Tex *e, const Tex *src) {
                                 .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                 .image = e->pub.image,
-                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
+                                .subresourceRange = {e->pub.aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb,
                            .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
     vkCmdPipelineBarrier2(cb, &di);
-    vkCmdCopyBufferToImage(cb, buf, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, n, rg);
+    vkCmdCopyBufferToImage(cb, buf, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, rn, rg_dst);
     barrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
     vk_exec_inline_end(reopen);
-    free(rg);
+    free(rg_src);
     return 1;
 }
 
@@ -1344,7 +1520,8 @@ static int image_texels(Tex *e, const Region *g, const NVNcopyRegion *r, uint8_t
     size_t slice = ib ? texels * ib : g->wb * g->hb;   // agpu: the raw blocks, decoded by vk_astc_record
     VkBuffer sb;
     VmaAllocation sa;
-    uint8_t *stg = vk_staging(slice * (size_t)g->nz, &sb, &sa);
+    uint8_t *stg = write ? vk_staging_upload(slice * (size_t)g->nz, &sb, &sa)
+                         : vk_staging(slice * (size_t)g->nz, &sb, &sa);
     VkBufferImageCopy *rg = calloc((size_t)g->nz, sizeof *rg);
     for (int z = 0; z < g->nz; z++) {
         uint8_t *s = stg + slice * (size_t)z;

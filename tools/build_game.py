@@ -272,9 +272,9 @@ def runtime_object(out, src):
     return out / 'obj' / 'runtime' / rel.with_suffix('.o')
 
 
-def module_glue(layout, linked, hashes, paths, version, title_id=0x040074a01bf12000):
+def module_glue(layout, linked, hashes, paths, version, title_id=0x040074a01bf12000, short_name='ns2', display_name='Universal NS2 Title'):
     """C for build/<version>/modules.c: the layout table, the linked modules' function tables (dispatch.h), the
-    expected ExeFS hashes, the game version and the default game paths (host.h)."""
+    expected ExeFS hashes, the game identity/version and the default game paths (host.h)."""
     out = [f'// Module glue written by tools/build_game.py; do not edit. {GENERATED_MARKER}',
            '#include "dispatch.h"', '#include "host.h"', '#include "layout.h"', '']
     for name, base, size in layout:
@@ -304,7 +304,9 @@ def module_glue(layout, linked, hashes, paths, version, title_id=0x040074a01bf12
         number = int(DISPLAY_VERSIONS[version].replace('.', '')) if version in DISPLAY_VERSIONS else 0   # 1.4.3 -> 143
     out += [f'const uint64_t rt_application_id = {title_id:#x}ull;',
             f'const int rt_game_version = {number};',
-            f'const char rt_port_version[] = {c_string(port_version())};', '']
+            f'const char rt_port_version[] = {c_string(port_version())};',
+            f'const char rt_game_short_name[] = {c_string(short_name)};',
+            f'const char rt_game_display_name[] = {c_string(display_name)};', '']
     return '\n'.join(out)
 
 
@@ -351,6 +353,10 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         ldflags.append('-Wl,--wrap,f_70006f9c50')
         ldflags.append('-Wl,--wrap,f_70001a6e80')
         ldflags.append('-Wl,--wrap,f_7000192d60')
+    if 'ff' in str(out).lower() or 'ff' in str(gen).lower():
+        ldflags.append('-Wl,--wrap,f_700011ff04')
+        ldflags.append('-Wl,--wrap,f_700011ff1c')
+        ldflags.append('-Wl,--wrap,f_7000075cc0')
     lines = [
         '# Written by tools/build_game.py; do not edit.',
         'ninja_required_version = 1.10',
@@ -762,6 +768,8 @@ def main():
                                                     f'({", ".join(sorted(INSTALL_SIDE))} and modules.c still compile)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
+    ap.add_argument('--prepare-shaders', action='store_true',
+                    help='extract RomFS/ExeFS shaders and warm host GPU driver cache after linking')
     args = ap.parse_args()
 
     gen = (args.gen or (Path(r"C:\Games\MTF PC\generated\mtf111") if 'mtf' in args.version.lower() and Path(r"C:\Games\MTF PC\generated\mtf111").is_dir()
@@ -793,11 +801,10 @@ def main():
     exp_data = json.loads(Path(expected).read_text())
     hashes = exp_data['exefs_sha256']
     title_id = int(exp_data.get('title_id', '0400D4201C6EA000'), 16)
+    short_name = exp_data.get('short_name') or ''.join(ch for ch in args.version if ch.isalpha()).lower() or 'ns2'
+    display_name = exp_data.get('display_name') or exp_data.get('_comment', 'Universal NS2 Title').split('.')[0]
     global CLANG, AR, WINDRES, NINJA, TOOLCHAIN_BIN, DEPS, EXE
-    if 'mtf' in args.version.lower() or 'mtf' in str(out).lower():
-        EXE = 'mtf.exe' if WIN else 'mtf'
-    elif 'mkw' in args.version.lower() or 'mkw' in str(out).lower():
-        EXE = 'mkw.exe' if WIN else 'mkw'
+    EXE = f'{short_name}.exe' if WIN else short_name
     if args.ninja:
         NINJA = args.ninja.resolve()
     elif not NINJA.is_file() and (ROOT / 'bin' / ('ninja' + ('.exe' if WIN else ''))).is_file():
@@ -857,7 +864,7 @@ def main():
     missing = [n for n in names if n not in hashes]
     if missing:
         sys.exit(f'{expected}: no exefs_sha256 for {missing}')
-    write_if_changed(out / 'modules.c', module_glue(layout, linked, hashes, paths, args.version, title_id))
+    write_if_changed(out / 'modules.c', module_glue(layout, linked, hashes, paths, args.version, title_id, short_name, display_name))
     if (paths['romfs'] / 'index.json').is_file():
         count, size, dt = romfs_index.write(paths['romfs'], out)
         print(f'romfs index: {count} files, {mib(size)}, {dt:.1f} s')
@@ -928,11 +935,29 @@ def main():
         return
     for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to totk.exe
         shutil.copy2(dll, exe.parent / dll.name)
+    xlate_src = ROOT / 'build' / 'xlate' / ('totk_xlate.exe' if WIN else 'totk_xlate')
+    if xlate_src.is_file():
+        xlate_id = xlate_src.with_suffix('.id')
+        for stem in ('ns2_xlate', 'totk_xlate'):
+            dst_xlate = exe.parent / (f'{stem}.exe' if WIN else stem)
+            shutil.copy2(xlate_src, dst_xlate)
+            if xlate_id.is_file():
+                shutil.copy2(xlate_id, dst_xlate.with_suffix('.id'))
+    for font_asset in ('Roboto-Medium.ttf', 'LICENSE-Roboto.txt'):
+        src_font = RUNTIME / 'ui' / 'fonts' / font_asset
+        if src_font.is_file():
+            shutil.copy2(src_font, exe.parent / font_asset)
     sections, image = pe_sections(exe) if WIN else elf_sections(exe)
     print(f'{below_root(exe)}: file {mib(exe.stat().st_size)}, '
           f'image {mib(image)}; ' + ', '.join(f'{k} {mib(v)}' for k, v in sections.items() if k.startswith('.') and v))
     if image > 3 * GiB // 2:
         print('build_game: warning: image over 1.5 GiB; RIP-relative code reaches only 2 GiB', file=sys.stderr)
+    if args.prepare_shaders:
+        prep_script = ROOT / 'tools' / 'prepare_shaders.py'
+        if prep_script.is_file():
+            print(f'build_game: warming native RomFS/ExeFS shaders into host GPU driver cache...', flush=True)
+            cmd = [sys.executable, str(prep_script), str(out), '--romfs', str(paths['romfs']), '--exefs', str(paths['exefs'])]
+            subprocess.run(cmd)
 
 
 if __name__ == '__main__':

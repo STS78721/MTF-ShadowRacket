@@ -35,6 +35,7 @@
 #include <zstd.h>
 
 #include "cfg.h"
+#include "game_profile.h"
 #include "host.h"
 
 #define BASE_W 1920
@@ -42,7 +43,7 @@
 #define SCENE_W 1600
 #define SCENE_H 900
 #define DTA_KIB 113664u      // DynamicTextureAllocatorMem, shipped
-#define SCENE_MAX 4096       // per side, as MacNativeGames' TOTK_RENDER_RES
+#define SCENE_MAX 16384      // per side, up to 16K on modern PC GPUs
 
 static struct {
     int decided;
@@ -51,6 +52,24 @@ static struct {
     int heapdef_ok;            // romfs.c serves the grown HeapDef
     int on;                    // res_init switched the patch sets on
 } R;
+
+static volatile uint32_t g_live_win_w, g_live_win_h, g_live_crop_w, g_live_crop_h;
+
+void res_record_game_surface(uint32_t win_w, uint32_t win_h, int cx, int cy, int cw, int ch) {
+    (void)cx;
+    (void)cy;
+    if (win_w > 0 && win_h > 0) {
+        __atomic_store_n(&g_live_win_w, win_w, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_live_win_h, win_h, __ATOMIC_RELAXED);
+    }
+    if (cw > 0 && ch > 0) {
+        __atomic_store_n(&g_live_crop_w, (uint32_t)cw, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_live_crop_h, (uint32_t)ch, __ATOMIC_RELAXED);
+    } else if (win_w > 0 && win_h > 0) {
+        __atomic_store_n(&g_live_crop_w, win_w, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_live_crop_h, win_h, __ATOMIC_RELAXED);
+    }
+}
 
 static void decide(void) {
     static char last_out[64] = {0};
@@ -78,15 +97,21 @@ static void decide(void) {
         rt_log("resolution: TOTK_OUTPUT_RES=%s is not <width>x<height> in 1280x720..7680x4320; 1920x1080", o);
     }
 
-    double k = 5.0 / 6.0;
+    double k = 1.0;
     if (strcmp(s, "game")) {
-        char *end;
-        double pct = strtod(s, &end);
-        if (end != s && !*end && pct >= 25 && pct <= 400) {
-            k = pct / 100.0;
+        char *end = NULL;
+        double val = strtod(s, &end);
+        if (end && (*end == 'x' || *end == 'X')) {
+            k = (R.ow >= 3840) ? (val * 0.5) : val; // 1x = 1080p, 2x = 4K, 3x = 6K, 4x = 8K
+            R.scene_set = 1;
+        } else if (val >= 1.0 && val <= 8.0 && val == (int)val && end != s && !*end) {
+            k = (R.ow >= 3840) ? (val * 0.5) : val;
+            R.scene_set = 1;
+        } else if (end != s && !*end && val >= 25 && val <= 800) {
+            k = val / 100.0;
             R.scene_set = 1;
         } else {
-            rt_log("resolution: TOTK_RENDER_SCALE=%s is not game or a percentage 25..400; using game", s);
+            rt_log("resolution: TOTK_RENDER_SCALE=%s is not game or a percentage/multiplier; using game", s);
         }
     }
     double sw = R.ow * k, sh = R.oh * k;
@@ -205,6 +230,12 @@ void res_heapdef_served(void) { R.heapdef_ok = 1; }
 static uint64_t pack(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
 
 void res_init(void) {
+    if (!game_profile_has(GAME_QUIRK_TOTK_PATCH_RES)) {
+        const RtGameProfile *gp = game_profile();
+        rt_log("resolution: Universal NS2 live hooks active for %s (Docked %ux%u, Handheld %ux%u)",
+               gp->display_name, gp->docked_w, gp->docked_h, gp->handheld_w, gp->handheld_h);
+        return;
+    }
     if (!bigger()) {
         rt_log("resolution: the game's own (output 1920x1080, scene 1600x900)");
         return;
@@ -279,7 +310,8 @@ void res_fov_live(void) {
     if (pct == shown) return;
     shown = pct;
     if (set < 0) {
-        rt_log("resolution: this game version has no field-of-view patch; TOTK_FOV=%d does nothing", pct);
+        if (game_profile_has(GAME_QUIRK_TOTK_PATCH_RES))
+            rt_log("resolution: this game version has no field-of-view patch; TOTK_FOV=%d does nothing", pct);
         return;
     }
     float k = pct / 100.0f;
@@ -299,4 +331,183 @@ void res_sizes(unsigned out[2], unsigned scene[2]) {
     out[1] = R.oh ? R.oh : BASE_H;
     scene[0] = R.sw ? R.sw : SCENE_W;
     scene[1] = R.sh ? R.sh : SCENE_H;
+}
+
+void res_apply_live(void) {
+    static int init = 0;
+    static int prev_handheld = -1;
+    static char prev_out[64] = {0};
+
+    const char *op = cfg_value("NS2_OPERATION_MODE");
+    int hh = (op && !strcmp(op, "handheld")) ? 1 : 0;
+    const char *out_res = cfg_value("NS2_OUTPUT_RES");
+
+    if (!init) {
+        init = 1;
+        prev_handheld = hh;
+        if (out_res) snprintf(prev_out, sizeof prev_out, "%s", out_res);
+        decide();
+        // Synchronize window size on initial startup if set
+        if (out_res && !cfg_bool("NS2_FULLSCREEN") && strcmp(cfg_value("NS2_WINDOW_SIZE"), out_res) != 0) {
+            cfg_set("NS2_WINDOW_SIZE", out_res);
+        }
+        return;
+    }
+
+    int notify_mode = (hh != prev_handheld);
+    if (notify_mode) prev_handheld = hh;
+
+    int out_changed = out_res && strcmp(out_res, prev_out) != 0;
+    if (out_changed) {
+        snprintf(prev_out, sizeof prev_out, "%s", out_res);
+        R.decided = 0;
+        decide();
+        // Keep host window swapchain synchronized with Output Resolution when windowed
+        if (!cfg_bool("NS2_FULLSCREEN") && strcmp(cfg_value("NS2_WINDOW_SIZE"), out_res) != 0) {
+            cfg_set("NS2_WINDOW_SIZE", out_res);
+        }
+        notify_mode = 1;
+    }
+    if (notify_mode) ov_notify_operation_mode_changed();
+}
+
+void res_live_snapshot(unsigned win_sz[2], unsigned crop_sz[2], unsigned out_tgt[2], int *handheld) {
+    uint32_t ww = __atomic_load_n(&g_live_win_w, __ATOMIC_RELAXED);
+    uint32_t wh = __atomic_load_n(&g_live_win_h, __ATOMIC_RELAXED);
+    uint32_t cw = __atomic_load_n(&g_live_crop_w, __ATOMIC_RELAXED);
+    uint32_t ch = __atomic_load_n(&g_live_crop_h, __ATOMIC_RELAXED);
+    if (win_sz) {
+        win_sz[0] = ww ? ww : game_profile()->docked_w;
+        win_sz[1] = wh ? wh : game_profile()->docked_h;
+    }
+    if (crop_sz) {
+        crop_sz[0] = cw ? cw : (ww ? ww : game_profile()->docked_w);
+        crop_sz[1] = ch ? ch : (wh ? wh : game_profile()->docked_h);
+    }
+    if (out_tgt) {
+        decide();
+        out_tgt[0] = R.ow;
+        out_tgt[1] = R.oh;
+    }
+    if (handheld) {
+        const char *op = cfg_value("NS2_OPERATION_MODE");
+        *handheld = (op && !strcmp(op, "handheld")) ? 1 : 0;
+    }
+}
+
+// ---- Fast Fusion Resolution Scaling Hooks
+// Fast Fusion uses a Display/Configuration singleton at *(uint64_t*)0x700071beb8.
+// - f_700011ff04 sets the Output Canvas resolution (shipped 3840x2160 docked, 1920x1080 handheld)
+// - f_700011ff1c sets the Internal 3D scene rendering resolution (shipped 1920x1080 docked, 1280x720 handheld)
+// - f_7000075cc0 sets the dynamic sub-viewport projection scale (1.0 = full render target)
+extern void __real_f_700011ff04(Cpu *c) __attribute__((weak));
+extern void __real_f_700011ff1c(Cpu *c) __attribute__((weak));
+extern void __real_f_7000075cc0(Cpu *c) __attribute__((weak));
+
+void ff_get_target_resolutions(uint32_t *canvas_w, uint32_t *canvas_h, uint32_t *scene_w, uint32_t *scene_h) {
+    const char *o = cfg_value("TOTK_OUTPUT_RES");
+    const char *s = cfg_value("TOTK_RENDER_SCALE");
+    if (!o || !*o) o = "3840x2160";
+    if (!s || !*s) s = "200";
+
+    uint32_t cw = 3840, ch = 2160;
+    unsigned w = 0, h = 0;
+    char tail;
+    if (sscanf(o, "%ux%u%c", &w, &h, &tail) == 2 && w >= 640 && h >= 360 && w <= 16384 && h <= 16384) {
+        cw = w & ~1u;
+        ch = h & ~1u;
+    }
+
+    // Determine scale multiplier:
+    // Emulator-style: 1x = 1080p, 2x = 3840x2160 (Native 4K), 3x = 5760x3240, 4x = 7680x4320 (8K).
+    // Percentage-style: 50 = 1080p, 100 = Native 4K (or 1080p if output 1080p), 200 = 2x Native 4K, etc.
+    double mult = 2.0; // default to native 4K
+    if (!strcmp(s, "game")) {
+        mult = 1.0;
+    } else if (!strcmp(s, "native") || !strcmp(s, "4k") || !strcmp(s, "4K")) {
+        mult = 2.0; // 2x of 1080p = 3840x2160
+    } else {
+        char *end = NULL;
+        double val = strtod(s, &end);
+        if (end && (*end == 'x' || *end == 'X')) {
+            mult = val;
+        } else if (val >= 1.0 && val <= 8.0 && val == (int)val) {
+            mult = val;
+        } else if (val >= 25.0 && val <= 800.0) {
+            if (cw >= 3840 && val == 100.0) mult = 2.0; // 100% of 4K canvas = 4K scene
+            else if (val == 200.0) mult = 2.0;          // 200 = 2x = 4K scene
+            else if (val == 300.0) mult = 3.0;          // 300 = 3x = 6K scene
+            else if (val == 400.0) mult = 4.0;          // 400 = 4x = 8K scene
+            else mult = (val / 100.0) * (cw >= 3840 ? 2.0 : 1.0);
+        }
+    }
+
+    if (mult < 0.25) mult = 0.25;
+    if (mult > 8.0) mult = 8.0;
+
+    uint32_t sw = (uint32_t)(1920.0 * mult + 0.5) & ~1u;
+    uint32_t sh = (uint32_t)(1080.0 * mult + 0.5) & ~1u;
+
+    if (canvas_w) *canvas_w = cw;
+    if (canvas_h) *canvas_h = ch;
+    if (scene_w) *scene_w = sw;
+    if (scene_h) *scene_h = sh;
+}
+
+void __wrap_f_700011ff04(Cpu *c) {
+    uint64_t *disp_cfg_ptr = (uint64_t *)(uintptr_t)0x700071beb8;
+    uint64_t disp_cfg = disp_cfg_ptr ? *disp_cfg_ptr : 0;
+    int is_res_call = (disp_cfg && c->x[0] == disp_cfg) || (c->x[1] >= 640 && c->x[2] >= 360);
+
+    if (is_res_call) {
+        uint32_t cw = 0, ch = 0;
+        ff_get_target_resolutions(&cw, &ch, NULL, NULL);
+        rt_log("ff: resolution hook: canvas set to %ux%u (was %ux%u)", cw, ch, (unsigned)c->x[1], (unsigned)c->x[2]);
+        c->x[1] = cw;
+        c->x[2] = ch;
+    }
+    if (__real_f_700011ff04) __real_f_700011ff04(c);
+    else {
+        GuestFn orig = rt_dispatch_lookup(0x700011ff04ull);
+        if (orig) orig(c);
+    }
+}
+
+void __wrap_f_700011ff1c(Cpu *c) {
+    uint64_t *disp_cfg_ptr = (uint64_t *)(uintptr_t)0x700071beb8;
+    uint64_t disp_cfg = disp_cfg_ptr ? *disp_cfg_ptr : 0;
+    int is_res_call = (disp_cfg && c->x[0] == disp_cfg) || (c->x[1] >= 640 && c->x[2] >= 360);
+
+    if (is_res_call) {
+        uint32_t sw = 0, sh = 0;
+        ff_get_target_resolutions(NULL, NULL, &sw, &sh);
+        rt_log("ff: resolution hook: internal 3D scene set to %ux%u (was %ux%u)", sw, sh, (unsigned)c->x[1], (unsigned)c->x[2]);
+        c->x[1] = sw;
+        c->x[2] = sh;
+    }
+    if (__real_f_700011ff1c) __real_f_700011ff1c(c);
+    else {
+        GuestFn orig = rt_dispatch_lookup(0x700011ff1cull);
+        if (orig) orig(c);
+    }
+}
+
+void __wrap_f_7000075cc0(Cpu *c) {
+    uint64_t x21 = c->x[0];
+    if (x21) {
+        float *scale_x = (float *)(uintptr_t)(x21 + 0xb0);
+        float *scale_y = (float *)(uintptr_t)(x21 + 0xb4);
+        *scale_x = 1.0f;
+        *scale_y = 1.0f;
+        static int logged = 0;
+        if (!logged) {
+            logged = 1;
+            rt_log("ff: resolution hook: 3D scene scale locked to 1.0x (full native resolution)");
+        }
+    }
+    if (__real_f_7000075cc0) __real_f_7000075cc0(c);
+    else {
+        GuestFn orig = rt_dispatch_lookup(0x7000075cc0ull);
+        if (orig) orig(c);
+    }
 }

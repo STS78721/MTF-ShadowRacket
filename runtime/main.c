@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "game_profile.h"
 #include "host.h"
 #include "platform/platform.h"
 #include "sha256.h"
@@ -105,15 +106,17 @@ static void log_open(int game) {
         if (f > cut) cut = f;
     }
     if (cut && (size_t)(cut - dir) + sizeof "/logs" <= sizeof dir) {
+        const char *sn = game_profile()->short_name;
+        if (!sn || !*sn) sn = "ns2";
         strcpy(cut, "/logs");
         plat_file_mkdir_p(dir);
-        for (int i = LOG_KEEP - 1; i > 0; i--) {   // mtf.3.log -> mtf.4.log, ..., mtf.log -> mtf.1.log
-            if (i > 1) snprintf(from, sizeof from, "%s/mtf.%d.log", dir, i - 1);
-            else snprintf(from, sizeof from, "%s/mtf.log", dir);
-            snprintf(to, sizeof to, "%s/mtf.%d.log", dir, i);
+        for (int i = LOG_KEEP - 1; i > 0; i--) {   // <short>.3.log -> <short>.4.log, ..., <short>.log -> <short>.1.log
+            if (i > 1) snprintf(from, sizeof from, "%s/%s.%d.log", dir, sn, i - 1);
+            else snprintf(from, sizeof from, "%s/%s.log", dir, sn);
+            snprintf(to, sizeof to, "%s/%s.%d.log", dir, sn, i);
             if (plat_file_exists(from)) plat_file_replace(from, to);
         }
-        snprintf(g_log_path, sizeof g_log_path, "%s/mtf.log", dir);
+        snprintf(g_log_path, sizeof g_log_path, "%s/%s.log", dir, sn);
         g_log_file = plat_append_open(g_log_path);
     }
     if (!g_log_file) {
@@ -152,6 +155,7 @@ static RtConfig cfg;
 const RtConfig *rt_config(void) { return &cfg; }
 
 // ---- runtime services the generated code calls (cpu.h)
+RtExclSlot rt_excl_mon[256];
 volatile int g_fnprof = 0;
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)addr, (void)lr, (void)x0; }
 
@@ -528,6 +532,7 @@ int main(int argc, char **argv) {
     if (cfg.shot && !cfg.seconds) return usage(argv[0]);
     if (cfg.seconds && mode) return usage(argv[0]);
     log_open(!mode);
+    if (!mode || !strcmp(mode, "--boot")) game_profile_log();
     if (!mode) {
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints
         rt_boot();

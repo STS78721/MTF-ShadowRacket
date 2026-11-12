@@ -143,7 +143,9 @@ VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat
     if (!C.ok || !ensure_image(c, (uint32_t)crop[2], (uint32_t)crop[3])) return VK_NULL_HANDLE;
     slot %= SLOTS;
     if (C.src_view[slot]) vkDestroyImageView(c->device, C.src_view[slot], NULL);
-    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = src,
+    VkImageViewUsageCreateInfo use = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+                                      .usage = VK_IMAGE_USAGE_SAMPLED_BIT};
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .pNext = &use, .image = src,
                                 .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt,
                                 .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     if (vkCreateImageView(c->device, &vi, NULL, &C.src_view[slot]) != VK_SUCCESS) {

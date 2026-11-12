@@ -97,8 +97,11 @@ NVN_API(nvnTextureBuilderSetLevels) { TB(c)->d.levels = (uint32_t)arg_x(c, 1); }
 NVN_API(nvnTextureBuilderSetFormat) { TB(c)->d.format = (int)arg_x(c, 1); }
 // The back end samples the depth plane; stencil-plane sampling stops.
 NVN_API(nvnTextureBuilderSetDepthStencilMode) {
-    if ((uint32_t)arg_x(c, 1) != NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH)
-        rt_fatal("nvn: stencil-plane texture sampling is not implemented");
+    uint32_t m = (uint32_t)arg_x(c, 1);
+    if (m > NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL)
+        rt_fatal("nvn: invalid texture depth-stencil mode %u", m);
+    TB(c)->d.dsmode = m;
+    TB(c)->d.set_dsmode = 1;
 }
 NVN_API(nvnTextureBuilderSetSwizzle) {
     uint32_t s[4] = {(uint32_t)arg_x(c, 1), (uint32_t)arg_x(c, 2), (uint32_t)arg_x(c, 3), (uint32_t)arg_x(c, 4)};
@@ -248,6 +251,7 @@ NVN_API(nvnTextureCompare) {
 NVN_API(nvnTextureGetRawStorageClass) { ret_x(c, 1); }
 
 // ---------- Texture views
+#undef VW
 #define VW(c) ((view_t *)arg_p(c, 0))
 NVN_API(nvnTextureViewSetDefaults) { memset(arg_p(c, 0), 0, sizeof(view_t)); }
 NVN_API(nvnTextureViewSetLevels) {
@@ -479,7 +483,14 @@ NVN_API(nvnProgramSetShaders) {
 // (main+0x88be28 sub_710088BDCC; programs 0xa0 apart). The builder keeps its own copy of the stage list, so the
 // initialize step is NVN 1's Initialize + SetShaders.
 #define NVN_PROG_BUILDER_MAGIC 0x50424e32u   // "2NBP"
-typedef struct { uint32_t magic, nstage; void *dev; NVNshaderData sd[6]; } prog_builder_t;
+typedef struct {
+    uint32_t magic, nstage;
+    void *dev;
+    const NVNshaderData *sd_ptr;
+    NVNshaderData sd[6];
+    uint16_t linkage_count, sample_shading;
+    uint8_t rt_flags, max_trace_depth, max_callable_depth, pad;
+} prog_builder_t;
 _Static_assert(sizeof(prog_builder_t) <= 0x80, "NVNprogramBuilder is 0x80 bytes in Bananza");
 static prog_builder_t *prog_builder(Cpu *c, const char *fn) {
     prog_builder_t *b = arg_p(c, 0);
@@ -504,16 +515,40 @@ NVN_API(nvnProgramBuilderSetShaders) {
     const NVNshaderData *sd = arg_p(c, 2);
     if (n < 0 || n > 6 || (n && !sd)) rt_fatal("nvn: ProgramBuilderSetShaders with %d stages at %p", n, (const void *)sd);
     b->nstage = (uint32_t)n;
+    b->sd_ptr = sd;
     if (n) memcpy(b->sd, sd, (size_t)n * sizeof *sd);
 }
-// int nvnProgramBuilderGetShaderCount(const NVNprogramBuilder *b)
+// int nvnProgramBuilderGetShaderCount(const NVNprogramBuilder *b), const NVNshaderData *...GetShaders(const ... *b)
 NVN_API(nvnProgramBuilderGetShaderCount) { ret_x(c, prog_builder(c, "ProgramBuilderGetShaderCount")->nstage); }
-// Per-sample shading, debug data hashes, subroutine linkage and ray-tracing modules: the Vulkan path has no use for
-// them yet; each is logged so a game that depends on one shows up in a gfx trace.
-NVN_API(nvnProgramBuilderSetSampleShading) { NVN_LOG("ProgramBuilderSetSampleShading %d", (int)arg_x(c, 1)); }
+NVN_API(nvnProgramBuilderGetShaders) {
+    const prog_builder_t *b = prog_builder(c, "ProgramBuilderGetShaders");
+    ret_x(c, (uint64_t)(uintptr_t)(b->sd_ptr ? b->sd_ptr : (b->nstage ? b->sd : NULL)));
+}
+// Per-sample shading, debug data hashes, subroutine linkage and ray-tracing modules/limits: the Vulkan path has no use
+// for them yet; setters store or log so matching getters stay coherent.
+NVN_API(nvnProgramBuilderSetSampleShading) {
+    prog_builder(c, "ProgramBuilderSetSampleShading")->sample_shading = (uint16_t)arg_x(c, 1);
+    NVN_LOG("ProgramBuilderSetSampleShading %d", (int)arg_x(c, 1));
+}
+NVN_API(nvnProgramBuilderGetSampleShading) { ret_x(c, prog_builder(c, "ProgramBuilderGetSampleShading")->sample_shading); }
 NVN_API(nvnProgramBuilderSetDebugDataHashes) { (void)c; }
-NVN_API(nvnProgramBuilderSetSubroutineLinkage) { NVN_LOG("ProgramBuilderSetSubroutineLinkage %p", arg_p(c, 1)); }
+NVN_API(nvnProgramBuilderGetDebugDataHashes) { ret_x(c, 0); }
+NVN_API(nvnProgramBuilderSetSubroutineLinkage) {
+    prog_builder(c, "ProgramBuilderSetSubroutineLinkage")->linkage_count = (uint16_t)arg_x(c, 1);
+    NVN_LOG("ProgramBuilderSetSubroutineLinkage n=%d %p", (int)arg_x(c, 1), arg_p(c, 2));
+}
+NVN_API(nvnProgramBuilderGetSubroutineLinkageCount) { ret_x(c, prog_builder(c, "ProgramBuilderGetSubroutineLinkageCount")->linkage_count); }
+NVN_API(nvnProgramBuilderGetSubroutineLinkage) { ret_x(c, 0); }
 NVN_API(nvnProgramBuilderSetRayTracingModules) { NVN_LOG("ProgramBuilderSetRayTracingModules %p", arg_p(c, 1)); }
+NVN_API(nvnProgramBuilderSetProgramRayTracingFlags) { prog_builder(c, "ProgramBuilderSetProgramRayTracingFlags")->rt_flags = (uint8_t)arg_x(c, 1); }
+NVN_API(nvnProgramBuilderGetProgramRayTracingFlags) { ret_x(c, prog_builder(c, "ProgramBuilderGetProgramRayTracingFlags")->rt_flags); }
+NVN_API(nvnProgramBuilderSetMaxTraceRecursionDepth) { prog_builder(c, "ProgramBuilderSetMaxTraceRecursionDepth")->max_trace_depth = (uint8_t)arg_x(c, 1); }
+NVN_API(nvnProgramBuilderGetMaxTraceRecursionDepth) { ret_x(c, prog_builder(c, "ProgramBuilderGetMaxTraceRecursionDepth")->max_trace_depth); }
+NVN_API(nvnProgramBuilderSetMaxCallableRecursionDepth) { prog_builder(c, "ProgramBuilderSetMaxCallableRecursionDepth")->max_callable_depth = (uint8_t)arg_x(c, 1); }
+NVN_API(nvnProgramBuilderGetMaxCallableRecursionDepth) { ret_x(c, prog_builder(c, "ProgramBuilderGetMaxCallableRecursionDepth")->max_callable_depth); }
+NVN_API(nvnProgramGetScratchBytesPerWarp) { ret_x(c, 0); }
+NVN_API(nvnProgramGetDeviceComputeMemorySize) { ret_x(c, 0); }
+NVN_API(nvnProgramGetShaderGroupHandle) { ret_x(c, 0); }
 // NVNboolean nvnProgramInitializeFromBuilder(NVNprogram *p, const NVNprogramBuilder *b)
 NVN_API(nvnProgramInitializeFromBuilder) {
     NVN_BLOCKING();
@@ -702,6 +737,7 @@ NVN_API(nvnWindowInitialize) {
     const tex_t *t0 = (const tex_t *)o->tex[0];
     NVN_LOG("WindowInitialize %d textures, interval %d, first %ux%u format %#x", o->ntex, o->interval,
             t0 ? t0->d.width : 0, t0 ? t0->d.height : 0, t0 ? t0->d.format : 0);
+    if (t0) res_record_game_surface(t0->d.width, t0->d.height, 0, 0, (int)t0->d.width, (int)t0->d.height);
     ret_x(c, 1);
 }
 // void nvnWindowFinalize(NVNwindow *w): nothing to release (MNG lists it in g_nops)
@@ -716,8 +752,18 @@ NVN_API(nvnWindowSetPresentInterval) {
 NVN_API(nvnWindowSetCrop) {
     win_t *o = WN(c);
     int v[4] = {(int)arg_x(c, 1), (int)arg_x(c, 2), (int)arg_x(c, 3), (int)arg_x(c, 4)};
+    const tex_t *t0 = (const tex_t *)o->tex[0];
+    if (t0 && t0->d.width > 0 && t0->d.height > 0) {
+        unsigned want[2] = {0};
+        res_wanted(want);
+        if (want[0] > 1920 && v[2] <= 1920 && v[3] <= 1080 && t0->d.width >= want[0] && v[0] == 0 && v[1] == 0) {
+            v[2] = (int)t0->d.width;
+            v[3] = (int)t0->d.height;
+        }
+    }
     if (memcmp(o->crop, v, sizeof v)) NVN_LOG("WindowCrop %d,%d %dx%d", v[0], v[1], v[2], v[3]);
     memcpy(o->crop, v, sizeof v);
+    res_record_game_surface(t0 ? t0->d.width : 0, t0 ? t0->d.height : 0, v[0], v[1], v[2], v[3]);
 }
 
 // ---------- Present pacing
