@@ -1,43 +1,39 @@
+# Mario Tennis Fever (MTF ShadowRacket) - PC configuration
 [paths]
 exefs = ./exefs
 romfs = ./romfs
 
 [performance]
+timer_1ms = 1
+replay_async = 0
 experimental_geometry = 1
 native_gs = 1
 nx2_read_nowait = 1
-replay_async = 1
 LANG = en-US
 MENU_LANG = en
 
 [display]
+operation_mode = docked
 window_size = 1920x1080
 fullscreen = 1
 output_res = 3840x2160
-render_scale = 50
-perf_overlay = fps
-upscaler = dlss
-upscaler_preset = performance
-dlss_preset = preset_m
-reflex = on
-low_latency = boost
-frame_gen = 0
-dlaa = 0
-fov = 100
-color_gamma = 0.95
-color_preset = vivid
-color_brightness = 0
-color_contrast = 115
-color_saturation = 135
+render_scale = 200
+res_hook = 0
+upscaler = fsr
+upscaler_preset = native
+sharpness = 50
+perf_overlay = off
 vk_present = mailbox
-antilag2 = off
 smaa = 0
-fxaa = 1
-ao = off
-ao_intensity = 1.0
+fxaa = 0
+color_preset = custom
+color_brightness = -2
+color_contrast = 115
+color_saturation = 130
+color_gamma = 0.95
 
 [frame rate]
-fps_limit = 120
+fps_limit = 60
 realtime = 1
 cloth_realtime = 1
 
