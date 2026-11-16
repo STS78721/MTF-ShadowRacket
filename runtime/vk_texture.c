@@ -2091,6 +2091,13 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
             si.borderColor = VK_BORDER_COLOR_FLOAT_CUSTOM_EXT;
             *tail = &cb;
             tail = &cb.pNext;
+        } else if (d->cmp_mode) {
+            // Orchid ConvertBorderColor brightness heuristic. Shadow cascades clear to far (~1) and sample with
+            // clamp_border; falling back to transparent black (depth 0) makes out-of-cascade UVs look fully shadowed
+            // / culled at range. Prefer white (far) when the guest border is bright.
+            si.borderColor = (b[0] + b[1] + b[2] > 1.35f) ? VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE
+                             : (b[3] > 0.5f)              ? VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK
+                                                          : VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
         } else si.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     }
     if (d->reduction && sf.minmax && !si.compareEnable) {

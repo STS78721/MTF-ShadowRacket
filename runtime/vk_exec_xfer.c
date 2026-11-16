@@ -172,9 +172,16 @@ static int oq_ready(void) {
         return 0;
     }
     vkResetQueryPool(v->device, oq_pool, 0, OQ_N);
-    // Precise when available (Gemini baseline). Orchid query-cache flush is vk_exec_oq_sync_range on invalidate.
-    oq_flags = f2.features.occlusionQueryPrecise ? VK_QUERY_CONTROL_PRECISE_BIT : 0;
-    rt_log("vk: occlusion queries %s", oq_flags ? "precise" : "non-precise (device has no occlusionQueryPrecise)");
+    // Orchid defaults to non-precise unless GPU level is High (vk_query_cache.cpp). Precise counts of tiny far
+    // proxies (Lakitu / opposite-baseline characters) can under-report to 0 and the guest CPU-culls their shadows;
+    // any-sample non-precise keeps them alive. Opt in with OQ_PRECISE=1. Query-cache flush stays on invalidate.
+    const char *precise = cfg_get("OQ_PRECISE");
+    int want_precise = precise && (!strcmp(precise, "1") || !strcmp(precise, "on"));
+    oq_flags = (want_precise && f2.features.occlusionQueryPrecise) ? VK_QUERY_CONTROL_PRECISE_BIT : 0;
+    rt_log("vk: occlusion queries %s",
+           oq_flags ? "precise (OQ_PRECISE)"
+                    : (f2.features.occlusionQueryPrecise ? "non-precise (Orchid default)"
+                                                         : "non-precise (device has no occlusionQueryPrecise)"));
     oq_state = 1;
     return 1;
 }
