@@ -1237,6 +1237,87 @@ static uint32_t *spirv_fixup(const uint32_t *w, uint64_t n, uint64_t *out_n) {
     return spirv_fixup_linked(w, n, out_n, 0);
 }
 
+// Orchid / Maxwell 0x11F0 (layer relative to viewport): when a geometry shader writes ViewportIndex but not Layer,
+// hardware draws each multicast viewport into layer = viewport (MTF shadow cascades). Vulkan has no relative bit —
+// inject Layer = the same value stored to ViewportIndex so cascades land in distinct array layers instead of layer 0.
+enum { SPV_OP_STORE = 62, SPV_BUILTIN_VIEWPORT_INDEX = 9, SPV_BUILTIN_LAYER = 10, SPV_MODEL_GEOMETRY = 3 };
+
+static uint32_t *spirv_layer_from_viewport(const uint32_t *w, uint64_t n, uint64_t *out_n) {
+    if (n < 5) return NULL;
+    uint32_t bound = w[3];
+    uint32_t vp_var = 0, layer_var = 0, vp_ptr_type = 0;
+    int is_geometry = 0, store_count = 0;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
+        if (!l || i + l > n) return NULL;
+        const uint32_t *a = w + i + 1;
+        if (op == SPV_OP_ENTRY_POINT && l >= 3 && a[0] == SPV_MODEL_GEOMETRY) is_geometry = 1;
+        else if (op == SPV_OP_DECORATE && l >= 4 && a[1] == SPV_DEC_BUILTIN) {
+            if (a[2] == SPV_BUILTIN_VIEWPORT_INDEX) vp_var = a[0];
+            if (a[2] == SPV_BUILTIN_LAYER) layer_var = a[0];
+        } else if (op == SPV_OP_VARIABLE && l >= 4 && a[1] == vp_var && a[2] == SPV_SC_OUTPUT)
+            vp_ptr_type = a[0];
+        else if (op == SPV_OP_STORE && l >= 3 && a[0] == vp_var) store_count++;
+        i += l;
+    }
+    if (!is_geometry || !vp_var || layer_var || !vp_ptr_type || !store_count) return NULL;
+
+    // Extra words: Decorate Layer + Variable + EntryPoint interface slot + one Store per ViewportIndex store.
+    uint64_t extra = 4u + 4u + 1u + (uint64_t)store_count * 3u;
+    uint32_t *o = malloc((n + extra) * 4);
+    if (!o) return NULL;
+    layer_var = bound;
+    uint32_t new_bound = bound + 1;
+    uint64_t on = 5;
+    memcpy(o, w, 5 * 4);
+    o[3] = new_bound;
+
+    int inserted_decl = 0;
+    int n_layer_stores = 0;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+
+        // Before first Variable: BuiltIn Layer decorate + Layer output variable (same pointer type as ViewportIndex).
+        if (!inserted_decl && op == SPV_OP_VARIABLE) {
+            o[on++] = 4u << 16 | SPV_OP_DECORATE;
+            o[on++] = layer_var;
+            o[on++] = SPV_DEC_BUILTIN;
+            o[on++] = SPV_BUILTIN_LAYER;
+            o[on++] = 4u << 16 | SPV_OP_VARIABLE;
+            o[on++] = vp_ptr_type;
+            o[on++] = layer_var;
+            o[on++] = SPV_SC_OUTPUT;
+            inserted_decl = 1;
+        }
+
+        if (op == SPV_OP_ENTRY_POINT && l >= 3 && a[0] == SPV_MODEL_GEOMETRY) {
+            // Widen interface list with layer_var.
+            o[on++] = (l + 1) << 16 | SPV_OP_ENTRY_POINT;
+            for (uint32_t k = 0; k < l - 1; k++) o[on++] = a[k];
+            o[on++] = layer_var;
+        } else if (op == SPV_OP_STORE && l >= 3 && a[0] == vp_var) {
+            memcpy(o + on, w + i, l * 4);
+            on += l;
+            o[on++] = 3u << 16 | SPV_OP_STORE;
+            o[on++] = layer_var;
+            o[on++] = a[1];
+            n_layer_stores++;
+        } else {
+            memcpy(o + on, w + i, l * 4);
+            on += l;
+        }
+        i += l;
+    }
+    if (!inserted_decl || n_layer_stores != store_count) {
+        free(o);
+        return NULL;
+    }
+    LOG_ONCE("vk: GS Layer=ViewportIndex inject (Orchid layer_viewport_relative / Maxwell 0x11F0)");
+    *out_n = on;
+    return o;
+}
+
 // True when the module declares a GroupNonUniform* or SubgroupBallot-style capability (lane masks assume 32 lanes).
 static int uses_subgroup_ops(const uint32_t *w, uint64_t words) {
     for (uint64_t i = 5; i < words;) {
@@ -1413,6 +1494,14 @@ static VkShaderModule make_module_linked(const GfxShader *src, const uint32_t *w
     uint64_t fixed_n = 0;
     uint32_t *fixed = geometry_chain ? spirv_fixup_linked(w, words, &fixed_n, 1) : spirv_fixup(w, words, &fixed_n);
     if (fixed) w = fixed, words = fixed_n;
+    uint64_t layer_n = 0;
+    uint32_t *layer = spirv_layer_from_viewport(w, words, &layer_n);
+    if (layer) {
+        if (fixed) free(fixed);
+        fixed = layer;
+        w = fixed;
+        words = layer_n;
+    }
     static int fmz_mode = -1;   // 0 off, 1 vertex stage only, 2 every stage
     if (fmz_mode < 0) {
         const char *e = cfg_get("TOTK_FMZ");
