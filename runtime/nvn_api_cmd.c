@@ -552,21 +552,22 @@ NVN_API(nvnCommandBufferSetViewport) {
     set_viewports(cmd_of(c), 0, 1, v);
 }
 // void nvnCommandBufferSetViewportSwizzles(NVNcommandBuffer *cmd, int first, int n, const NVNviewportSwizzle *s)
-// Mario Tennis Fever sets these past the user-select screen. Identity (POSITIVE_X/Y/Z/W) is a no-op on Vulkan;
-// non-identity (e.g. NEGATIVE_Y) is logged once until VK_NV_viewport_swizzle replay is wired.
+// Mario Tennis Fever sets these past the user-select screen. Orchid applies NEGATIVE_Y as a viewport height flip
+// when VK_NV_viewport_swizzle is unavailable; we do the same for viewport 0 (vk_exec_draw.c record_fixed).
 NVN_API(nvnCommandBufferSetViewportSwizzles) {
     int first = (int)arg_x(c, 1), n = (int)arg_x(c, 2);
     const int32_t *s = arg_p(c, 3);
     if (first < 0 || n < 0 || first + n > 16) rt_fatal("nvn: SetViewportSwizzles first %d n %d", first, n);
-    static const int32_t identity[4] = {0, 2, 4, 6};
+    static const int32_t identity[4] = {0, 2, 4, 6};  // +X +Y +Z +W
     for (int i = 0; i < n; i++) {
         const int32_t *row = s ? s + 4 * i : identity;
+        if (first + i == 0)
+            nvn_set_viewport_y_negate(row[1] == NVN_VIEWPORT_SWIZZLE_NEGATIVE_Y);
         if (memcmp(row, identity, sizeof identity)) {
             static int once;
             if (!once++)
-                rt_log("nvn: SetViewportSwizzles non-identity {%d,%d,%d,%d}: drawn without swizzle for now",
+                rt_log("nvn: SetViewportSwizzles non-identity {%d,%d,%d,%d}: NEGATIVE_Y → viewport height flip",
                        row[0], row[1], row[2], row[3]);
-            break;
         }
     }
 }

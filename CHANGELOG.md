@@ -1,29 +1,31 @@
-# Changelog
+﻿# Changelog
 
 ## MTF-ShadowRacket Alpha 0.1.3
 
-This update pairs the complete Mario Tennis Fever 1.1.1 native runtime, internal resolution scaling, and shadow/grass fixes with faster single-pass `.nup` extraction, live progress tracking, and split `.nup` setup support. Base (…000) and update (…800) packages match automatically by title family whether stored in one `.nup` container or two sibling `.nup` files in the same folder, and built `mtf.exe` installs stay self-contained inside the install folder.
+This update pairs the complete Mario Tennis Fever 1.1.1 native runtime, internal resolution scaling, and world-locked character/court shadows with automatic runtime `subsdk0` module synthesis, faster single-pass `.nup` extraction, live progress tracking, and split `.nup` setup support. Standard 4-file ExeFS dumps and `.nup` packages (with RomFS `.nrr`), combined containers, and sibling base/update `.nup` pairs all verify and build seamlessly into self-contained installs.
 
 ■ Major Updates
 
 - Restored full Mario Tennis Fever 1.1.1 native runtime support (`mtf.exe`), including internal frame resolution scaling (`Original ~960p`, `720p`, `900p`, `1080p`, and `1440p`), full-precision D24 shadow handling, and Championship Turf in-game settings (`F1` / `Esc` / `Back + Y`).
-- Combined base+update `.nup` extraction now merges overlays in a single pass so files replaced by the update are extracted once instead of twice.
-- **MTFLauncher** streams live `.nup` extract progress, locks setup controls while unpacking, and reuses completed extractions automatically when clicking **Verify & Build mtf.exe**.
+- Restored missing Lakitu, far-player, umpire chair, bench, and sideline shadows across Stadium Court, Outdoor Practice, and Academy Lobby via SPIR-V `Layer = ViewportIndex` cascade injection, synchronized occlusion query readbacks, and viewport swizzle tracking.
+- **MTFLauncher** now automatically synthesizes `subsdk0` from standard 4-file ExeFS + RomFS `.nrr` dumps and `.nup` containers during setup — no separate `subsdk0` extraction step required.
+- Combined base+update `.nup` extraction merges overlays in a single pass so files replaced by the update are extracted once instead of twice, while **MTFLauncher** streams live progress, locks setup controls while unpacking, and reuses completed extractions automatically.
 - NUP `--overlay-update` and **Browse .NUP…** match base (…000) and update (…800) packages by application title family across both single-container `.nup` archives and split base/update `.nup` files in the same folder.
 - Verified ExeFS modules and `romfs-index.bin` are staged directly inside the install folder so `mtf.exe` runs self-contained.
 - Hardened `.nup` file finalization and extract folder cleanup against Windows Defender and file-sharing locks (`WinError 5` / `WinError 32`).
 
 ■ Bug Fixes
 
+- Fixed far-distance Lakitu, opponent, umpire chair, and sideline shadows culling early or collapsing onto a single cascade (`SetViewportSwizzles` Y-flip polarity, `FORCE_UNORM` depth bias, `InvalidateMappedRange` occlusion query sync, non-precise OQ defaults with empty-report floor, `clamp_border` depth heuristic, and SPIR-V `BuiltIn Layer = BuiltIn ViewportIndex` injection).
+- Fixed changing `Internal resolution` (`1440p`, *after restart*) in the `F1` Settings menu cropping the live frame before restarting; `--shot` PNG captures now also write opaque alpha cleanly.
+- Fixed setup failing with `missing subsdk0` on standard Mario Tennis Fever 1.1.1 dumps and `.nup` packages where `subsdk0` is unpacked at runtime from RomFS `.nrr`.
 - Fixed `[WinError 32]` sharing violations and stalled 0% progress bars when clicking **Verify & Build mtf.exe** while a `.nup` unpack was still in progress.
 - Fixed builds producing the wrong target layout or omitting Mario Tennis Fever 1.1.1 runtime resolution, shader, and shadow fixes.
-- Fixed **Browse .NUP…** leaving ExeFS missing unchanged modules such as `subsdk0` on combined base+update containers or split base/update `.nup` files in the same folder.
 - Fixed NUP extraction aborting with `PermissionError` (`WinError 5`) when finalizing extracted files under Windows Defender scans.
 - Fixed Launcher builds leaving `romfs-index.bin` or verified ExeFS outside the install root directory.
 
 ■ Known Issues
 
-- Far-distance Lakitu shadows during wide camera shots can still cull early at range.
 - Minor graphical and gameplay issues remain in some modes.
 
 ■ Install & Update

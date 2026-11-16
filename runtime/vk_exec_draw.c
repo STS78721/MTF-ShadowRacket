@@ -2556,36 +2556,71 @@ static void bind_pipeline(VkExec *ex, VkPipelineBindPoint bp, VkPipeline p) {
     if (!k) B.st_valid = 0;
 }
 
+static void clamp_viewport_xywh(float *x, float *y, float *w, float *h, const VkPhysicalDeviceLimits *lim) {
+    float max_w = (float)lim->maxViewportDimensions[0], max_h = (float)lim->maxViewportDimensions[1];
+    float bmin = lim->viewportBoundsRange[0], bmax = lim->viewportBoundsRange[1];
+    if (!(*w >= 1.0f)) *w = 1.0f;
+    if (!(*h >= 1.0f)) *h = 1.0f;
+    if (*w > max_w) *w = max_w;
+    if (*h > max_h) *h = max_h;
+    if (!(*x >= bmin)) *x = bmin;
+    if (!(*x <= bmax - 1.0f)) *x = bmax - 1.0f;
+    if (*x + *w > bmax) *w = bmax - *x;
+    while (*x + *w > bmax && *w > 1.0f) *w -= 1.0f;
+    if (!(*w >= 1.0f)) *w = 1.0f;
+    if (!(*y >= bmin)) *y = bmin;
+    if (!(*y <= bmax - 1.0f)) *y = bmax - 1.0f;
+    if (*y + *h > bmax) *h = bmax - *y;
+    while (*y + *h > bmax && *h > 1.0f) *h -= 1.0f;
+    while ((*y + *h) - *h < bmin && *y < bmax - 1.0f) *y += 1.0f;
+    if (!(*h >= 1.0f)) *h = 1.0f;
+}
+
 static void record_fixed(VkExec *ex) {
     VkCommandBuffer cb = ex->cb;
     if (ex->dirty & VK_EXEC_DIRTY_VIEWPORT) {
-        float x = 0, y = 0, w = (float)ex->pass_w, h = (float)ex->pass_h;
-        if (ex->has_vp) x = ex->vp[0][0], y = ex->vp[0][1], w = ex->vp[0][2], h = ex->vp[0][3];
         const VkPhysicalDeviceLimits *lim = &vk_ctx()->props.limits;
-        float max_w = (float)lim->maxViewportDimensions[0], max_h = (float)lim->maxViewportDimensions[1];
-        float bmin = lim->viewportBoundsRange[0], bmax = lim->viewportBoundsRange[1];
-        if (!(w >= 1.0f)) w = 1.0f;
-        if (!(h >= 1.0f)) h = 1.0f;
-        if (w > max_w) w = max_w;
-        if (h > max_h) h = max_h;
-        if (!(x >= bmin)) x = bmin;
-        if (!(x <= bmax - 1.0f)) x = bmax - 1.0f;
-        if (x + w > bmax) w = bmax - x;
-        while (x + w > bmax && w > 1.0f) w -= 1.0f;
-        if (!(w >= 1.0f)) w = 1.0f;
-        if (!(y >= bmin)) y = bmin;
-        if (!(y <= bmax - 1.0f)) y = bmax - 1.0f;
-        if (y + h > bmax) h = bmax - y;
-        while (y + h > bmax && h > 1.0f) h -= 1.0f;
-        while ((y + h) - h < bmin && y < bmax - 1.0f) y += 1.0f;
-        if (!(h >= 1.0f)) h = 1.0f;
-        VkViewport v = {x, y + h, w, -h, ex->depth_range[0], ex->depth_range[1]};   // the y flip: negative height
-        vkCmdSetViewportWithCount(cb, 1, &v);
+        // NVN→Vulkan always uses a negative-height viewport here (TotK/MTF), even after SetWindowOriginMode(UPPER_LEFT):
+        // dropping that flip inverted the practice court. Orchid's Maxwell path flips on lower-left XOR NEGATIVE_Y;
+        // for the NVN API we keep the baseline flip and only toggle it when viewport 0 swizzle Y is NEGATIVE_Y
+        // (SetViewportSwizzles — MTF sets these after user-select). Same rule for colour and shadow passes.
+        int flip = !nvn_viewport_y_negate();
+        static int logged_flip;
+        if (!logged_flip) {
+            logged_flip = 1;
+            rt_log("vk: viewport Y flip %s (origin %s, swizzle Y %s)", flip ? "on" : "off",
+                   nvn_window_origin_upper() ? "upper-left" : "lower-left",
+                   nvn_viewport_y_negate() ? "NEGATIVE_Y" : "+Y");
+        }
+        // MTF cascade GS writes ViewportIndex 0..15 (Orchid layer_viewport_relative). Vulkan requires
+        // viewportCount > index; bind Maxwell's full set, duplicating viewport 0 into unset slots.
+        uint32_t max_vp = lim->maxViewports;
+        if (max_vp > 16) max_vp = 16;
+        if (max_vp < 1) max_vp = 1;
+        uint32_t n = max_vp;
+        VkViewport vs[16];
+        for (uint32_t i = 0; i < n; i++) {
+            float x = 0, y = 0, w = (float)ex->pass_w, h = (float)ex->pass_h;
+            if (ex->has_vp) {
+                int src = (ex->vp[i][2] > 0.0f || ex->vp[i][3] > 0.0f) ? (int)i : 0;
+                x = ex->vp[src][0], y = ex->vp[src][1], w = ex->vp[src][2], h = ex->vp[src][3];
+            }
+            clamp_viewport_xywh(&x, &y, &w, &h, lim);
+            vs[i] = flip ? (VkViewport){x, y + h, w, -h, ex->depth_range[0], ex->depth_range[1]}
+                         : (VkViewport){x, y, w, h, ex->depth_range[0], ex->depth_range[1]};
+        }
+        vkCmdSetViewportWithCount(cb, n, vs);
         ex->recorded++;
     }
     if (ex->dirty & VK_EXEC_DIRTY_SCISSOR) {
         VkRect2D r = vk_exec_scissor(ex);
-        vkCmdSetScissorWithCount(cb, 1, &r);
+        // Match viewport count so ViewportIndex>0 keeps a defined scissor (MTF cascade multicast).
+        uint32_t max_vp = vk_ctx()->props.limits.maxViewports;
+        if (max_vp > 16) max_vp = 16;
+        if (max_vp < 1) max_vp = 1;
+        VkRect2D rs[16];
+        for (uint32_t i = 0; i < max_vp; i++) rs[i] = r;
+        vkCmdSetScissorWithCount(cb, max_vp, rs);
         ex->recorded++;
     }
     if (ex->dirty & VK_EXEC_DIRTY_DEPTH_BIAS) {

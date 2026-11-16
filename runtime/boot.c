@@ -242,6 +242,7 @@ static void save_shot(const tex_t *t, const int crop[4], const char *path) {
             px[i] = px[i + 2];
             px[i + 2] = x;
         }
+    for (uint64_t i = 3; i < 4ull * w * h; i += 4) px[i] = 255;
     int cx = 0, cy = 0, cw = (int)w, ch = (int)h;
     if (crop && crop[2] > 0 && crop[3] > 0) {
         cx = crop[0] < 0 ? 0 : crop[0];

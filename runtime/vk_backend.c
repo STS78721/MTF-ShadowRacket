@@ -570,8 +570,11 @@ static int read_nowait(uint64_t addr, uint64_t size, uint64_t f) {
 }
 
 static void vk_be_guest_read(uint64_t addr, uint64_t size) {
-    if (!vk_texture_cpu_stale(addr, size)) return;
+    // Always sync pending samples-passed reports in range (Orchid query-cache flush). Texture writeback may no-op
+    // when nothing is stale; occlusion counters still need the wait or the guest culls on a stale 0.
     vk_sync_start();
+    vk_exec_oq_sync_range(addr, size);
+    if (!vk_texture_cpu_stale(addr, size)) return;
     if (gfx_replay_async()) {
         uint64_t f = vk_texture_dirty_fence(addr, size);
         plat_mutex_lock(&rl);
