@@ -1,0 +1,4 @@
+/* The application manifest of mtf.exe (mtf.manifest) and its icon (mtf.ico, also the icon of MTF-Setup.exe and of
+   the installer window). tools/build_game.py compiles it with the runtime objects. */
+1 24 "mtf.manifest"
+1 ICON "mtf.ico"
