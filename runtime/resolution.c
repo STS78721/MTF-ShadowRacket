@@ -48,6 +48,7 @@
 
 int res_mtf_lines(void);                 // defined with the MTF wrap below
 void res_mtf_size(uint32_t *w, uint32_t *h);
+static int mtf_latch_boot_lines(void);
 
 static struct {
     int decided;
@@ -236,10 +237,11 @@ static uint64_t pack(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
 void res_init(void) {
     if (!game_profile_has(GAME_QUIRK_TOTK_PATCH_RES)) {
         const RtGameProfile *gp = game_profile();
-        int lines = (gp->short_name && !strcmp(gp->short_name, "mtf")) ? res_mtf_lines() : 0;
+        int is_mtf = (gp->short_name && !strcmp(gp->short_name, "mtf"));
+        int lines = is_mtf ? mtf_latch_boot_lines() : 0;
         rt_log("resolution: Universal NS2 live hooks active for %s (Docked %ux%u, Handheld %ux%u)",
                gp->display_name, gp->docked_w, gp->docked_h, gp->handheld_w, gp->handheld_h);
-        if (gp->short_name && !strcmp(gp->short_name, "mtf")) {
+        if (is_mtf) {
             int mtf_res = rt_patch_set("mtf_res");
             if (lines > 0) {
                 uint32_t tw = ((uint32_t)lines * 16u / 9u) & ~1u;
@@ -453,14 +455,26 @@ void res_live_snapshot(unsigned win_sz[2], unsigned crop_sz[2], unsigned out_tgt
 // *(*(0x7002560000+0xef0)) shrinks it (mode 2 -> 2/3). Stock docked ends at 1706x960.
 #define MTF_LINES_MAX 1440
 
+static int g_mtf_boot_lines = -1;
 static volatile uint32_t g_mtf_base_w, g_mtf_base_h, g_mtf_tgt_w, g_mtf_tgt_h;
 
-int res_mtf_lines(void) {
+static int parse_mtf_lines_cfg(void) {
     const char *v = cfg_value("NS2_RESOLUTION");
     if (!v || !strcmp(v, "original")) return 0;
     int lines = atoi(v);
     if (lines < 360) return 0;
     return lines > MTF_LINES_MAX ? MTF_LINES_MAX : lines & ~1;
+}
+
+static int mtf_latch_boot_lines(void) {
+    int lines = parse_mtf_lines_cfg();
+    __atomic_store_n(&g_mtf_boot_lines, lines, __ATOMIC_RELAXED);
+    return lines;
+}
+
+int res_mtf_lines(void) {
+    int b = __atomic_load_n(&g_mtf_boot_lines, __ATOMIC_RELAXED);
+    return b >= 0 ? b : parse_mtf_lines_cfg();
 }
 
 void res_mtf_size(uint32_t *w, uint32_t *h) {

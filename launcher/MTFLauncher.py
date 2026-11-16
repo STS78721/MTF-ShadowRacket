@@ -32,7 +32,11 @@ from mtf_dump import (
     extract_nup_overlay,
     find_extract_nup,
     load_expected_mtf as load_expected_mtf_dump,
+    nro_to_nso,
     reuse_extracted_nup,
+    rmtree_retry,
+    romfs_has_nrr,
+    sha256_file,
     verify_exefs_hashes,
 )
 
@@ -867,7 +871,7 @@ class MTFLauncherApp(tk.Tk):
         self.folder_btn.pack(side=tk.RIGHT, padx=(4, 0))
         self.nup_btn = self._plain_btn(dump_row, ".NUP...", self._pick_nup_file, width=8)
         self.nup_btn.pack(side=tk.RIGHT)
-        self.exefs_browse_btn = self._path_picker(card, "ExeFS Folder (main, rtld, sdk, subsdk0):", self.exefs_var, self._pick_exefs)
+        self.exefs_browse_btn = self._path_picker(card, "ExeFS Folder (main, main.npdm, rtld, sdk):", self.exefs_var, self._pick_exefs)
         self.romfs_browse_btn = self._path_picker(card, "RomFS Folder (raw dump or romfs_packed):", self.romfs_var, self._pick_romfs)
 
         opt_row = tk.Frame(card, bg=C_PANEL)
@@ -1040,7 +1044,7 @@ class MTFLauncherApp(tk.Tk):
     def _pick_exefs(self) -> None:
         if self.setup_running:
             return
-        d = filedialog.askdirectory(title="Select ExeFS Folder (main, main.npdm, rtld, sdk, subsdk0)")
+        d = filedialog.askdirectory(title="Select ExeFS Folder (main, main.npdm, rtld, sdk)")
         if d:
             self.exefs_var.set(d)
 
@@ -1290,6 +1294,161 @@ class MTFLauncherApp(tk.Tk):
         if rc != 0:
             raise RuntimeError(f"Step failed with exit code {rc}: {' '.join(cmd[:3])}")
 
+    def _build_game_cmd(
+        self,
+        py: Path,
+        *,
+        gen_dir: Path,
+        build_out: Path,
+        exefs: Path,
+        packed_romfs: Path,
+        expected_path: Path | None = None,
+    ) -> list[str]:
+        cmd = [
+            str(py),
+            str(self.root_dir / "tools" / "build_game.py"),
+            "--version",
+            "mtf111",
+            "--gen",
+            str(gen_dir),
+            "--out",
+            str(build_out),
+            "--exefs",
+            str(exefs),
+            "--romfs",
+            str(packed_romfs),
+            "--profile",
+            str(self._profile_dir()),
+        ]
+        if expected_path is not None:
+            cmd += ["--expected", str(expected_path)]
+        rt_lib = self.root_dir / "runtime" / "libmtfrt.a"
+        if rt_lib.is_file():
+            cmd += ["--runtime", str(self.root_dir / "runtime"), "--runtime-lib", str(rt_lib)]
+        llvm_dir = self.root_dir / "llvm"
+        if llvm_dir.is_dir():
+            cmd += ["--toolchain", str(llvm_dir), "--deps", str(self.root_dir / "runtime" / "deps")]
+        ninja_bin = self.root_dir / "bin" / "ninja.exe"
+        if ninja_bin.is_file():
+            cmd += ["--ninja", str(ninja_bin)]
+        return cmd
+
+    def _synthesize_subsdk0(
+        self,
+        py: Path,
+        env: dict[str, str],
+        exefs: Path,
+        packed_romfs: Path,
+        expected: dict[str, str],
+    ) -> None:
+        self.after(0, lambda: (
+            self.setup_status_var.set("2.5/4 Synthesizing subsdk0 module from RomFS (.nrr)..."),
+            self._log_setup("ExeFS has no subsdk0; capturing runtime NRO0 from RomFS .nrr..."),
+        ))
+        pre_gen_dir = self.root_dir / "work" / "generated" / "mtf111-prenro"
+        pre_build_out = self.root_dir / "work" / "build" / "mtf111-prenro"
+        rmtree_retry(pre_gen_dir) if pre_gen_dir.exists() else None
+        rmtree_retry(pre_build_out) if pre_build_out.exists() else None
+        pre_gen_dir.mkdir(parents=True, exist_ok=True)
+        pre_build_out.mkdir(parents=True, exist_ok=True)
+
+        try:
+            pre_patches = pre_build_out / "patches-mtf111-prenro.txt"
+            pre_patches.write_text("# Pre-NRO capture pass\n", encoding="utf-8")
+            pre_exp = {
+                "short_name": "mtf",
+                "display_name": "Mario Tennis Fever",
+                "title_id": "0400D4201C6EA000",
+                "display_version": "1.1.1",
+                "exefs_sha256": {k: v for k, v in expected.items() if k != "subsdk0"},
+            }
+            pre_exp_path = pre_build_out / "expected-mtf111-prenro.json"
+            pre_exp_path.write_text(json.dumps(pre_exp, indent=2) + "\n", encoding="utf-8")
+
+            gen_script = self.root_dir / "recomp" / "gen.py"
+            self._run_step(
+                [
+                    str(py),
+                    str(gen_script),
+                    "--exefs",
+                    str(exefs),
+                    "--out",
+                    str(pre_gen_dir),
+                    "--modules",
+                    "main,sdk",
+                    "--patches",
+                    str(pre_patches),
+                ],
+                env,
+                42,
+                48,
+            )
+            self._run_step(
+                self._build_game_cmd(
+                    py,
+                    gen_dir=pre_gen_dir,
+                    build_out=pre_build_out,
+                    exefs=exefs,
+                    packed_romfs=packed_romfs,
+                    expected_path=pre_exp_path,
+                ),
+                env,
+                48,
+                55,
+            )
+
+            pre_exe = pre_build_out / ("mtf.exe" if os.name == "nt" else "mtf")
+            bin_dir = self.root_dir / "bin"
+            if bin_dir.is_dir():
+                for dll in bin_dir.glob("*.dll"):
+                    dst = pre_build_out / dll.name
+                    if not dst.is_file():
+                        shutil.copy2(dll, dst)
+
+            tmp_nro = pre_build_out / "captured_runtime.nro"
+            tmp_nro.unlink(missing_ok=True)
+            cap_env = dict(env)
+            cap_env["TOTK_GPU"] = "null"
+            cap_env["NS2_DUMP_NRO"] = str(tmp_nro)
+            self.after(0, lambda: self._log_setup(f"+ {pre_exe} --seconds 15 (TOTK_GPU=null)"))
+            try:
+                proc = subprocess.run(
+                    [str(pre_exe), "--seconds", "15"],
+                    cwd=str(pre_build_out),
+                    env=cap_env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=90,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("Headless subsdk0 capture timed out after 90s.") from exc
+            if proc.stdout and proc.stdout.strip():
+                tail = "\n".join(proc.stdout.strip().splitlines()[-12:])
+                self.after(0, lambda t=tail: self._log_setup(t))
+            if not tmp_nro.is_file():
+                raise RuntimeError(
+                    "Headless pre-pass did not capture a runtime NRO for subsdk0. "
+                    "Verify RomFS includes .nrr/nrr.nrr and retry."
+                )
+
+            want_sub = expected.get("subsdk0")
+            nso_bytes = nro_to_nso(tmp_nro.read_bytes(), want_sha256=want_sub)
+            (exefs / "subsdk0").write_bytes(nso_bytes)
+            verify_lines = verify_exefs_hashes(exefs, expected, allow_missing_subsdk0=False)
+            for line in verify_lines:
+                self.after(0, lambda t=line: self._log_setup(t))
+            self.after(0, lambda: (
+                self._log_setup("Synthesized & verified subsdk0 (5/5 ExeFS SHA-256 hashes matched)."),
+                self.setup_prog.configure(value=56),
+            ))
+        finally:
+            shutil.rmtree(pre_gen_dir, ignore_errors=True)
+            shutil.rmtree(pre_build_out, ignore_errors=True)
+
     def _run_setup_worker(self, dump_root: str, exefs_txt: str, romfs_txt: str) -> None:
         try:
             # Resolve dump root / .nup off the Tkinter UI thread.
@@ -1342,20 +1501,34 @@ class MTFLauncherApp(tk.Tk):
 
             self.after(0, lambda: self.setup_status_var.set("1/4 Verifying Mario Tennis Fever 1.1.1 ExeFS hashes..."))
             expected = load_expected_mtf(self.root_dir)
+            allow_missing_sub = romfs_has_nrr(romfs)
             try:
-                lines = verify_exefs_hashes(exefs, expected)
+                lines = verify_exefs_hashes(exefs, expected, allow_missing_subsdk0=allow_missing_sub)
             except DumpError as exc:
                 raise RuntimeError(str(exc)) from exc
             for line in lines:
                 self.after(0, lambda t=line: self._log_setup(t))
-            self.after(0, lambda: (self._log_setup("ExeFS SHA-256 verification passed (5/5 files matched)."),
-                                   self.setup_prog.configure(value=18)))
+            verified_msg = (
+                "ExeFS SHA-256 verification passed (5/5 files matched)."
+                if (exefs / "subsdk0").is_file()
+                else "Core ExeFS SHA-256 verification passed (4/4 core modules; subsdk0 queued from RomFS .nrr)."
+            )
+            self.after(0, lambda m=verified_msg: (self._log_setup(m), self.setup_prog.configure(value=18)))
 
             # Keep rt_default_exefs inside self.root_dir/exefs so portable installs stay self-contained.
             local_exefs = self.root_dir / "exefs"
             if exefs.resolve() != local_exefs.resolve():
                 local_exefs.mkdir(parents=True, exist_ok=True)
                 keep_files = {p.name for p in exefs.iterdir() if p.is_file()}
+                local_sub = local_exefs / "subsdk0"
+                want_sub = expected.get("subsdk0", "").lower()
+                if (
+                    "subsdk0" not in keep_files
+                    and local_sub.is_file()
+                    and want_sub
+                    and sha256_file(local_sub).lower() == want_sub
+                ):
+                    keep_files.add("subsdk0")
                 for old in list(local_exefs.iterdir()):
                     if old.is_file() and old.name not in keep_files:
                         old.unlink(missing_ok=True)
@@ -1397,6 +1570,10 @@ class MTFLauncherApp(tk.Tk):
                 packer = self.root_dir / "tools" / "mtf_pack_romfs.py"
                 self._run_step([str(py), str(packer), "--dir", str(romfs), "--out", str(packed_romfs)], env, 20, 42)
 
+            # Step 2.5: Capture & wrap runtime subsdk0 when absent from raw ExeFS dump
+            if not (exefs / "subsdk0").is_file():
+                self._synthesize_subsdk0(py, env, exefs, packed_romfs, expected)
+
             # Step 3: Lift ExeFS ARM64 -> C
             gen_dir = self.root_dir / "work" / "generated" / "mtf111"
             gen_ready = (
@@ -1409,7 +1586,7 @@ class MTFLauncherApp(tk.Tk):
             )
             if gen_ready:
                 self.after(0, lambda: (self._log_setup(f"Reusing existing lifted C in {gen_dir}"),
-                                       self.setup_prog.configure(value=62)))
+                                       self.setup_prog.configure(value=66)))
             else:
                 self.after(0, lambda: self.setup_status_var.set("3/4 Lifting ARM64 code to native C..."))
                 gen_script = self.root_dir / "recomp" / "gen.py"
@@ -1417,40 +1594,21 @@ class MTFLauncherApp(tk.Tk):
                 self._run_step(
                     [str(py), str(gen_script), "--exefs", str(exefs), "--out", str(gen_dir), "--patches", str(patches)],
                     env,
-                    44,
-                    66,
+                    56,
+                    68,
                 )
 
             # Step 4: Compile & link mtf.exe into clean work/build/mtf111 then place finished runtime files at root
             self.after(0, lambda: self.setup_status_var.set("4/4 Compiling & linking mtf.exe..."))
-            build_script = self.root_dir / "tools" / "build_game.py"
             build_out = self.root_dir / "work" / "build" / "mtf111"
             build_out.mkdir(parents=True, exist_ok=True)
-            cmd = [
-                str(py),
-                str(build_script),
-                "--version",
-                "mtf111",
-                "--gen",
-                str(gen_dir),
-                "--out",
-                str(build_out),
-                "--exefs",
-                str(exefs),
-                "--romfs",
-                str(packed_romfs),
-                "--profile",
-                str(self._profile_dir()),
-            ]
-            rt_lib = self.root_dir / "runtime" / "libmtfrt.a"
-            if rt_lib.is_file():
-                cmd += ["--runtime", str(self.root_dir / "runtime"), "--runtime-lib", str(rt_lib)]
-            llvm_dir = self.root_dir / "llvm"
-            if llvm_dir.is_dir():
-                cmd += ["--toolchain", str(llvm_dir), "--deps", str(self.root_dir / "runtime" / "deps")]
-            ninja_bin = self.root_dir / "bin" / "ninja.exe"
-            if ninja_bin.is_file():
-                cmd += ["--ninja", str(ninja_bin)]
+            cmd = self._build_game_cmd(
+                py,
+                gen_dir=gen_dir,
+                build_out=build_out,
+                exefs=exefs,
+                packed_romfs=packed_romfs,
+            )
             self._run_step(cmd, env, 68, 96)
 
             for fname in (

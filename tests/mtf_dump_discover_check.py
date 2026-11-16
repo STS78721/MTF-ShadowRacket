@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
 import os
 import shutil
+import struct
 import sys
 import tempfile
 import unittest
@@ -328,6 +330,86 @@ class MtfDumpDiscoverTest(unittest.TestCase):
         self.assertIsNotNone(hit)
         assert hit is not None
         self.assertEqual(hit.exefs.resolve(), res.exefs.resolve())
+
+    def test_four_file_exefs_with_nrr_discovers_and_verifies(self) -> None:
+        exefs = self.root / "exefs"
+        expected = {}
+        for name in md.EXEFS_CORE:
+            data = name.encode() * 32
+            write(exefs / name, data)
+            expected[name] = hashlib.sha256(data).hexdigest()
+        expected["subsdk0"] = "0" * 64
+        write(self.root / "romfs" / ".nrr" / "nrr.nrr", b"NRR0" + b"\x00" * 60)
+        write(self.root / "romfs" / "42", b"archive")
+
+        resolved = md.discover_dump(self.root, self.root / "work")
+        self.assertFalse((resolved.exefs / "subsdk0").exists())
+        self.assertTrue(md.romfs_has_nrr(resolved.romfs))
+        self.assertEqual(md.exefs_missing(resolved.exefs, romfs=resolved.romfs), [])
+        self.assertTrue(any("subsdk0" in n for n in resolved.notes))
+
+        lines = md.verify_exefs_hashes(resolved.exefs, expected, allow_missing_subsdk0=True)
+        self.assertTrue(any("subsdk0: queued" in line for line in lines))
+
+        # Packed romfs with .nrr/nrr.nrr in index.json also counts as romfs_has_nrr.
+        packed = self.root / "romfs_packed"
+        write(packed / "romfs.bin", b"data")
+        write(packed / "index.json", json.dumps({"files": [{"path": ".nrr/nrr.nrr", "offset": 0, "size": 4}]}).encode())
+        self.assertTrue(md.romfs_has_nrr(packed))
+
+    def test_four_file_nup_with_nrr_extracts_and_reuses(self) -> None:
+        base_tid, upd_tid, _, sparse_upd_trees, _ = self._mtf_trees()
+        nrr_trees = {
+            "exefs": sparse_upd_trees["exefs"],
+            "romfs": {".nrr": {"nrr.nrr": b"NRR0" + b"\x00" * 60}, "42": b"archive"},
+        }
+        nup_path = self.root / "mtf-v327680.nup"
+        nup_path.write_bytes(nec.build([(0, base_tid | 0x000, 327680, nrr_trees)]))
+        out_dir = self.root / "work" / "nup-extract"
+        res = md.extract_nup_overlay(
+            nup_path, out_dir, extract_script=ROOT / "tools" / "extract_nup.py", root=ROOT
+        )
+        self.assertFalse((res.exefs / "subsdk0").exists())
+        self.assertTrue((res.romfs / ".nrr" / "nrr.nrr").is_file())
+        self.assertEqual(md.exefs_missing(res.exefs, romfs=res.romfs), [])
+        hit = md.reuse_extracted_nup(nup_path, out_dir)
+        self.assertIsNotNone(hit)
+
+    def test_nro_to_nso_round_trip(self) -> None:
+        t_seg = b"\x1f\x20\x03\xd5" * 16
+        r_seg = b"rodata\x00\x00" * 8
+        d_seg = b"\x01\x02\x03\x04" * 8
+        t_off = 0x80
+        r_off = t_off + len(t_seg)
+        d_off = r_off + len(r_seg)
+        nro = bytearray(d_off + len(d_seg))
+        nro[0x10:0x14] = b"NRO0"
+        struct.pack_into("<II", nro, 0x18, len(nro), 0)
+        struct.pack_into("<IIIIIII", nro, 0x20, t_off, len(t_seg), r_off, len(r_seg), d_off, len(d_seg), 0x1000)
+        build_id = bytes(range(32))
+        nro[0x40:0x60] = build_id
+        nro[t_off:t_off + len(t_seg)] = t_seg
+        nro[r_off:r_off + len(r_seg)] = r_seg
+        nro[d_off:d_off + len(d_seg)] = d_seg
+
+        nso_default = md.nro_to_nso(bytes(nro))
+        self.assertEqual(nso_default[:4], b"NSO0")
+        self.assertEqual(nso_default[0x40:0x60], build_id)
+        t0, _, ts0, _ = struct.unpack_from("<IIII", nso_default, 0x10)
+        self.assertEqual(nso_default[t0:t0 + ts0], t_seg)
+
+        # Also test matching a specific flags_hash=0 variant via want_sha256.
+        hdr_noh = bytearray(0x100)
+        struct.pack_into("<4sIII", hdr_noh, 0x00, b"NSO0", 0, 0, 0)
+        struct.pack_into("<IIII", hdr_noh, 0x10, 0x100, t_off, len(t_seg), 0)
+        struct.pack_into("<IIII", hdr_noh, 0x20, 0x100 + len(t_seg), r_off, len(r_seg), 0)
+        struct.pack_into("<IIII", hdr_noh, 0x30, 0x100 + len(t_seg) + len(r_seg), d_off, len(d_seg), 0x1000)
+        hdr_noh[0x40:0x60] = build_id
+        struct.pack_into("<III", hdr_noh, 0x60, len(t_seg), len(r_seg), len(d_seg))
+        cand0 = bytes(hdr_noh) + t_seg + r_seg + d_seg
+        want = hashlib.sha256(cand0).hexdigest()
+        matched = md.nro_to_nso(bytes(nro), want_sha256=want)
+        self.assertEqual(hashlib.sha256(matched).hexdigest(), want)
 
 
 if __name__ == "__main__":

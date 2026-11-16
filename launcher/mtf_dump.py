@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -21,7 +22,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+try:
+    import lz4.block as lz4_block
+except ImportError:
+    lz4_block = None
+
 EXEFS_REQUIRED = ("main", "main.npdm", "rtld", "sdk", "subsdk0")
+EXEFS_CORE = ("main", "main.npdm", "rtld", "sdk")
 MTF_TITLE_ID = "0400D4201C6EA000"
 MTF_DISPLAY = "1.1.1"
 MAX_WALK_DEPTH = 6
@@ -95,7 +102,7 @@ def is_romfs_dir(path: Path) -> bool:
         return False
     try:
         for child in path.iterdir():
-            if child.name.startswith("."):
+            if child.name.startswith(".") and child.name.lower() != ".nrr":
                 continue
             return True
     except OSError:
@@ -103,12 +110,34 @@ def is_romfs_dir(path: Path) -> bool:
     return False
 
 
+def romfs_has_nrr(romfs: Path | None) -> bool:
+    """True when romfs carries Switch 2 .nrr metadata (subsdk0 NRO is unpacked at runtime)."""
+    if romfs is None or not romfs.is_dir():
+        return False
+    if (romfs / ".nrr").is_dir():
+        return True
+    idx = romfs / "index.json"
+    if idx.is_file():
+        try:
+            data = json.loads(idx.read_text(encoding="utf-8"))
+            for entry in data.get("files") or []:
+                rel = str(entry.get("path", "")).replace("\\", "/")
+                if rel.startswith(".nrr/"):
+                    return True
+        except Exception:
+            pass
+    return False
+
+
 def exefs_present(path: Path) -> list[str]:
     return [name for name in EXEFS_REQUIRED if (path / name).is_file()]
 
 
-def exefs_missing(path: Path) -> list[str]:
-    return [name for name in EXEFS_REQUIRED if not (path / name).is_file()]
+def exefs_missing(path: Path, *, romfs: Path | None = None) -> list[str]:
+    miss = [name for name in EXEFS_REQUIRED if not (path / name).is_file()]
+    if "subsdk0" in miss and romfs is not None and romfs_has_nrr(romfs):
+        miss = [name for name in miss if name != "subsdk0"]
+    return miss
 
 
 def _depth_of(path: Path, root: Path) -> int:
@@ -363,7 +392,7 @@ def merge_romfs(base: Path | None, update: Path, dest: Path) -> Path:
             return
         for dirpath, dirnames, filenames in os.walk(src):
             rel = Path(dirpath).relative_to(src)
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            dirnames[:] = [d for d in dirnames if not d.startswith(".") or d.lower() == ".nrr"]
             for name in filenames:
                 if name.startswith("."):
                     continue
@@ -446,16 +475,6 @@ def discover_dump(root: Path, work_dir: Path) -> DumpResolve:
                     "No base ExeFS beside this update; using the update ExeFS alone."
                 )
             chosen_exefs = upd_exefs
-        still = exefs_missing(chosen_exefs)
-        if still:
-            raise DumpError(
-                f"ExeFS is missing {', '.join(still)} under {chosen_exefs}. "
-                "Mario Tennis Fever 1.1.1 needs main, main.npdm, rtld, sdk, and subsdk0. "
-                "If your .nup includes a base package, use Browse .NUP… (base+update overlay). "
-                "Update-only dumps work when the update ExeFS already contains every module — "
-                "a separate base dump folder is not required."
-            )
-
         upd_romfs = find_matching_romfs(upd_exefs, search_root)
         base_romfs = find_base_romfs(search_root, upd_romfs)
         if upd_romfs is None and base_romfs is None:
@@ -475,6 +494,17 @@ def discover_dump(root: Path, work_dir: Path) -> DumpResolve:
             staged = True
         else:
             chosen_romfs = upd_romfs or base_romfs
+
+        still = exefs_missing(chosen_exefs, romfs=chosen_romfs)
+        if still:
+            raise DumpError(
+                f"ExeFS is missing {', '.join(still)} under {chosen_exefs}. "
+                "Mario Tennis Fever 1.1.1 needs main, main.npdm, rtld, sdk, and subsdk0 "
+                "(or main, main.npdm, rtld, sdk with RomFS .nrr to synthesize subsdk0 automatically). "
+                "If your .nup includes a base package, use Browse .NUP… (base+update overlay). "
+                "Update-only dumps work when the update ExeFS already contains every module or carries RomFS .nrr — "
+                "a separate base dump folder is not required."
+            )
     else:
         # Flat / already-merged dump.
         for sr in search_roots:
@@ -491,12 +521,6 @@ def discover_dump(root: Path, work_dir: Path) -> DumpResolve:
                 f"No ExeFS (main) found under {root}. "
                 "Select a folder containing exefs/main, an extracted NUP tree, or a .nup file."
             )
-        miss = exefs_missing(chosen_exefs)
-        if miss:
-            raise DumpError(
-                f"ExeFS at {chosen_exefs} is missing {', '.join(miss)}. "
-                "Mario Tennis Fever 1.1.1 needs main, main.npdm, rtld, sdk, and subsdk0."
-            )
         chosen_romfs = find_matching_romfs(chosen_exefs, search_root)
         if chosen_romfs is None:
             for sr in search_roots:
@@ -506,8 +530,17 @@ def discover_dump(root: Path, work_dir: Path) -> DumpResolve:
                     break
         if chosen_romfs is None:
             raise DumpError(f"Found ExeFS at {chosen_exefs} but no RomFS folder nearby.")
+        miss = exefs_missing(chosen_exefs, romfs=chosen_romfs)
+        if miss:
+            raise DumpError(
+                f"ExeFS at {chosen_exefs} is missing {', '.join(miss)}. "
+                "Mario Tennis Fever 1.1.1 needs main, main.npdm, rtld, sdk, and subsdk0 "
+                "(or main, main.npdm, rtld, sdk with RomFS .nrr to synthesize subsdk0 automatically)."
+            )
 
     assert chosen_exefs is not None and chosen_romfs is not None
+    if not (chosen_exefs / "subsdk0").is_file() and romfs_has_nrr(chosen_romfs):
+        notes.append("RomFS .nrr detected; setup will synthesize subsdk0 automatically during build.")
     notes.append(f"Using ExeFS: {chosen_exefs}")
     notes.append(f"Using RomFS: {chosen_romfs}")
     return DumpResolve(exefs=chosen_exefs, romfs=chosen_romfs, notes=notes, staged=staged, source="folder")
@@ -667,16 +700,16 @@ def _check_nup_ready_dir(nup_path: Path, cand_dir: Path) -> DumpResolve | None:
         return None
     exefs = Path(data.get("exefs") or (cand_dir / "exefs"))
     romfs = Path(data.get("romfs") or (cand_dir / "romfs"))
-    if not is_exefs_dir(exefs) or exefs_missing(exefs) or not is_romfs_dir(romfs):
+    if not is_exefs_dir(exefs) or not is_romfs_dir(romfs) or exefs_missing(exefs, romfs=romfs):
         return None
+    notes = [f"Reusing extracted NUP tree for {nup_path.name} (no re-extract needed)."]
+    if not (exefs / "subsdk0").is_file() and romfs_has_nrr(romfs):
+        notes.append("RomFS .nrr detected; setup will synthesize subsdk0 automatically during build.")
+    notes.extend([f"Using ExeFS: {exefs}", f"Using RomFS: {romfs}"])
     return DumpResolve(
         exefs=exefs,
         romfs=romfs,
-        notes=[
-            f"Reusing extracted NUP tree for {nup_path.name} (no re-extract needed).",
-            f"Using ExeFS: {exefs}",
-            f"Using RomFS: {romfs}",
-        ],
+        notes=notes,
         staged=True,
         source="nup",
     )
@@ -806,7 +839,7 @@ def _merge_missing_from_extracted_base(search_root: Path, out_dir: Path, exefs: 
             else:
                 for dirpath, dirnames, filenames in os.walk(base_romfs):
                     rel = Path(dirpath).relative_to(base_romfs)
-                    dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+                    dirnames[:] = [d for d in dirnames if not d.startswith(".") or d.lower() == ".nrr"]
                     for name in filenames:
                         if not name.startswith("."):
                             _copy_file(Path(dirpath) / name, romfs / rel / name)
@@ -814,7 +847,7 @@ def _merge_missing_from_extracted_base(search_root: Path, out_dir: Path, exefs: 
         elif not ((base_romfs / "romfs.bin").is_file() and (base_romfs / "index.json").is_file()):
             for dirpath, dirnames, filenames in os.walk(base_romfs):
                 rel = Path(dirpath).relative_to(base_romfs)
-                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+                dirnames[:] = [d for d in dirnames if not d.startswith(".") or d.lower() == ".nrr"]
                 for name in filenames:
                     if name.startswith("."):
                         continue
@@ -890,12 +923,16 @@ def extract_nup_overlay(
         update_only = "update-only" in combined.lower()
         if update_only:
             mode = "update alone (no base package in this .nup)"
-        # Case B: sparse update-only .nup missing modules (e.g. subsdk0) or missing RomFS.
+        # Case B: sparse update-only .nup missing modules (e.g. subsdk0 without .nrr) or missing RomFS.
         if (
             update_only
             and mod is not None
             and pkgs
-            and (not is_exefs_dir(exefs) or not is_romfs_dir(romfs) or bool(exefs_missing(exefs)))
+            and (
+                not is_exefs_dir(exefs)
+                or not is_romfs_dir(romfs)
+                or bool(exefs_missing(exefs, romfs=romfs))
+            )
         ):
             upd_pkg = _pick_mtf_preferred(mod, pkgs, 1)
             upd_arg = "update" if sum(1 for p in pkgs if p[1] == 1) == 1 else str(upd_pkg[0])
@@ -923,21 +960,26 @@ def extract_nup_overlay(
             f"NUP extract did not produce exefs/ and romfs/ under {actual_out_dir}. "
             "The container needs a Mario Tennis Fever program package (update alone is fine)."
         )
-    missing = exefs_missing(exefs)
+    missing = exefs_missing(exefs, romfs=romfs)
     if missing:
         raise DumpError(
             f"NUP extract under {exefs} is missing {', '.join(missing)}. "
-            "Mario Tennis Fever 1.1.1 needs main, main.npdm, rtld, sdk, and subsdk0. "
+            "Mario Tennis Fever 1.1.1 needs main, main.npdm, rtld, sdk, and subsdk0 "
+            "(or main, main.npdm, rtld, sdk with RomFS .nrr to synthesize subsdk0 automatically). "
             "Browse .NUP… overlays a matching-title base (…000) onto the update (…800) when "
             "both are in the same container or sibling .nup files in the same folder; a standalone "
-            "update-only .nup must already include every ExeFS module."
+            "update-only .nup must either include subsdk0 or carry RomFS .nrr."
         )
     _write_nup_ready(nup_path, actual_out_dir, exefs, romfs)
     notes = [
         f"Extracted {nup_path.name} ({mode}).",
+    ]
+    if not (exefs / "subsdk0").is_file() and romfs_has_nrr(romfs):
+        notes.append("RomFS .nrr detected; setup will synthesize subsdk0 automatically during build.")
+    notes.extend([
         f"Using ExeFS: {exefs}",
         f"Using RomFS: {romfs}",
-    ]
+    ])
     # Soft title check from extract listing is not available here; SHA verify is authoritative.
     return DumpResolve(exefs=exefs, romfs=romfs, notes=notes, staged=True, source="nup")
 
@@ -957,19 +999,83 @@ def format_hash_mismatch(fname: str, got: str, want: str) -> str:
     )
 
 
-def verify_exefs_hashes(exefs: Path, expected: dict[str, str]) -> list[str]:
+def nro_to_nso(nro: bytes, want_sha256: str | None = None) -> bytes:
+    """Convert an uncompressed NRO0 module image into an NSO0 binary for static lifting and runtime loading."""
+    if len(nro) < 0x80 or nro[0x10:0x14] != b"NRO0":
+        raise ValueError("Input buffer does not carry a valid NRO0 header at +0x10")
+    t_off, t_sz = struct.unpack_from("<II", nro, 0x20)
+    r_off, r_sz = struct.unpack_from("<II", nro, 0x28)
+    d_off, d_sz = struct.unpack_from("<II", nro, 0x30)
+    bss_sz = struct.unpack_from("<I", nro, 0x38)[0]
+    build_id = nro[0x40:0x60]
+    segs = [nro[t_off:t_off + t_sz], nro[r_off:r_off + r_sz], nro[d_off:d_off + d_sz]]
+    shas = b"".join(hashlib.sha256(s).digest() for s in segs)
+
+    candidates = []
+    for flags_hash in (0x00, 0x38):
+        for with_shas in (False, True):
+            hdr = bytearray(0x100)
+            struct.pack_into("<4sIII", hdr, 0x00, b"NSO0", 0, 0, flags_hash if with_shas else 0)
+            struct.pack_into("<IIII", hdr, 0x10, 0x100, t_off, t_sz, 0)
+            struct.pack_into("<IIII", hdr, 0x20, 0x100 + t_sz, r_off, r_sz, 0)
+            struct.pack_into("<IIII", hdr, 0x30, 0x100 + t_sz + r_sz, d_off, d_sz, bss_sz)
+            hdr[0x40:0x60] = build_id
+            struct.pack_into("<III", hdr, 0x60, t_sz, r_sz, d_sz)
+            if with_shas:
+                hdr[0xA0:0x100] = shas
+            candidates.append(bytes(hdr) + b"".join(segs))
+
+    if lz4_block is not None:
+        csegs = [lz4_block.compress(s, store_size=False) for s in segs]
+        for flags_val in (0x3F, 0x07):
+            hdr = bytearray(0x100)
+            struct.pack_into("<4sIII", hdr, 0x00, b"NSO0", 0, 0, flags_val)
+            c0 = 0x100
+            c1 = c0 + len(csegs[0])
+            c2 = c1 + len(csegs[1])
+            struct.pack_into("<IIII", hdr, 0x10, c0, t_off, t_sz, 1)
+            struct.pack_into("<IIII", hdr, 0x20, c1, r_off, r_sz, 1)
+            struct.pack_into("<IIII", hdr, 0x30, c2, d_off, d_sz, bss_sz)
+            hdr[0x40:0x60] = build_id
+            struct.pack_into("<III", hdr, 0x60, len(csegs[0]), len(csegs[1]), len(csegs[2]))
+            if flags_val & 0x38:
+                hdr[0xA0:0x100] = shas
+            candidates.append(bytes(hdr) + b"".join(csegs))
+
+    if want_sha256:
+        want = want_sha256.lower()
+        for cand in candidates:
+            if hashlib.sha256(cand).hexdigest() == want:
+                return cand
+    return candidates[1]
+
+
+def verify_exefs_hashes(
+    exefs: Path,
+    expected: dict[str, str],
+    *,
+    allow_missing_subsdk0: bool = False,
+) -> list[str]:
     """Verify required ExeFS hashes. Raises DumpError with a clear message on failure."""
     lines: list[str] = []
-    missing = [name for name in expected if not (exefs / name).is_file()]
+    defer_subsdk0 = allow_missing_subsdk0 and not (exefs / "subsdk0").is_file()
+    missing = [
+        name for name in expected
+        if not (exefs / name).is_file() and not (defer_subsdk0 and name == "subsdk0")
+    ]
     if missing:
         raise DumpError(
             f"Missing ExeFS file(s) under {exefs}: {', '.join(missing)}. "
-            "Mario Tennis Fever 1.1.1 needs main, main.npdm, rtld, sdk, and subsdk0. "
+            "Mario Tennis Fever 1.1.1 needs main, main.npdm, rtld, sdk, and subsdk0 "
+            "(or main, main.npdm, rtld, sdk with RomFS .nrr to synthesize subsdk0 automatically). "
             "Update/NUP-only dumps are fine when those modules are present; if a base package "
             "exists in the same .nup, Browse .NUP… overlays it automatically. "
             "A separate base dump folder is not required."
         )
     for fname, want in sorted(expected.items()):
+        if defer_subsdk0 and fname == "subsdk0":
+            lines.append("subsdk0: queued (will synthesize from RomFS .nrr during build)")
+            continue
         fpath = exefs / fname
         got = sha256_file(fpath)
         if got.lower() != want.lower():

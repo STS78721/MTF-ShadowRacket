@@ -354,7 +354,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         ldflags.append('-Wl,--wrap,f_700011ff1c')
         ldflags.append('-Wl,--wrap,f_7000075cc0')
     is_mtf = is_mtf or 'mtf' in str(out).lower() or 'mtf' in str(gen).lower()
-    if is_mtf:
+    if is_mtf and 'subsdk0' in mods:
         # Mario Tennis Fever: force internal frame lines (resolution.c __wrap_f_700205e8fc)
         ldflags.append('-Wl,--wrap,f_700205e8fc')
     map_stem = Path(EXE).stem if EXE else ('mtf' if is_mtf else 'totk')
