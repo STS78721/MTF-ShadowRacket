@@ -77,7 +77,12 @@ Download the latest **`Alpha 0.1.0`** release from the **[Releases page](https:/
 
 **2. Set up from your Mario Tennis Fever 1.1.1 dump**
 
-Open **MTFLauncher** → **SETUP FROM DUMP**, select your `exefs` and `romfs` folders (or parent dump folder), and click **VERIFY & BUILD MTF.EXE**. It checks SHA-256 hashes, packs RomFS, lifts ARM64 to C, and builds `mtf.exe` automatically.
+Open **MTFLauncher** → **SETUP FROM DUMP**, then pick one of:
+- your `exefs` and `romfs` folders,
+- a parent dump / NUP-extracted folder (including trees with `updates\<ver>\exefs` — the launcher overlays the update onto the base so missing modules like `subsdk0` are filled in), or
+- a `.nup` container (**Browse .NUP…**; extracts with `tools/extract_nup.py --overlay-update`).
+
+Click **VERIFY & BUILD MTF.EXE**. It checks SHA-256 hashes against Mario Tennis Fever **1.1.1**, packs RomFS, lifts ARM64 to C, and builds `mtf.exe` automatically. A hash mismatch means the dump is not 1.1.1 (or is still update-only / wrong path) — not a silent accept of another version.
 
 **3. Play**: click **PLAY MARIO TENNIS FEVER** (or run `mtf.exe`).
 

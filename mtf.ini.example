@@ -1,4 +1,7 @@
-# Mario Tennis Fever (MTF ShadowRacket) - PC configuration
+# Mario Tennis Fever (MTF ShadowRacket) — example / safe defaults
+# Hardware-agnostic baseline. Do not ship a personal mtf.ini in releases.
+# Users raise resolution, upscaling, and frame generation themselves after install.
+
 [paths]
 exefs = ./exefs
 romfs = ./romfs
@@ -15,28 +18,24 @@ MENU_LANG = en
 [display]
 operation_mode = docked
 window_size = 1920x1080
-fullscreen = 1
-output_res = 3840x2160
-render_scale = 200
-res_hook = 0
+fullscreen = 0
+output_res = 1920x1080
+# original = native ~1706x960 internal; leave unset/original for the safe baseline
 upscaler = fsr
-upscaler_preset = native
-sharpness = 50
+upscaler_preset = quality
+sharpness = 80
 perf_overlay = off
 vk_present = mailbox
 smaa = 0
 fxaa = 0
-color_preset = custom
-color_brightness = -2
-color_contrast = 115
-color_saturation = 130
-color_gamma = 0.95
+color_preset = default
 
 [frame rate]
 fps_limit = 60
 realtime = 1
 cloth_realtime = 1
+fg_mode = off
 
 [input]
-bind_b = key:y, pad:default
-rumble_strength = 160
+pad_layout = auto
+rumble_strength = 100
