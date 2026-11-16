@@ -66,7 +66,8 @@ MAGIC = b"MTFSRCV1"
 def read_version() -> str:
     p = ROOT / "VERSION"
     if p.is_file():
-        return p.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+        # utf-8-sig drops a PowerShell/Notepad BOM that would poison package filenames.
+        return p.read_text(encoding="utf-8-sig").strip().splitlines()[0].strip()
     return "Alpha 0.1.1"
 
 
