@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
 import json
 import math
@@ -11,9 +12,13 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
+import urllib.request
+import webbrowser
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -32,7 +37,26 @@ from mtf_dump import (
 
 APP_TITLE = "MTF ShadowRacket"
 APP_SUBTITLE = "Mario Tennis Fever  ·  Native Windows PC Recompilation"
-DEFAULT_VERSION = "Alpha 0.1.1"
+DEFAULT_VERSION = "Alpha 0.1.2"
+GITLAB_URL = "https://gitlab.com/steeltemplesaint-recomps/MTF-ShadowRacket"
+RELEASES_URL = GITLAB_URL + "/-/releases"
+RELEASES_API_URL = (
+    "https://gitlab.com/api/v4/projects/steeltemplesaint-recomps%2FMTF-ShadowRacket"
+    "/releases/permalink/latest"
+)
+UPDATE_SKIP_TOP = {
+    "exefs",
+    "romfs",
+    "romfs_packed",
+    "generated",
+    "spirv",
+    "profile",
+    "save",
+    "logs",
+    "shader-cache",
+    "work",
+    "mods",
+}
 
 # Championship Turf & Optic Yellow-Green palette (matches runtime/ui/theme.h THEME_TENNIS)
 C_BG_DEEP = "#08120C"
@@ -75,6 +99,137 @@ def read_app_version() -> str:
                 if txt:
                     return txt.splitlines()[0].strip()
     return DEFAULT_VERSION
+
+
+def version_tuple(ver: str) -> tuple[tuple[int, ...], str]:
+    m = re.search(r"(\d+(?:\.\d+)+)([a-z]*)", str(ver or "").strip().lower())
+    if not m:
+        return ((), "")
+    nums = tuple(int(x) for x in m.group(1).split("."))
+    return (nums, m.group(2))
+
+
+def is_same_version(ver1: str, ver2: str) -> bool:
+    def norm(v: str) -> str:
+        v = re.sub(r"^v", "", str(v or "").strip().lower())
+        return re.sub(r"[^a-z0-9]", "", v)
+
+    return norm(ver1) == norm(ver2)
+
+
+def is_up_to_date(local_ver: str, remote_tag: str) -> bool:
+    if is_same_version(local_ver, remote_tag):
+        return True
+    lv, rv = version_tuple(local_ver), version_tuple(remote_tag)
+    return bool(lv[0] and rv[0] and lv >= rv)
+
+
+def find_running_mtf_processes(root: Path) -> list[dict]:
+    if os.name != "nt":
+        return []
+    target = str((root / "mtf.exe").resolve()).replace("'", "''")
+    command = (
+        f"$target = '{target}'; "
+        "$items = @(Get-CimInstance Win32_Process -Filter \\\"Name='mtf.exe'\\\" -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.ExecutablePath -and "
+        "[String]::Equals([IO.Path]::GetFullPath($_.ExecutablePath), $target, "
+        "[StringComparison]::OrdinalIgnoreCase) } | "
+        "Select-Object ProcessId, ExecutablePath); "
+        "if ($items.Count -eq 1) { $items[0] | ConvertTo-Json -Compress } "
+        "else { $items | ConvertTo-Json -Compress }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0:
+            return []
+        output = result.stdout.strip()
+        if not output or output == "null":
+            return []
+        parsed = json.loads(output)
+        if isinstance(parsed, dict):
+            return [{"pid": parsed.get("ProcessId"), "path": parsed.get("ExecutablePath")}]
+        if isinstance(parsed, list):
+            return [
+                {"pid": item.get("ProcessId"), "path": item.get("ExecutablePath")}
+                for item in parsed
+                if isinstance(item, dict)
+            ]
+    except Exception:
+        pass
+    return []
+
+
+def game_process_warning(root: Path, action: str) -> str | None:
+    processes = find_running_mtf_processes(root)
+    if not processes:
+        return None
+    details = []
+    for process in processes:
+        label = []
+        if process.get("pid") is not None:
+            label.append(f"PID {process['pid']}")
+        if process.get("path"):
+            label.append(str(process["path"]))
+        details.append(" - ".join(label) if label else "mtf.exe")
+    return "Mario Tennis Fever (mtf.exe) is currently running:\n" + "\n".join(details) + f"\n\nClose the game before {action}."
+
+
+def extract_update_archive(archive_path: Path, stage_dir: Path) -> list[str]:
+    """Stage safe files from the official MTF Update.zip (flat or MTF-ShadowRacket/ nested)."""
+    archive_path, stage_dir = Path(archive_path), Path(stage_dir)
+    selected: dict[str, zipfile.ZipInfo] = {}
+    with zipfile.ZipFile(archive_path) as archive:
+        bad_member = archive.testzip()
+        if bad_member:
+            raise ValueError(f"Update archive CRC check failed for {bad_member}.")
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            name = info.filename.replace("\\", "/")
+            path = Path(name)
+            parts = path.parts
+            if parts and parts[0].casefold() == "mtf-shadowracket":
+                parts = parts[1:]
+            if not parts or path.is_absolute() or ".." in parts:
+                raise ValueError(f"Unexpected path in update archive: {info.filename}")
+            top = parts[0].casefold()
+            if top in UPDATE_SKIP_TOP or top.startswith("."):
+                continue
+            if parts[-1].casefold() in {"mtf.ini", ".ds_store"}:
+                continue
+            mode = (info.external_attr >> 16) & 0o170000
+            if mode == 0o120000:
+                raise ValueError(f"Symbolic links are not allowed in updates: {info.filename}")
+            # Empty files (e.g. Python package markers) are allowed.
+            key = "/".join(parts).casefold()
+            if key in selected:
+                raise ValueError(f"Duplicate update file: {info.filename}")
+            selected[key] = info
+
+        launcher_keys = [k for k in selected if k.endswith("mtflauncher.exe")]
+        if not launcher_keys:
+            raise ValueError("Update archive is missing required binary: MTFLauncher.exe.")
+        if selected[launcher_keys[0]].file_size < 1024 * 1024:
+            raise ValueError("Update launcher executable is unexpectedly small.")
+
+        written: list[str] = []
+        for key, info in selected.items():
+            parts = Path(info.filename.replace("\\", "/")).parts
+            if parts and parts[0].casefold() == "mtf-shadowracket":
+                parts = parts[1:]
+            rel = Path(*parts)
+            target = stage_dir / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as src, target.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+            written.append(rel.as_posix())
+        return written
 
 
 def find_icon_ico() -> Path | None:
@@ -314,11 +469,12 @@ def create_shortcut(game_dir: Path, name: str = "MTF ShadowRacket") -> tuple[boo
 
 
 class MTFLauncherApp(tk.Tk):
-    def __init__(self, initial_tab: str = "play", shot_path: str = "") -> None:
+    def __init__(self, initial_tab: str = "play", shot_path: str = "", skip_update_check: bool = False) -> None:
         super().__init__()
         self.root_dir = resolve_root_dir()
         self.version = read_app_version()
         self.shot_path = shot_path
+        self._skip_update_check = skip_update_check
         self.gpu_name = "Checking GPU..."
 
         self.title(f"{APP_TITLE} {self.version} — Mario Tennis Fever PC")
@@ -344,6 +500,11 @@ class MTFLauncherApp(tk.Tk):
         self.setup_status_var = tk.StringVar(value="Select your Mario Tennis Fever 1.1.1 ExeFS & RomFS folders to build mtf.exe locally.")
         self.setup_running = False
         self.current_tab = initial_tab
+        self.latest_release: dict | None = None
+        self.release_check_active = False
+        self.update_in_progress = False
+        self._auto_installing = False
+        self.auto_install_updates = True
 
         self._build_layout()
         self._load_ini_into_vars()
@@ -353,6 +514,8 @@ class MTFLauncherApp(tk.Tk):
         threading.Thread(target=self._probe_gpu_async, daemon=True).start()
         if self.shot_path:
             self.after(450, self._capture_shot_and_exit)
+        elif not getattr(self, "_skip_update_check", False):
+            self.after(700, self.check_for_updates)
 
     def _apply_window_icon(self) -> None:
         ico = find_icon_ico()
@@ -603,6 +766,27 @@ class MTFLauncherApp(tk.Tk):
         self.goto_setup_btn = self._plain_btn(cta_row, "OPEN DUMP SETUP", lambda: self.select_tab("setup"), width=20)
         self.goto_setup_btn.pack(side=tk.LEFT, padx=(10, 0))
         self._plain_btn(cta_row, "CREATE DESKTOP SHORTCUT", self.on_create_shortcut, width=24).pack(side=tk.RIGHT)
+
+        upd = tk.Frame(top, bg=C_PANEL)
+        upd.pack(fill=tk.X, pady=(14, 0))
+        self.update_status = tk.Label(
+            upd,
+            text="Checking GitLab Releases…",
+            font=("Segoe UI", 9),
+            fg=C_TEXT_DIM,
+            bg=C_PANEL,
+            wraplength=880,
+            justify="left",
+        )
+        self.update_status.pack(anchor="w")
+        btn_row = tk.Frame(upd, bg=C_PANEL)
+        btn_row.pack(fill=tk.X, pady=(6, 0))
+        self.update_action_btn = self._accent_btn(btn_row, "INSTALL UPDATE", self.apply_latest_update, width=18)
+        self.release_btn = self._plain_btn(btn_row, "VIEW RELEASE NOTES", self.open_latest_release, width=20)
+        self._plain_btn(btn_row, "CHECK FOR UPDATES", self.check_for_updates, width=18).pack(side=tk.LEFT)
+        # Hidden until an update is available / notes needed
+        self.update_action_btn.pack_forget()
+        self.release_btn.pack_forget()
 
         grid = tk.Frame(page, bg=C_BG)
         grid.pack(fill=tk.BOTH, expand=True)
@@ -1190,6 +1374,270 @@ class MTFLauncherApp(tk.Tk):
             self.setup_running = False
             self.after(0, lambda: self.build_btn.configure(state=tk.NORMAL))
 
+    def check_for_updates(self) -> None:
+        if getattr(self, "release_check_active", False) or getattr(self, "update_in_progress", False):
+            return
+        self.release_check_active = True
+        self.update_action_btn.pack_forget()
+        self.release_btn.pack_forget()
+        self.update_status.config(text="Checking GitLab Releases…", fg=C_TEXT_DIM)
+        threading.Thread(target=self._check_release_worker, daemon=True).start()
+
+    def _check_release_worker(self) -> None:
+        try:
+            req = urllib.request.Request(
+                RELEASES_API_URL,
+                headers={"Accept": "application/json", "User-Agent": "MTFLauncher"},
+            )
+            with urllib.request.urlopen(req, timeout=12) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            tag = (data.get("tag_name") or "").strip()
+            title = (data.get("name") or tag or "Latest MTF ShadowRacket release").strip()
+            page = (data.get("_links") or {}).get("self") or f"{GITLAB_URL}/-/releases/{tag}" or RELEASES_URL
+            if not tag:
+                raise ValueError("The latest release did not include a version tag.")
+            assets = (data.get("assets") or {}).get("links") or data.get("assets") or []
+            tag_clean = tag.replace("-", "").replace(".", "")
+            candidates = [
+                f"SteelTemple-MTF-ShadowRacket-{tag}-Update.zip",
+                f"SteelTemple-MTF-ShadowRacket-{tag_clean}-Update.zip",
+                f"SteelTemple-MTF-ShadowRacket-Update-{tag}.zip",
+            ]
+            asset = next(
+                (
+                    item
+                    for item in assets
+                    for cand in candidates
+                    if item.get("name", "").casefold() == cand.casefold()
+                ),
+                None,
+            )
+            if not asset:
+                asset = next(
+                    (
+                        item
+                        for item in assets
+                        if "update" in item.get("name", "").lower() and item.get("name", "").lower().endswith(".zip")
+                    ),
+                    None,
+                )
+            asset_name = asset.get("name") if asset else None
+            asset_url = (asset.get("url") or asset.get("browser_download_url")) if asset else None
+            self.after(0, lambda: self._show_release_result(tag, title, page, asset_url, asset_name))
+        except Exception as exc:
+            detail = str(exc)
+            if "404" in detail or "Not Found" in detail:
+                self.after(
+                    0,
+                    lambda: self._show_release_result(
+                        self.version, f"Your MTF ShadowRacket is up to date ({self.version}).", RELEASES_URL, None, None
+                    ),
+                )
+            else:
+                self.after(0, lambda: self._show_release_error("Update check failed: " + detail))
+
+    def _show_release_error(self, message: str) -> None:
+        self.release_check_active = False
+        self.update_status.config(text=message, fg=C_BAD)
+
+    def _show_release_result(
+        self, tag: str, title: str, page: str, asset_url: str | None = None, asset_name: str | None = None
+    ) -> None:
+        self.release_check_active = False
+        self.latest_release = {
+            "tag": tag,
+            "title": title,
+            "page": page,
+            "asset_url": asset_url,
+            "asset_name": asset_name,
+        }
+        clean_title = title.split(":", 1)[0].strip()
+        if is_up_to_date(self.version, tag) or is_same_version(self.version, clean_title):
+            self.update_status.config(text=f"Your MTF ShadowRacket is up to date ({self.version})", fg=C_OK)
+            self.update_action_btn.pack_forget()
+            self.release_btn.pack_forget()
+            return
+        if not asset_url:
+            self.update_status.config(text=f"Update found ({clean_title}), but Update.zip is missing.", fg=C_WARN)
+            self.update_action_btn.pack_forget()
+            self.release_btn.config(text="VIEW RELEASE NOTES")
+            self.release_btn.pack(side=tk.LEFT, padx=(10, 0))
+            return
+        self.update_status.config(text=f"Update available: {clean_title} — installing…", fg=C_WARN)
+        self.update_action_btn.config(state=tk.DISABLED, text="AUTO-INSTALLING…")
+        self.update_action_btn.pack(side=tk.LEFT, padx=(10, 0))
+        self.release_btn.config(text="VIEW RELEASE NOTES")
+        self.release_btn.pack(side=tk.LEFT, padx=(10, 0))
+        if self.auto_install_updates:
+            self.after(400, lambda: self.apply_latest_update(auto=True))
+
+    def open_latest_release(self) -> None:
+        url = self.latest_release["page"] if (self.latest_release and self.latest_release.get("page")) else RELEASES_URL
+        webbrowser.open(url)
+
+    def apply_latest_update(self, auto: bool = False) -> None:
+        if getattr(self, "update_in_progress", False) or not self.latest_release:
+            return
+        warning = game_process_warning(self.root_dir, "applying a launcher/game update")
+        if warning:
+            messagebox.showwarning("Close the Game First", warning, parent=self)
+            return
+        title = self.latest_release.get("title", "MTF ShadowRacket Update")
+        if not auto and not messagebox.askyesno(
+            "Install MTF ShadowRacket Update",
+            f"Download and install {title} now?\n\nThis updates MTFLauncher and toolchain files. "
+            "Your dump, saves, and personal mtf.ini stay local.",
+            parent=self,
+        ):
+            return
+        if not self.latest_release.get("asset_url") or not self.latest_release.get("asset_name"):
+            self.update_status.config(text="Update.zip download URL is missing.", fg=C_BAD)
+            return
+        self.update_in_progress = True
+        self._auto_installing = bool(auto)
+        self.update_action_btn.config(state=tk.DISABLED, text="DOWNLOADING UPDATE…")
+        self.update_status.config(text="Connecting to GitLab Releases…", fg=C_TEXT_DIM)
+        threading.Thread(target=self._download_update_worker, args=(self.latest_release.copy(),), daemon=True).start()
+
+    def _download_update_worker(self, release: dict) -> None:
+        stage = None
+        try:
+            target = self.root_dir
+            target.mkdir(parents=True, exist_ok=True)
+            stage = Path(tempfile.mkdtemp(prefix=".mtf-update-", dir=str(target)))
+            archive_path = stage / release["asset_name"]
+            request = urllib.request.Request(
+                release["asset_url"],
+                headers={"User-Agent": "MTFLauncher", "Accept": "application/octet-stream"},
+            )
+            with urllib.request.urlopen(request, timeout=120) as response, archive_path.open("wb") as output:
+                total = int(response.headers.get("Content-Length", "0") or 0)
+                downloaded = 0
+                while True:
+                    block = response.read(1024 * 1024)
+                    if not block:
+                        break
+                    output.write(block)
+                    downloaded += len(block)
+                    if total:
+                        percent = min(100, downloaded * 100 // total)
+                        self._set_update_status(f"Downloading update… {percent}%", C_TEXT_DIM)
+            self._set_update_status("Validating update archive…", C_TEXT_DIM)
+            files = extract_update_archive(archive_path, stage)
+            archive_path.unlink(missing_ok=True)
+            lower = {f.casefold() for f in files}
+            if "mtflauncher.exe" not in lower:
+                raise ValueError("The validated update archive is missing MTFLauncher.exe.")
+            self.after(0, lambda: self._update_ready(release, stage, files))
+        except Exception as exc:
+            if stage:
+                shutil.rmtree(stage, ignore_errors=True)
+            detail = str(exc)
+            self.after(0, lambda: self._update_failed(detail))
+
+    def _set_update_status(self, text: str, color: str) -> None:
+        try:
+            self.after(0, lambda: self.update_status.config(text=text, fg=color))
+        except tk.TclError:
+            pass
+
+    def _update_failed(self, detail: str) -> None:
+        self.update_in_progress = False
+        self.update_action_btn.config(state=tk.NORMAL, text="INSTALL UPDATE")
+        self.update_status.config(text=f"Update failed:\n{detail[:160]}", fg=C_BAD)
+
+    def _update_ready(self, release: dict, stage: Path, files: list[str]) -> None:
+        title = release.get("title", "MTF ShadowRacket Update")
+        auto = getattr(self, "_auto_installing", False)
+        if not auto and not messagebox.askyesno(
+            "Update Ready",
+            f"{title} is downloaded and verified.\n\nInstall it now? The launcher will close, apply the files, and restart automatically.",
+            parent=self,
+        ):
+            shutil.rmtree(stage, ignore_errors=True)
+            self.update_in_progress = False
+            self.update_action_btn.config(state=tk.NORMAL, text="INSTALL UPDATE")
+            self.update_status.config(text="Update downloaded; installation cancelled.", fg=C_TEXT_DIM)
+            return
+        try:
+            self._start_update_relauncher(stage, title)
+            os._exit(0)
+        except Exception as exc:
+            shutil.rmtree(stage, ignore_errors=True)
+            self._update_failed(str(exc))
+
+    def _start_update_relauncher(self, stage: Path, title: str) -> None:
+        def ps_quote(value: object) -> str:
+            return "'" + str(value).replace("'", "''") + "'"
+
+        game_path = ps_quote(self.root_dir.resolve())
+        stage_path = ps_quote(Path(stage).resolve())
+        title_text = ps_quote(title)
+        script = f"""
+$ErrorActionPreference = 'Stop'
+$game = {game_path}
+$stage = {stage_path}
+$rollback = Join-Path $stage '_rollback'
+New-Item -ItemType Directory -Force -Path $rollback | Out-Null
+$changed = [System.Collections.Generic.List[string]]::new()
+try {{
+    Wait-Process -Id {os.getpid()} -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 800
+    Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object {{
+        $name = $_.Name
+        if ($name.StartsWith('_') -or $name.EndsWith('.tmp') -or $name.EndsWith('.zip')) {{ return }}
+        $rel = $_.FullName.Substring($stage.Length).TrimStart('\\','/')
+        if ($rel.StartsWith('_rollback', [StringComparison]::OrdinalIgnoreCase)) {{ return }}
+        $source = $_.FullName
+        $target = Join-Path $game $rel
+        $backup = Join-Path $rollback $rel
+        $backupDir = Split-Path -Parent $backup
+        if (-not (Test-Path -LiteralPath $backupDir)) {{ New-Item -ItemType Directory -Force -Path $backupDir | Out-Null }}
+        $targetDir = Split-Path -Parent $target
+        if (-not (Test-Path -LiteralPath $targetDir)) {{ New-Item -ItemType Directory -Force -Path $targetDir | Out-Null }}
+        if (Test-Path -LiteralPath $target -PathType Leaf) {{ Copy-Item -LiteralPath $target -Destination $backup -Force }}
+        $changed.Add($rel)
+        $newFile = $target + '.update-new'
+        Copy-Item -LiteralPath $source -Destination $newFile -Force
+        Move-Item -LiteralPath $newFile -Destination $target -Force
+    }}
+}} catch {{
+    try {{ Add-Type -AssemblyName System.Windows.Forms }} catch {{}}
+    for ($i = $changed.Count - 1; $i -ge 0; $i--) {{
+        $rel = $changed[$i]; $target = Join-Path $game $rel; $backup = Join-Path $rollback $rel
+        if (Test-Path -LiteralPath $backup -PathType Leaf) {{ Copy-Item -LiteralPath $backup -Destination $target -Force }}
+        else {{ Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue }}
+    }}
+    [System.Windows.Forms.MessageBox]::Show(('Update failed and changes were rolled back: ' + $_.Exception.Message), 'Update Failed') | Out-Null
+    exit 1
+}}
+try {{ Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show(({title_text} + ' installed successfully. The launcher will restart.'), 'Update Complete') | Out-Null }} catch {{}}
+$targetLauncher = Join-Path $game 'MTFLauncher.exe'
+if (Test-Path -LiteralPath $targetLauncher -PathType Leaf) {{
+    Start-Process -FilePath $targetLauncher -WorkingDirectory $game
+}}
+Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+"""
+        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0)
+        subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-EncodedCommand",
+                encoded,
+            ],
+            cwd=str(self.root_dir),
+            creationflags=flags,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
     def _capture_shot_and_exit(self) -> None:
         try:
             self.update_idletasks()
@@ -1247,7 +1695,7 @@ def main() -> int:
     args = ap.parse_args()
 
     set_windows_app_id()
-    app = MTFLauncherApp(initial_tab=args.tab, shot_path=args.shot)
+    app = MTFLauncherApp(initial_tab=args.tab, shot_path=args.shot, skip_update_check=args.check)
     if args.check:
         app.update_idletasks()
         app.destroy()

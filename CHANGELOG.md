@@ -4,24 +4,30 @@
 
 MTF-ShadowRacket Alpha 0.1.2
 
-Dump setup follows a simple rule: if a base dump is present, overlay base+update; if not, use the update or `.nup` alone. Testers with update-only trees (common for emulators) no longer need a separate parent base folder. Errors no longer push “select the parent dump” as the fix.
+This hotfix makes update-only and NUP-only Mario Tennis Fever 1.1.1 dumps first-class for setup: complete update trees verify and build without a separate base folder, while base+update overlays still apply when both are present. MTFLauncher checks GitLab Releases and can install the latest Update.zip automatically. Personal dumps, saves, and mtf.ini stay on the PC.
 
 ■ Major Updates
 
 - Update-only ExeFS / NUP paths are first-class: complete update trees verify without a base folder.
 - `tools/extract_nup.py --overlay-update` overlays a matching-title base when present, otherwise extracts the update alone.
 - Clearer missing-module messages (e.g. `subsdk0`) that do not require a parent base dump.
+- MTFLauncher checks GitLab Releases (`permalink/latest`) and auto-installs `SteelTemple-MTF-ShadowRacket-*-Update.zip` when a newer build is available.
 
 ■ Bug Fixes
 
-- Fixed Portable Alpha 0.1.1 messaging that told update-only users to select a parent dump after Browse .NUP… / `work\nup-extract`.
+- Fixed Portable Alpha 0.1.1 messaging that directed update-only setups to a parent dump after Browse .NUP… / `work\nup-extract`.
 - NUP overlay now matches the update’s title ID when choosing a base package (avoids wrong-title bases in multi-game containers).
+
+■ Known Issues
+
+- Far-distance Lakitu shadows during wide camera shots can still cull early at range.
+- Minor graphical and gameplay issues remain in some modes.
 
 ■ Install & Update
 
-- **New install:** Run `SteelTemple-MTF-ShadowRacket-Alpha-0.1.2-Full-Setup-Wizard.exe`, open **MTFLauncher**, pick your dump folder or `.nup`, click **Verify & Build mtf.exe**, and press **Play**.
+- **New install:** Run `SteelTemple-MTF-ShadowRacket-Alpha-0.1.2-Full-Setup-Wizard.exe`, open **MTFLauncher**, pick your Mario Tennis Fever 1.1.1 dump folder, NUP-extracted tree, or `.nup`, click **Verify & Build mtf.exe**, and press **Play**.
 - **Portable:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.2-Portable-StandAlone.zip` anywhere and launch `MTFLauncher.exe`.
-- **Update:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.2-Update.zip` over an existing folder or run the Setup Wizard over it.
+- **Update:** Apply `SteelTemple-MTF-ShadowRacket-Alpha-0.1.2-Update.zip` over an existing Alpha 0.1.1 (or later) folder, or run the Setup Wizard over it. From Alpha 0.1.2 onward, MTFLauncher can pull Update.zip from GitLab Releases automatically. Dumps, saves, and personal `mtf.ini` stay on the PC.
 
 ## MTF-ShadowRacket Alpha 0.1.1
 
