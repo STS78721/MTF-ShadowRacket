@@ -2137,7 +2137,30 @@ static uint32_t se_find(uint64_t ev) {
 }
 
 void kern_bind_system_event(Cpu *c, uint64_t ev, int autoclear) {
-    if (se_find(ev)) return;
+    if (se_find(ev)) {
+        // nn::os::InitializeMultiWaitHolder aborts unless the byte at +0x28 is 1 (auto-clear) or 2
+        // (manual). A rebuilt guest object (MTF court-preview decoders reuse the address) is zeroed,
+        // so the previous binding is not an event anymore.
+        uint8_t st = 0;
+        if (plat_mem_readable(ev + 0x28, 1)) st = *(uint8_t *)(uintptr_t)(ev + 0x28);
+        if (st == 1 || st == 2) return;
+        plat_mutex_lock(&g_se_lock);
+        uint32_t old = 0;
+        for (int i = 0; i < g_nse; i++)
+            if (g_se[i].ev == ev) {
+                old = g_se[i].wh;
+                g_se[i] = g_se[--g_nse];
+                break;
+            }
+        plat_mutex_unlock(&g_se_lock);
+        if (old) handle_close(old);
+        static int logged;
+        if (!logged) {
+            logged = 1;
+            rt_log("kern: system event %#llx rebuilt (guest object reused, state %u)",
+                   (unsigned long long)ev, st);
+        }
+    }
     if (!tcur || !c) rt_fatal("kern_bind_system_event(%#llx) on a host thread", (unsigned long long)ev);
     static uint64_t create, getw;
     if (!create) {

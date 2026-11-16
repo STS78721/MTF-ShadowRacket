@@ -1,2 +1,8 @@
 # Code patches for Mario Tennis Fever 1.1.1 main (recomp/patches.py). Each original word is checked against main.
 # Mario Tennis Fever 1.1.1 lifts with zero instruction errors out of the box.
+
+set mtf_res NS2_PATCH_MTF_RES 0
+
+# Internal 16:9 frame resolution (resolution.c res_init writes packed (h<<16)|w at patch_page+64):
+# At subsdk0+0x125eb98 (L_700205eb98 in f_700205e8fc), override res_desc+0x1c/0x1e and w9 before comparing self+0x108.
+site mtf_res subsdk0 125eb98 b9410a6a @page:x9 b9404129 b9001e89 53003d29 b9410a6a

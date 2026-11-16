@@ -635,7 +635,16 @@ int vk_astc_record(VkCommandBuffer cb, VkBuffer src, VkDeviceSize src_size, cons
 }
 
 int vk_deswizzle_gpu_on(void) {
-    if (!cfg_bool("NS2_GPU_DESWIZZLE")) return 0;
+    static uint64_t cfg_cache;
+    unsigned ver = cfg_version();
+    uint64_t cval = __atomic_load_n(&cfg_cache, __ATOMIC_RELAXED);
+    if ((cval & 2u) && (uint32_t)(cval >> 2) == ver) {
+        if (!(cval & 1u)) return 0;
+    } else {
+        int on = cfg_bool("NS2_GPU_DESWIZZLE");
+        __atomic_store_n(&cfg_cache, ((uint64_t)ver << 2) | 2u | (on ? 1u : 0u), __ATOMIC_RELAXED);
+        if (!on) return 0;
+    }
     VkCtx *c = vk_ctx();
     if (!c) return 0;
     plat_mutex_lock_shared(&g_lock);

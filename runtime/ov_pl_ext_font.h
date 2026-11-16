@@ -292,13 +292,14 @@ static void es_circle_badge(ExtShape *s, int filled) {
 }
 
 static void es_shoulder_badge(ExtShape *s, int is_right, int filled) {
-    double rtl = is_right ? 170.0 : 580.0;
-    double rtr = is_right ? 580.0 : 170.0;
-    es_rrect4(s, 104.0, 88.0, 1944.0, 1368.0, rtl, rtr, 140.0, 140.0, 1);
+    // Asymmetric top corners mimic the physical shoulder: a sharper outer top "tab" and a rounder inner top.
+    double rtl = is_right ? 120.0 : 620.0;
+    double rtr = is_right ? 620.0 : 120.0;
+    es_rrect4(s, 80.0, 72.0, 1968.0, 1384.0, rtl, rtr, 160.0, 160.0, 1);
     if (!filled) {
-        double itl = is_right ? 80.0 : 450.0;
-        double itr = is_right ? 450.0 : 80.0;
-        es_rrect4(s, 244.0, 228.0, 1804.0, 1228.0, itl, itr, 60.0, 60.0, 0);
+        double itl = is_right ? 60.0 : 480.0;
+        double itr = is_right ? 480.0 : 60.0;
+        es_rrect4(s, 230.0, 220.0, 1818.0, 1236.0, itl, itr, 70.0, 70.0, 0);
     }
 }
 
@@ -454,13 +455,13 @@ static void es_controller_icon(ExtShape *s, int kind) {
 
 static int build_nintendo_glyph(uint16_t cp, ExtShape *s) {
     es_init(s, 2048);
-    // Legacy DS/3DS/WiiU aliases U+E000..U+E006
-    if (cp == 0xE000) cp = 0xE0A0;
-    else if (cp == 0xE001) cp = 0xE0A1;
-    else if (cp == 0xE002) cp = 0xE0A2;
-    else if (cp == 0xE003) cp = 0xE0A3;
-    else if (cp == 0xE004) cp = 0xE0A4;
-    else if (cp == 0xE005) cp = 0xE0A5;
+    // Legacy DS/3DS/WiiU aliases U+E000..U+E006 -> solid (E0Ex) Switch glyphs used on dark prompt bars.
+    if (cp == 0xE000) cp = 0xE0E0;
+    else if (cp == 0xE001) cp = 0xE0E1;
+    else if (cp == 0xE002) cp = 0xE0E2;
+    else if (cp == 0xE003) cp = 0xE0E3;
+    else if (cp == 0xE004) cp = 0xE0E4;
+    else if (cp == 0xE005) cp = 0xE0E5;
     else if (cp == 0xE006) cp = 0xE0D0;
 
     switch (cp) {
@@ -471,19 +472,23 @@ static int build_nintendo_glyph(uint16_t cp, ExtShape *s) {
             es_rect(s, 944, 560, 1104, 1120, 1);
             return 1;
 
-        // Filled & Outlined A, B, X, Y
-        case 0xE0A0: case 0xE0E0: { int f = (cp == 0xE0A0); es_circle_badge(s, f); es_letter(s, 'A', 1024, 728, 1.0, !f); return 1; }
-        case 0xE0A1: case 0xE0E1: { int f = (cp == 0xE0A1); es_circle_badge(s, f); es_letter(s, 'B', 1024, 728, 1.0, !f); return 1; }
-        case 0xE0A2: case 0xE0E2: { int f = (cp == 0xE0A2); es_circle_badge(s, f); es_letter(s, 'X', 1024, 728, 1.0, !f); return 1; }
-        case 0xE0A3: case 0xE0E3: { int f = (cp == 0xE0A3); es_circle_badge(s, f); es_letter(s, 'Y', 1024, 728, 1.0, !f); return 1; }
+        // Button pairs: U+E0Ex = solid white badges with letter cut-outs (dark UI / title "Press L+R").
+        // U+E0Ax = outline badges with solid letters (light UI). Nintendo's FontNintendoExtended uses the
+        // E0E* block on black prompt bars; we previously had the filled/outline sense inverted, which made
+        // MTF's shoulder icons look like hollow rounded rectangles instead of solid L/R pads.
+        case 0xE0A0: case 0xE0E0: { int f = (cp == 0xE0E0); es_circle_badge(s, f); es_letter(s, 'A', 1024, 728, 1.0, !f); return 1; }
+        case 0xE0A1: case 0xE0E1: { int f = (cp == 0xE0E1); es_circle_badge(s, f); es_letter(s, 'B', 1024, 728, 1.0, !f); return 1; }
+        case 0xE0A2: case 0xE0E2: { int f = (cp == 0xE0E2); es_circle_badge(s, f); es_letter(s, 'X', 1024, 728, 1.0, !f); return 1; }
+        case 0xE0A3: case 0xE0E3: { int f = (cp == 0xE0E3); es_circle_badge(s, f); es_letter(s, 'Y', 1024, 728, 1.0, !f); return 1; }
 
-        // L, R, ZL, ZR, SL, SR
-        case 0xE0A4: case 0xE0E4: { int f = (cp == 0xE0A4); es_shoulder_badge(s, 0, f); es_letter(s, 'L', 1044, 718, 0.88, !f); return 1; }
-        case 0xE0A5: case 0xE0E5: { int f = (cp == 0xE0A5); es_shoulder_badge(s, 1, f); es_letter(s, 'R', 1004, 718, 0.88, !f); return 1; }
-        case 0xE0A6: case 0xE0E6: { int f = (cp == 0xE0A6); es_trigger_badge(s, f); es_letter(s, 'Z', 710, 728, 0.78, !f); es_letter(s, 'L', 1350, 728, 0.78, !f); return 1; }
-        case 0xE0A7: case 0xE0E7: { int f = (cp == 0xE0A7); es_trigger_badge(s, f); es_letter(s, 'Z', 700, 728, 0.78, !f); es_letter(s, 'R', 1345, 728, 0.78, !f); return 1; }
-        case 0xE0A8: case 0xE0E8: { int f = (cp == 0xE0A8); es_pill_badge(s, f); es_letter(s, 'S', 720, 728, 0.72, !f); es_letter(s, 'L', 1345, 728, 0.72, !f); return 1; }
-        case 0xE0A9: case 0xE0E9: { int f = (cp == 0xE0A9); es_pill_badge(s, f); es_letter(s, 'S', 710, 728, 0.72, !f); es_letter(s, 'R', 1340, 728, 0.72, !f); return 1; }
+        // L, R, ZL, ZR, SL, SR -- always solid pads with letter cut-outs. MTF's title "Press L+R" sits on a
+        // black bar and may use either E0Ax or E0Ex codes; outline rings read as hollow gray badges there.
+        case 0xE0A4: case 0xE0E4: { es_shoulder_badge(s, 0, 1); es_letter(s, 'L', 1044, 718, 0.88, 0); return 1; }
+        case 0xE0A5: case 0xE0E5: { es_shoulder_badge(s, 1, 1); es_letter(s, 'R', 1004, 718, 0.88, 0); return 1; }
+        case 0xE0A6: case 0xE0E6: { es_trigger_badge(s, 1); es_letter(s, 'Z', 710, 728, 0.78, 0); es_letter(s, 'L', 1350, 728, 0.78, 0); return 1; }
+        case 0xE0A7: case 0xE0E7: { es_trigger_badge(s, 1); es_letter(s, 'Z', 700, 728, 0.78, 0); es_letter(s, 'R', 1345, 728, 0.78, 0); return 1; }
+        case 0xE0A8: case 0xE0E8: { es_pill_badge(s, 1); es_letter(s, 'S', 720, 728, 0.72, 0); es_letter(s, 'L', 1345, 728, 0.72, 0); return 1; }
+        case 0xE0A9: case 0xE0E9: { es_pill_badge(s, 1); es_letter(s, 'S', 710, 728, 0.72, 0); es_letter(s, 'R', 1340, 728, 0.72, 0); return 1; }
 
         // 4-button diamond group & directional highlights (nx_a, nx_b, nx_x, nx_y)
         case 0xE0AA: es_four_dots(s, -1, 1); return 1;
@@ -493,33 +498,40 @@ static int build_nintendo_glyph(uint16_t cp, ExtShape *s) {
         case 0xE0AD: es_four_dots(s, 2, 0); return 1; // North (nx_x)
         case 0xE0AE: es_four_dots(s, 3, 0); return 1; // West (nx_y)
 
-        // Directional arrow buttons
-        case 0xE0AF: case 0xE0EB: es_dir_circle(s, 0, cp == 0xE0AF); return 1;
-        case 0xE0B0: case 0xE0EC: es_dir_circle(s, 1, cp == 0xE0B0); return 1;
-        case 0xE0B1: case 0xE0ED: es_dir_circle(s, 2, cp == 0xE0B1); return 1;
-        case 0xE0B2: case 0xE0EE: es_dir_circle(s, 3, cp == 0xE0B2); return 1;
+        // Directional arrow buttons (E0Ex / E0Fx family = solid on dark UI)
+        case 0xE0AF: case 0xE0EB: es_dir_circle(s, 0, cp == 0xE0EB); return 1;
+        case 0xE0B0: case 0xE0EC: es_dir_circle(s, 1, cp == 0xE0EC); return 1;
+        case 0xE0B1: case 0xE0ED: es_dir_circle(s, 2, cp == 0xE0ED); return 1;
+        case 0xE0B2: case 0xE0EE: es_dir_circle(s, 3, cp == 0xE0EE); return 1;
 
-        // Plus & Minus (bare and circled)
-        case 0xE0B3: es_plus(s, 1024, 728, 680, 195, 1); return 1;
-        case 0xE0EF: es_plus(s, 1024, 728, 720, 235, 1); es_plus(s, 1024, 728, 595, 110, 0); return 1;
-        case 0xE0B4: es_rect(s, 344, 533, 1704, 923, 1); return 1;
-        case 0xE0F0: es_rect(s, 304, 493, 1744, 963, 1); es_rect(s, 434, 623, 1614, 833, 0); return 1;
-        case 0xE0B5: case 0xE0F1: { int f = (cp == 0xE0B5); es_circle_badge(s, f); es_plus(s, 1024, 728, 440, 115, !f); return 1; }
-        case 0xE0B6: case 0xE0F2: { int f = (cp == 0xE0B6); es_circle_badge(s, f); es_rect(s, 584, 613, 1464, 843, !f); return 1; }
+        // Plus & Minus button badges. Official FontNintendoExtended U+E0B3/U+E0B4 are the Joy-Con
+        // +/- keys drawn as circle badges (not bare +/- strokes). MTF "End practice" uses those on
+        // outlined white UI -- outline ring + solid symbol. E0EF/E0F0 are the solid cut-out pair for
+        // dark bars. E0B5/E0B6 and E0F1/E0F2 keep the same shapes as the circled aliases.
+        case 0xE0B3: case 0xE0B5: case 0xE0EF: case 0xE0F1: {
+            es_circle_badge(s, 1);
+            es_plus(s, 1024, 728, 440, 115, 0);
+            return 1;
+        }
+        case 0xE0B4: case 0xE0B6: case 0xE0F0: case 0xE0F2: {
+            es_circle_badge(s, 1);
+            es_rect(s, 584, 613, 1464, 843, 0);
+            return 1;
+        }
 
         // Power, Home, Capture
-        case 0xE0B7: case 0xE0F3: es_power_glyph(s, 1, cp == 0xE0B7); return 1;
+        case 0xE0B7: case 0xE0F3: es_power_glyph(s, 1, cp == 0xE0F3); return 1;
         case 0xE0B8: es_power_glyph(s, 0, 1); return 1;
-        case 0xE0B9: case 0xE0F4: es_home_badge(s, cp == 0xE0B9); return 1;
-        case 0xE0BA: case 0xE0F5: es_capture_badge(s, cp == 0xE0BA); return 1;
+        case 0xE0B9: case 0xE0F4: es_home_badge(s, cp == 0xE0F4); return 1;
+        case 0xE0BA: case 0xE0F5: es_capture_badge(s, cp == 0xE0F5); return 1;
 
         // Control Sticks
-        case 0xE0C0: case 0xE100: es_stick_badge(s, 0,   0, 0, cp == 0xE0C0); return 1;
-        case 0xE0C1: case 0xE101: es_stick_badge(s, 'L', 0, 0, cp == 0xE0C1); return 1;
-        case 0xE0C2: case 0xE102: es_stick_badge(s, 'R', 0, 0, cp == 0xE0C2); return 1;
-        case 0xE0C3: case 0xE103: es_stick_badge(s, 0,   0, 1, cp == 0xE0C3); return 1;
-        case 0xE0C4: case 0xE104: es_stick_badge(s, 'L', 1, 0, cp == 0xE0C4); return 1;
-        case 0xE0C5: case 0xE105: es_stick_badge(s, 'R', 1, 0, cp == 0xE0C5); return 1;
+        case 0xE0C0: case 0xE100: es_stick_badge(s, 0,   0, 0, cp == 0xE100); return 1;
+        case 0xE0C1: case 0xE101: es_stick_badge(s, 'L', 0, 0, cp == 0xE101); return 1;
+        case 0xE0C2: case 0xE102: es_stick_badge(s, 'R', 0, 0, cp == 0xE102); return 1;
+        case 0xE0C3: case 0xE103: es_stick_badge(s, 0,   0, 1, cp == 0xE103); return 1;
+        case 0xE0C4: case 0xE104: es_stick_badge(s, 'L', 1, 0, cp == 0xE104); return 1;
+        case 0xE0C5: case 0xE105: es_stick_badge(s, 'R', 1, 0, cp == 0xE105); return 1;
 
         // D-Pad / Cross-Key
         case 0xE0D0: es_dpad_badge(s, 0, 1); return 1;

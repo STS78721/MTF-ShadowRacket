@@ -11,6 +11,13 @@
 #include "nvn_api.h"
 #include "vk.h"
 
+#ifndef NVN_STAGE_TCS
+#define NVN_STAGE_TCS 3
+#endif
+#ifndef NVN_STAGE_TES
+#define NVN_STAGE_TES 4
+#endif
+
 // Dynamic state the next draw must record (VkExec.dirty). vk_exec_record sets them all at the start of each command
 // buffer; the state ops set theirs; vk_exec_draw.c clears what it recorded.
 enum {
@@ -57,6 +64,9 @@ typedef struct VkExec {
     VkFormat pass_color[8], pass_depth, pass_stencil; // attachment formats of the pass (VkPipelineRenderingCreateInfo);
                                                       // VK_FORMAT_UNDEFINED: none
     uint32_t pass_ncolor, pass_samples;               // colorAttachmentCount and rasterization samples of the pass
+    uint32_t pass_draws;                              // draws submitted to the open target (skipped while render is off)
+    float pass_clear;                                 // last depth clear of this target
+    uint8_t pass_cleared;
 
     // ---- fixed-function state (vk_exec.c keeps it; vk_exec_draw.c records it before draws)
     float vp[16][6];                     // OP_VIEWPORTS: x, y, w, h, near, far
@@ -192,3 +202,4 @@ void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload);
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);
 void vk_exec_oq_pass_end(VkExec *ex);
+void vk_exec_mark_depth_cleared(const VkTexImage *img, uint32_t base_layer, uint32_t layers);

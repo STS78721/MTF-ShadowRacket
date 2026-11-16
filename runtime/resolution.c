@@ -37,6 +37,7 @@
 #include "cfg.h"
 #include "game_profile.h"
 #include "host.h"
+#include "platform/platform.h"
 
 #define BASE_W 1920
 #define BASE_H 1080
@@ -44,6 +45,9 @@
 #define SCENE_H 900
 #define DTA_KIB 113664u      // DynamicTextureAllocatorMem, shipped
 #define SCENE_MAX 16384      // per side, up to 16K on modern PC GPUs
+
+int res_mtf_lines(void);                 // defined with the MTF wrap below
+void res_mtf_size(uint32_t *w, uint32_t *h);
 
 static struct {
     int decided;
@@ -232,8 +236,26 @@ static uint64_t pack(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
 void res_init(void) {
     if (!game_profile_has(GAME_QUIRK_TOTK_PATCH_RES)) {
         const RtGameProfile *gp = game_profile();
+        int lines = (gp->short_name && !strcmp(gp->short_name, "mtf")) ? res_mtf_lines() : 0;
         rt_log("resolution: Universal NS2 live hooks active for %s (Docked %ux%u, Handheld %ux%u)",
                gp->display_name, gp->docked_w, gp->docked_h, gp->handheld_w, gp->handheld_h);
+        if (gp->short_name && !strcmp(gp->short_name, "mtf")) {
+            int mtf_res = rt_patch_set("mtf_res");
+            if (lines > 0) {
+                uint32_t tw = ((uint32_t)lines * 16u / 9u) & ~1u;
+                uint32_t th = (uint32_t)lines & ~1u;
+                uint32_t packed = (th << 16) | tw;
+                if (mtf_res >= 0) {
+                    memcpy(rt_patch_page() + 64, &packed, sizeof packed);
+                    rt_patch_switch(mtf_res, 1);
+                }
+                rt_log("resolution: MTF internal frame %d lines (%ux%u, 16:9); Original keeps the console size", lines,
+                       tw, th);
+            } else {
+                if (mtf_res >= 0) rt_patch_switch(mtf_res, 0);
+                rt_log("resolution: MTF internal frame unchanged (NS2_RESOLUTION=original)");
+            }
+        }
         return;
     }
     if (!bigger()) {
@@ -325,6 +347,37 @@ void res_wanted(unsigned out[2]) {
     out[0] = R.ow, out[1] = R.oh;
 }
 
+// Display size reported to the guest (nn::oe / nn::vi). TotK uses OUTPUT_RES. MTF/MKW-style titles compose their
+// own frame and present crop — lying that the display is 4K while the crop is still 1440p is what looked zoomed
+// on the title screen (center of a wider virtual display). Prefer the live crop, then NS2_RESOLUTION, then docked.
+void res_display_size(unsigned out[2]) {
+    if (!out) return;
+    if (game_profile_has(GAME_QUIRK_TOTK_PATCH_RES)) {
+        res_wanted(out);
+        if (!out[0] || !out[1]) {
+            out[0] = game_profile()->docked_w;
+            out[1] = game_profile()->docked_h;
+        }
+        return;
+    }
+    uint32_t cw = __atomic_load_n(&g_live_crop_w, __ATOMIC_RELAXED);
+    uint32_t ch = __atomic_load_n(&g_live_crop_h, __ATOMIC_RELAXED);
+    if (cw >= 640 && ch >= 360) {
+        out[0] = cw;
+        out[1] = ch;
+        return;
+    }
+    uint32_t tw = 0, th = 0;
+    res_mtf_size(&tw, &th);
+    if (tw && th) {
+        out[0] = tw;
+        out[1] = th;
+        return;
+    }
+    out[0] = game_profile()->docked_w;
+    out[1] = game_profile()->docked_h;
+}
+
 void res_sizes(unsigned out[2], unsigned scene[2]) {
     decide();
     out[0] = R.ow ? R.ow : BASE_W;
@@ -393,6 +446,169 @@ void res_live_snapshot(unsigned win_sz[2], unsigned crop_sz[2], unsigned out_tgt
         const char *op = cfg_value("NS2_OPERATION_MODE");
         *handheld = (op && !strcmp(op, "handheld")) ? 1 : 0;
     }
+}
+
+// ---- MTF internal frame resolution (NS2_RESOLUTION), same idea as MKW's GParam line counts.
+// Mario Tennis Fever picks a 16:9 frame in subsdk0 f_700205e8fc, then scale mode 1/2 at
+// *(*(0x7002560000+0xef0)) shrinks it (mode 2 -> 2/3). Stock docked ends at 1706x960.
+#define MTF_LINES_MAX 1440
+
+static volatile uint32_t g_mtf_base_w, g_mtf_base_h, g_mtf_tgt_w, g_mtf_tgt_h;
+
+int res_mtf_lines(void) {
+    const char *v = cfg_value("NS2_RESOLUTION");
+    if (!v || !strcmp(v, "original")) return 0;
+    int lines = atoi(v);
+    if (lines < 360) return 0;
+    return lines > MTF_LINES_MAX ? MTF_LINES_MAX : lines & ~1;
+}
+
+void res_mtf_size(uint32_t *w, uint32_t *h) {
+    int lines = res_mtf_lines();
+    if (lines <= 0) {
+        if (w) *w = 0;
+        if (h) *h = 0;
+        return;
+    }
+    uint32_t th = (uint32_t)lines & ~1u;
+    uint32_t tw = ((uint32_t)lines * 16u / 9u) & ~1u;
+    if (w) *w = tw;
+    if (h) *h = th;
+}
+
+void res_mtf_target(uint32_t *w, uint32_t *h) {
+    uint32_t tw = __atomic_load_n(&g_mtf_tgt_w, __ATOMIC_RELAXED);
+    uint32_t th = __atomic_load_n(&g_mtf_tgt_h, __ATOMIC_RELAXED);
+    if (w) *w = tw;
+    if (h) *h = th;
+}
+
+void res_mtf_base(uint32_t *w, uint32_t *h) {
+    uint32_t bw = __atomic_load_n(&g_mtf_base_w, __ATOMIC_RELAXED);
+    uint32_t bh = __atomic_load_n(&g_mtf_base_h, __ATOMIC_RELAXED);
+    if (w) *w = bw;
+    if (h) *h = bh;
+}
+
+void res_mtf_scale(float *sx, float *sy) {
+    uint32_t bw = __atomic_load_n(&g_mtf_base_w, __ATOMIC_RELAXED);
+    uint32_t bh = __atomic_load_n(&g_mtf_base_h, __ATOMIC_RELAXED);
+    uint32_t tw = __atomic_load_n(&g_mtf_tgt_w, __ATOMIC_RELAXED);
+    uint32_t th = __atomic_load_n(&g_mtf_tgt_h, __ATOMIC_RELAXED);
+    float x = 1.f, y = 1.f;
+    if (bw >= 640 && bh >= 360 && tw > bw && th > bh) {
+        x = (float)tw / (float)bw;
+        y = (float)th / (float)bh;
+    }
+    if (sx) *sx = x;
+    if (sy) *sy = y;
+}
+
+static int mtf_is_frame_dim(uint32_t w, uint32_t h) {
+    static const uint32_t dims[][2] = {
+        {1706, 960}, {1920, 1080}, {2560, 1440}, {3840, 2160}, {1600, 900}, {2134, 1200},
+    };
+    for (size_t i = 0; i < sizeof dims / sizeof dims[0]; i++)
+        if (w == dims[i][0] && h == dims[i][1]) return 1;
+    uint32_t bw = __atomic_load_n(&g_mtf_base_w, __ATOMIC_RELAXED);
+    uint32_t bh = __atomic_load_n(&g_mtf_base_h, __ATOMIC_RELAXED);
+    if (bw && bh && w == bw && h == bh) return 1;
+    return 0;
+}
+
+extern void __real_f_700205e8fc(Cpu *c) __attribute__((weak));
+
+static void mtf_disable_shrink(void) {
+    if (!plat_mem_readable(0x7002560000ull + 0xef0ull, 8)) return;
+    uint64_t scale_ptr = LD64(0x7002560000ull + 0xef0ull);
+    if (scale_ptr && plat_mem_readable(scale_ptr, 4) && LD32(scale_ptr) != 0)
+        ST32(scale_ptr, 0);
+}
+
+void res_mtf_bump_tex_size(uint32_t *w, uint32_t *h) {
+    if (!w || !h) return;
+    uint32_t tw = __atomic_load_n(&g_mtf_tgt_w, __ATOMIC_RELAXED);
+    uint32_t th = __atomic_load_n(&g_mtf_tgt_h, __ATOMIC_RELAXED);
+    if (!tw || !th) return;
+    if (*w == tw && *h == th) return;
+    if (*w > tw || *h > th) return;
+    if (!mtf_is_frame_dim(*w, *h)) return;
+    static int bumps;
+    if (bumps < 8) {
+        bumps++;
+        rt_log("resolution: MTF host texture %ux%u -> %ux%u", *w, *h, tw, th);
+    }
+    *w = tw;
+    *h = th;
+}
+
+void __wrap_f_700205e8fc(Cpu *c) {
+    int lines = res_mtf_lines();
+    uint64_t self = c->x[0];
+    if (lines > 0) mtf_disable_shrink();
+    if (__real_f_700205e8fc) __real_f_700205e8fc(c);
+    else {
+        GuestFn orig = rt_dispatch_lookup(0x700205e8fcull);
+        if (orig) orig(c);
+    }
+    if (lines > 0) mtf_disable_shrink();
+    if (lines <= 0 || !self) {
+        __atomic_store_n(&g_mtf_base_w, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_mtf_base_h, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_mtf_tgt_w, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_mtf_tgt_h, 0, __ATOMIC_RELAXED);
+        return;
+    }
+    uint32_t was_w = 0, was_h = 0;
+    if (plat_mem_readable(self + 0x108ull, 12)) {
+        was_w = LD32(self + 0x108ull);
+        was_h = LD32(self + 0x10cull);
+    }
+    uint32_t h = (uint32_t)lines & ~1u;
+    uint32_t w = ((uint32_t)lines * 16u / 9u) & ~1u;
+    if (was_w < 640 || was_h < 360) {
+        was_w = w;
+        was_h = h;
+    }
+    __atomic_store_n(&g_mtf_base_w, was_w, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_mtf_base_h, was_h, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_mtf_tgt_w, w, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_mtf_tgt_h, h, __ATOMIC_RELAXED);
+    static uint32_t logged_h;
+    if (logged_h != h) {
+        logged_h = h;
+        rt_log("resolution: MTF frame %ux%u (NS2_RESOLUTION %d, self=%ux%u)", w, h, lines, was_w, was_h);
+    }
+}
+
+void res_mtf_adjust_crop(int tex_w, int tex_h, int *x, int *y, int *w, int *h) {
+    if (!x || !y || !w || !h) return;
+    float sx = 1.f, sy = 1.f;
+    res_mtf_scale(&sx, &sy);
+    uint32_t bw = __atomic_load_n(&g_mtf_base_w, __ATOMIC_RELAXED);
+    uint32_t bh = __atomic_load_n(&g_mtf_base_h, __ATOMIC_RELAXED);
+    uint32_t tw = __atomic_load_n(&g_mtf_tgt_w, __ATOMIC_RELAXED);
+    uint32_t th = __atomic_load_n(&g_mtf_tgt_h, __ATOMIC_RELAXED);
+    if (!bw || !bh || !tw || !th) return;
+    int cw = *w, ch = *h;
+    int already = (cw >= (int)tw - 2 && ch >= (int)th - 2);
+    if (already) return;
+    if (sx <= 1.001f && sy <= 1.001f) return;
+    int near_base = (cw >= (int)(bw * 9 / 10) && cw <= (int)bw + 2 && ch >= (int)(bh * 9 / 10) && ch <= (int)bh + 2);
+    if (!near_base && !(*x == 0 && *y == 0 && cw > 0 && ch > 0)) return;
+    (void)tex_w;
+    (void)tex_h;
+    *x = (int)lroundf((float)*x * sx);
+    *y = (int)lroundf((float)*y * sy);
+    *w = (int)lroundf((float)cw * sx);
+    *h = (int)lroundf((float)ch * sy);
+    if (*w < 1) *w = (int)tw;
+    if (*h < 1) *h = (int)th;
+}
+
+void res_mtf_scale_crop(int crop[4]) {
+    if (!crop) return;
+    res_mtf_adjust_crop(0, 0, &crop[0], &crop[1], &crop[2], &crop[3]);
 }
 
 // ---- Fast Fusion Resolution Scaling Hooks

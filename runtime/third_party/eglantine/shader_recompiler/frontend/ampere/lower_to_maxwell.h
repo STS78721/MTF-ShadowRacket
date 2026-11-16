@@ -2519,10 +2519,7 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 const bool has_lod = lod == 2 || lod == 3 || lod == 6 || lod == 7;
                 const u32 count = coordinates + u32{native_bindless} + (has_lod ? 1 : 0) +
                                   (offsets ? 1 : 0) + (depth_compare ? 1 : 0);
-                const u32 in_a = insn.Bits(60, 1)
-                                     ? (count <= 4 ? (count + 1) / 2 : 4U)
-                                     : (native_bindless ? coordinates
-                                                        : (count > 4 ? 4U : (source_b == 255 ? count : coordinates)));
+                const u32 in_a = count <= 4 && insn.Bits(60, 1) ? (count + 1) / 2 : coordinates;
                 const auto value = [&](u32 i) -> u32 {
                     if (i < in_a) return source_a == 255 ? 255U : source_a + i;
                     return source_b == 255 ? 255U : source_b + (i - in_a);
@@ -2979,7 +2976,7 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 (lod > 3 && lod != 6 && lod != 7) || (depth_compare && mask != 1) || mask == 0 ||
                 (!insn.Bits(60, 1) && count <= 4))
                 return fail(index, "native uniform texture mode");
-            const u32 in_a = count <= 4 ? (count + 1) / 2 : 4;
+            const u32 in_a = count <= 4 ? (count + 1) / 2 : coordinates;
             const auto value = [&](u32 i) -> u32 {
                 if (i < in_a) return source_a == 255 ? 255U : source_a + i;
                 return source_b == 255 ? 255U : source_b + (i - in_a);

@@ -570,9 +570,59 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
 
 void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
 
+static uint64_t depth_layer_mask(uint32_t base_layer, uint32_t layers) {
+    if (base_layer >= 64 || !layers) return 0;
+    uint32_t n = layers > 64 - base_layer ? 64 - base_layer : layers;
+    uint64_t m = n == 64 ? ~0ull : ((1ull << n) - 1ull);
+    return m << base_layer;
+}
+
+void vk_exec_mark_depth_cleared(const VkTexImage *img, uint32_t base_layer, uint32_t layers) {
+    if (!img) return;
+    VkTexImage *m = (VkTexImage *)img;
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+    uint64_t bit = depth_layer_mask(base_layer, layers);
+    if (m->depth_cleared_frame != f) {
+        m->depth_cleared_frame = f;
+        m->depth_cleared_mask = bit;
+    } else {
+        m->depth_cleared_mask |= bit;
+    }
+}
+
+static int depth_needs_auto_clear(const VkExecTarget *d) {
+    if (!d->image || !d->img || d->img->bound || !(d->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) return 0;
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+    if (d->img->depth_cleared_frame != f) return 1;
+    uint64_t bit = depth_layer_mask(d->base_layer, d->layers);
+    return bit ? (d->img->depth_cleared_mask & bit) != bit : 0;
+}
+
 void vk_exec_pass_begin(VkExec *ex) {
     if (ex->in_pass) return;
     resolve_rt(ex);
+    // A private depth-only target the game never clears (MTF sun maps 7168 and 1024) still holds 0 from an
+    // older init, or last frame's depths. LESS writes then fail against 0, and the GREATER sample of that
+    // empty map leaves the court without silhouettes. Clear to the far of the depth range at most once per
+    // frame/layer so multi-pass or split shadow rendering does not wipe earlier passes.
+    if (ex->pass_ncolor == 0 && !ex->pass_cleared && depth_needs_auto_clear(&ex->depth)) {
+        float zfar = ex->depth_range[0] <= ex->depth_range[1] ? ex->depth_range[1] : ex->depth_range[0];
+        VkClearDepthStencilValue v = {zfar, 0};
+        VkImageAspectFlags asp = ex->depth.aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+        barrier_to(ex, NULL, NULL, 0);
+        VkImageSubresourceRange r = {asp, ex->depth.level, 1, ex->depth.base_layer, ex->depth.layers};
+        vkCmdClearDepthStencilImage(ex->cb, ex->depth.image, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &r);
+        ex->recorded++;
+        ex->pass_cleared = 1;
+        ex->pass_clear = zfar;
+        vk_exec_mark_depth_cleared(ex->depth.img, ex->depth.base_layer, ex->depth.layers);
+        vk_texture_gpu_written(ex->depth.tex);
+        static int logged;
+        if (!logged) {
+            logged = 1;
+            rt_log("vk: private depth-only pass cleared to far %.3f (%ux%u)", zfar, ex->depth.width, ex->depth.height);
+        }
+    }
     // Learned targets (VkTexImage.fb_learned) are attached in the feedback layout
     VkImage want[9];
     VkImageAspectFlags wasp[9];
@@ -633,6 +683,28 @@ void vk_exec_pass_end(VkExec *ex) {
         if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
     if (ex->depth.image) {
         vk_texture_gpu_written(ex->depth.tex), tfr_note(&ex->depth, stamp);
+        // A depth target that is not the main frame is a shadow map (or a depth pre-pass of another size). One line
+        // per size says whether that map lives in the game's memory.
+        if (ex->depth.img && (ex->pass_ncolor == 0 || ex->depth.width != ex->pass_w || ex->depth.height != ex->pass_h ||
+                              ex->depth.width < 2560)) {
+            static uint64_t seen[16];
+            static int nseen;
+            uint64_t key = ((uint64_t)ex->depth.width << 32) | ex->depth.height |
+                           ((uint64_t)(ex->depth.img->format & 0xffff) << 48);
+            int known = 0;
+            for (int i = 0; i < nseen; i++)
+                if (seen[i] == key) known = 1;
+            if (!known && nseen < 16) {
+                seen[nseen++] = key;
+                rt_log("vk: depth pass %ux%u target %ux%u fmt %d %s, %u color, %u draws, test %u write %u func %u, "
+                       "range %.3f..%.3f%s%.3f",
+                       ex->pass_w, ex->pass_h, ex->depth.width, ex->depth.height, (int)ex->depth.img->format,
+                       ex->depth.img->bound ? "in guest memory" : "private", ex->pass_ncolor, ex->pass_draws,
+                       (unsigned)ex->pipe.ds.dt, (unsigned)ex->pipe.ds.dw, (unsigned)ex->pipe.ds.df,
+                       ex->depth_range[0], ex->depth_range[1], ex->pass_cleared ? ", clear " : ", no clear",
+                       ex->pass_cleared ? ex->pass_clear : 0.f);
+            }
+        }
     }
 }
 
@@ -770,6 +842,9 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
     }
     if (!asp) return;
     float d = c->depth < 0.0f ? 0.0f : c->depth > 1.0f ? 1.0f : c->depth;
+    ex->pass_clear = d;
+    ex->pass_cleared = 1;
+    if (asp & VK_IMAGE_ASPECT_DEPTH_BIT) vk_exec_mark_depth_cleared(t->img, t->base_layer, t->layers);
     VkClearDepthStencilValue v = {d, (uint32_t)c->stencil & 0xff};
     if (whole_target(ex, t)) {
         vk_exec_barrier(ex);
@@ -791,6 +866,8 @@ static void set_rt(VkExec *ex, const p_set_rt *r) {
     vk_exec_pass_end(ex);
     ex->rt = *r;
     ex->rt_resolved = 0;
+    ex->pass_draws = 0;
+    ex->pass_cleared = 0;
 }
 
 // ---- command buffer parts
@@ -934,16 +1011,23 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
         case OP_DEPTH_CLAMP: ex->pipe.depth_clamp = ((const p_flag *)a)->value != 0; break;
         case OP_RASTER_DISCARD: ex->pipe.raster_discard = ((const p_flag *)a)->value != 0; break;
         case OP_PRIM_RESTART: ex->prim_restart = *(const p_prim_restart *)a; break;
+        case OP_SET_PATCH_SIZE: { int32_t v = ((const p_flag *)a)->value; ex->pipe.patch_size = (uint32_t)(v > 0 ? v : 3); break; }
         case OP_COPY_STRIDE: ex->copy_stride = ((const p_copy_stride *)a)->stride; break;
         case OP_SET_TEX_POOL: ex->tex_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
         case OP_SET_SAMP_POOL: ex->samp_pool = ((const p_set_pool *)a)->pool, ex->tex_serial++; break;
         case OP_BARRIER: vk_exec_barrier(ex); break;
         case OP_WAIT_SYNC: break;   // submit preparation waited before any replay/snapshot; source may be gone
         case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: case OP_UPDATE_UB: case OP_DRAW_IDX_IND: case OP_DRAW_IDX_IND_COUNT:
-        case OP_DISPATCH_IND:
-            if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND || h->op == OP_DRAW_IDX_IND_COUNT)
+        case OP_DISPATCH_IND: {
+            int is_draw = h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND || h->op == OP_DRAW_IDX_IND_COUNT;
+            if (is_draw) {
                 vk_exec_frame.draws_seen++, split_draws++;
+                if (!ex->render_disabled) ex->pass_draws++;
+            }
             if (h->op == OP_DISPATCH || h->op == OP_DISPATCH_IND) vk_exec_frame.dispatches++, split_draws++;
+            vk_exec_op_draw(ex, h->op, a);
+            break;
+        }
         case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
         case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_PUSH_CONST:
             vk_exec_op_draw(ex, h->op, a);

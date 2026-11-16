@@ -331,6 +331,7 @@ static const char *copy_region(VkExec *ex, VkImage image, VkFormat vf, VkImageAs
                              .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
                              .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
                              .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    if (ex->nfbl) vk_exec_barrier(ex);   // exit feedback layout back to GENERAL before copy
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &pre};
     vkCmdPipelineBarrier2(ex->cb, &di);
     VkBufferImageCopy r = {.imageSubresource = {aspect, level, layer, 1}, .imageOffset = {0, 0, (int32_t)z},
@@ -500,7 +501,7 @@ static uint64_t shader_hash(const GfxShader *s) {
 typedef struct { VkPipeline p; uint64_t th; int draws; char *text; } Ent;
 static Ent ents[MAX_ENTS];
 static int nents, ents_over, pass_draws;
-typedef struct { VkImage image; VkFormat format; uint32_t w, h, d; int id, is2d; } Lut;
+typedef struct { VkImage image; VkFormat format; VkImageAspectFlags aspect; uint32_t w, h, d; int id, is2d; } Lut;
 static Lut luts[MAX_LUTS];          // queued for the next pass end or dispatch
 static int nluts;
 static VkImage luts_done[MAX_LUTS];
@@ -512,7 +513,8 @@ static void queue_lut(const VkTexImage *t, int id) {
         if (luts_done[i] == t->image) return;
     if (nluts_done == MAX_LUTS) return;
     luts_done[nluts_done++] = t->image;
-    luts[nluts++] = (Lut){t->image, t->format, t->width, t->height, t->type == VK_IMAGE_TYPE_3D ? t->depth : 1, id,
+    VkImageAspectFlags asp = t->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    luts[nluts++] = (Lut){t->image, t->format, asp, t->width, t->height, t->type == VK_IMAGE_TYPE_3D ? t->depth : 1, id,
                           t->type != VK_IMAGE_TYPE_3D};
 }
 
@@ -534,9 +536,9 @@ static void flush_luts(VkExec *ex, int n) {
         VkFormat bf = block_format(l->format);
         snprintf(name, sizeof name, "pass_%04d_%s%d_%ux%ux%u_%d_%s%s", n, l->is2d ? "tex" : "lut", l->id, l->w, l->h, l->d,
                  (int)l->format, fmt_name(l->format, fn), bf ? "_blocks" : "");
-        const char *why = bf ? copy_region(ex, l->image, bf, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 0,
+        const char *why = bf ? copy_region(ex, l->image, bf, l->aspect, 0, 0, 0,
                                            (VkExtent3D){l->w, l->h, l->d}, (l->w + 3) / 4, (l->h + 3) / 4, l->d, name)
-                             : copy_out(ex, l->image, l->format, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, l->w, l->h, l->d, name);
+                             : copy_out(ex, l->image, l->format, l->aspect, 0, 0, l->w, l->h, l->d, name);
         fprintf(passes_f, "  %s tex %d -> %s.png%s%s\n", l->is2d ? "2D" : "3D", l->id, name, why ? " skipped: " : "",
                 why ? why : "");
     }
@@ -632,6 +634,8 @@ static void describe_bindings(Str *b, const VkExec *ex, const VkPipeInfo *info) 
                    mf == 1 || mf == 3 || mf == 5 ? "L" : "N", mf <= 1 ? "none" : mf >= 4 ? "L" : "N",
                    wrap_name(s.ws), wrap_name(s.wt), wrap_name(s.wr), s.aniso, s.lod_min, s.lod_max, s.lod_bias,
                    s.cmp_mode ? " compare" : "");
+                if (s.ws == NVN_WRAP_MODE_CLAMP_TO_BORDER || s.wt == NVN_WRAP_MODE_CLAMP_TO_BORDER || s.wr == NVN_WRAP_MODE_CLAMP_TO_BORDER)
+                    sp(b, " border (%g,%g,%g,%g)", s.border[0], s.border[1], s.border[2], s.border[3]);
             } else {
                 sp(b, " | samp %d empty (default sampler)", NVN_HANDLE_SAMP(h));
             }

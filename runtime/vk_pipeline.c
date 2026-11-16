@@ -81,7 +81,8 @@ static struct {
     int vs_outs_all;                   // TOTK_VS_OUTS: 0 union of paired fragment inputs, 1 (all) all 32 output locations
     int dyn_vi, dyn_clamp, dyn_poly, dyn_blend_en, dyn_blend_eq, dyn_wmask, dyn_a2c;
     int f_logic_op, f_depth_clamp, f_fill_non_solid, f_dual_src;
-    int f_geometry, f_vertex_stores, f_gs_point_size, f_clip, f_cull;
+    int f_geometry, f_tess, f_vertex_stores, f_gs_point_size, f_clip, f_cull;
+    uint32_t smem_limit;
     int pv_last;                       // provokingVertexLast enabled: NVN's default is the last vertex
     VkShaderStageFlags sg32_stages;    // stages that accept requiredSubgroupSize = 32 (0: not available)
     VkShaderStageFlags subgroup_stages;
@@ -215,6 +216,13 @@ static int ensure_init(void) {
     vkGetPhysicalDeviceProperties2(c->phys, &p2);
     P.max_push = pd.maxPushDescriptors;
     P.max_stage_samplers = p2.properties.limits.maxPerStageDescriptorSamplers;
+    uint32_t smem_limit = p2.properties.limits.maxComputeSharedMemorySize;
+    const char *se = cfg_get("TOTK_VK_SHARED_LIMIT");
+    if (se && *se) {
+        unsigned long v = strtoul(se, NULL, 0);
+        if (v >= 1024 && v < smem_limit) smem_limit = (uint32_t)v;
+    }
+    P.smem_limit = smem_limit;
     P.indep = vk_caps.gpl;
     P.gpl = vk_caps.gpl;
     rt_log(P.gpl ? "vk_pipeline: graphics pipeline library on: a draw whose pipeline is building gets a fast-linked one, "
@@ -254,6 +262,7 @@ static int ensure_init(void) {
     P.f_fill_non_solid = f2.features.fillModeNonSolid;
     P.f_dual_src = f2.features.dualSrcBlend;
     P.f_geometry = f2.features.geometryShader;
+    P.f_tess = f2.features.tessellationShader;
     P.f_vertex_stores = f2.features.vertexPipelineStoresAndAtomics;
     P.f_gs_point_size = f2.features.shaderTessellationAndGeometryPointSize;
     P.f_clip = f2.features.shaderClipDistance;
@@ -566,6 +575,7 @@ static VkFormat target_format(int nvn_format, int *depth, int *stencil) {
 void vk_pipe_state_defaults(VkPipeState *s) {
     memset(s, 0, sizeof *s);
     s->samples = 1;
+    s->patch_size = 3;
     s->prim = NVN_DRAW_PRIMITIVE_TRIANGLES;
     for (int i = 0; i < 8; i++)
         s->blend[i] = (blend_st){(uint64_t)i, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO, NVN_BLEND_FUNC_ONE,
@@ -723,6 +733,183 @@ static uint32_t *spirv_dual_source(const uint32_t *w, uint64_t n, uint64_t *out_
     o[at + 4] = 4u << 16 | SPV_OP_DECORATE, o[at + 5] = w[at + 1], o[at + 6] = SPV_DEC_INDEX, o[at + 7] = 1;
     memcpy(o + at + 8, w + at + 4, (n - at - 4) * 4);
     *out_n = n + 4;
+    return o;
+}
+
+// Forwards active inter-stage varyings (forward_mask) through an SM86 source-passthrough geometry shader: declares
+// Location L Input arrays (`T in_attrL[N]`) and Outputs (`T out_attrL`), appends both to OpEntryPoint Geometry's
+// interface list, and before each OpEmitVertex copies in_attrL[k_id] -> out_attrL using the gl_in index %k_id seen
+// in the preceding loop body. NULL when nothing can be forwarded or the SPIR-V layout does not match.
+static uint32_t *spirv_gs_passthrough_forward(const uint32_t *w, uint64_t n, uint32_t forward_mask,
+                                              const GfxShaderIo prod_io[32], uint64_t *out_n) {
+    enum { OP_TYPE_VECTOR = 23, OP_TYPE_ARRAY = 28, OP_FUNCTION_END = 56, OP_LOAD = 61, OP_STORE = 62,
+           OP_ACCESS_CHAIN = 65, OP_IN_BOUNDS_ACCESS_CHAIN = 66, OP_MEMBER_DECORATE = 72,
+           OP_EMIT_VERTEX = 218, DEC_FLAT = 14, SC_INPUT = 1 };
+    if (!w || n < 5 || !forward_mask || w[0] != 0x07230203u || !w[3] || w[3] > (1u << 20)) return NULL;
+    uint32_t bound = w[3];
+    uint32_t *var_loc = calloc(bound, 4), *ptr_elem = calloc(bound, 4);
+    uint32_t *arr_elem = calloc(bound, 4), *arr_len = calloc(bound, 4);
+    uint8_t *per_vtx_struct = calloc(bound, 1), *ptr_sc = calloc(bound, 1);
+    uint32_t *o = NULL;
+    int bad = !var_loc || !ptr_elem || !arr_elem || !arr_len || !per_vtx_struct || !ptr_sc;
+    uint32_t scalar[3] = {0}, vec4[3] = {0}, ptr_in_v4[3] = {0}, ptr_out_v4[3] = {0};
+    uint32_t gl_in_var = 0, gl_in_len_id = 0, entry = 0, emit_cnt = 0;
+    uint32_t has_in = 0, has_out = 0;
+    uint64_t ep_at = 0, type_at = 0, fn_at = 0;
+    int in_entry = 0;
+    uint32_t cur_k = 0;
+    for (uint64_t i = 5; !bad && i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) { bad = 1; break; }
+        const uint32_t *a = w + i + 1;
+        if (!fn_at) {
+            if (!type_at && ((op >= 19 && op <= 48) || op == SPV_OP_VARIABLE)) type_at = i;
+            if (op == SPV_OP_ENTRY_POINT && len >= 3 && !ep_at) {
+                if (a[0] != 3) bad = 1;
+                ep_at = i, entry = a[1];
+            } else if (op == SPV_OP_DECORATE && len == 4 && a[1] == SPV_DEC_LOCATION && a[0] < bound) {
+                var_loc[a[0]] = a[2] + 1;
+            } else if (op == OP_MEMBER_DECORATE && len == 5 && a[2] == SPV_DEC_BUILTIN && a[3] == 0 && a[0] < bound) {
+                per_vtx_struct[a[0]] = 1;
+            } else if (op == SPV_OP_TYPE_FLOAT && len >= 3 && a[1] == 32 && a[0] < bound) {
+                scalar[GFX_TYPE_FLOAT] = a[0];
+            } else if (op == SPV_OP_TYPE_INT && len >= 4 && a[1] == 32 && a[0] < bound) {
+                scalar[a[2] ? GFX_TYPE_SINT : GFX_TYPE_UINT] = a[0];
+            } else if (op == OP_TYPE_VECTOR && len == 4 && a[2] == 4 && a[0] < bound) {
+                for (int k = 0; k < 3; k++)
+                    if (scalar[k] && a[1] == scalar[k]) vec4[k] = a[0];
+            } else if (op == OP_TYPE_ARRAY && len == 4 && a[0] < bound) {
+                arr_elem[a[0]] = a[1], arr_len[a[0]] = a[2];
+            } else if (op == SPV_OP_TYPE_POINTER && len == 4 && a[0] < bound) {
+                ptr_sc[a[0]] = (uint8_t)a[1], ptr_elem[a[0]] = a[2];
+                for (int k = 0; k < 3; k++) {
+                    if (vec4[k] && a[2] == vec4[k]) {
+                        if (a[1] == SC_INPUT) ptr_in_v4[k] = a[0];
+                        else if (a[1] == SPV_SC_OUTPUT) ptr_out_v4[k] = a[0];
+                    }
+                }
+            } else if (op == SPV_OP_VARIABLE && len >= 4 && a[0] < bound && a[1] < bound) {
+                if (a[2] == SC_INPUT) {
+                    uint32_t pt = ptr_sc[a[0]] == SC_INPUT ? ptr_elem[a[0]] : 0;
+                    if (pt < bound && arr_elem[pt] < bound && per_vtx_struct[arr_elem[pt]])
+                        gl_in_var = a[1], gl_in_len_id = arr_len[pt];
+                    if (var_loc[a[1]] && var_loc[a[1]] <= 32) has_in |= 1u << (var_loc[a[1]] - 1);
+                } else if (a[2] == SPV_SC_OUTPUT) {
+                    if (var_loc[a[1]] && var_loc[a[1]] <= 32) has_out |= 1u << (var_loc[a[1]] - 1);
+                }
+            } else if (op == SPV_OP_FUNCTION) {
+                fn_at = i;
+                in_entry = len >= 3 && a[1] == entry;
+                cur_k = 0;
+            }
+        } else {
+            if (op == SPV_OP_FUNCTION) in_entry = len >= 3 && a[1] == entry, cur_k = 0;
+            else if (op == OP_FUNCTION_END) in_entry = 0, cur_k = 0;
+            else if (in_entry) {
+                if ((op == OP_ACCESS_CHAIN || op == OP_IN_BOUNDS_ACCESS_CHAIN) && len >= 5 && a[2] == gl_in_var && gl_in_var)
+                    cur_k = a[3];
+                else if (op == OP_EMIT_VERTEX) {
+                    if (!cur_k) { bad = 1; break; }
+                    emit_cnt++, cur_k = 0;
+                }
+            }
+        }
+        i += len;
+    }
+    uint32_t mask = forward_mask & ~(has_in | has_out);
+    if (!bad && mask && ep_at && type_at && fn_at && gl_in_var && gl_in_len_id && emit_cnt) {
+        uint8_t kind[32] = {0}, need_k[3] = {0};
+        uint32_t in_var[32] = {0}, out_var[32] = {0};
+        uint32_t arr_id[3] = {0}, ptr_in_arr[3] = {0};
+        uint8_t emit_sc[3] = {0}, emit_v4[3] = {0}, emit_pin[3] = {0}, emit_pout[3] = {0};
+        uint32_t nb = bound, n_vars = 0;
+        uint64_t dec_words = 0, decl_words = 0;
+        for (int l = 0; l < 32; l++) {
+            if (!(mask >> l & 1)) continue;
+            uint8_t k = prod_io && prod_io[l].type <= GFX_TYPE_UINT ? prod_io[l].type : GFX_TYPE_FLOAT;
+            kind[l] = k, need_k[k] = 1, n_vars++;
+            dec_words += 8u + (k != GFX_TYPE_FLOAT ? 6u : 0u);
+        }
+        for (int k = 0; k < 3; k++) {
+            if (!need_k[k]) continue;
+            if (!scalar[k]) scalar[k] = nb++, emit_sc[k] = 1, decl_words += (k == GFX_TYPE_FLOAT ? 3u : 4u);
+            if (!vec4[k]) vec4[k] = nb++, emit_v4[k] = 1, decl_words += 4u;
+            arr_id[k] = nb++, decl_words += 4u;
+            ptr_in_arr[k] = nb++, decl_words += 4u;
+            if (!ptr_in_v4[k]) ptr_in_v4[k] = nb++, emit_pin[k] = 1, decl_words += 4u;
+            if (!ptr_out_v4[k]) ptr_out_v4[k] = nb++, emit_pout[k] = 1, decl_words += 4u;
+        }
+        for (int l = 0; l < 32; l++)
+            if (mask >> l & 1) in_var[l] = nb++, out_var[l] = nb++, decl_words += 8u;
+        uint64_t total = n + 2u * n_vars + dec_words + decl_words + (uint64_t)emit_cnt * n_vars * 12u;
+        o = malloc(total * 4);
+        if (o) {
+            uint64_t d = 0;
+            uint32_t ep_len = w[ep_at] >> 16;
+            memcpy(o + d, w, ep_at * 4), d += ep_at;
+            memcpy(o + d, w + ep_at, ep_len * 4);
+            o[d] = (ep_len + 2u * n_vars) << 16 | SPV_OP_ENTRY_POINT;
+            d += ep_len;
+            for (int l = 0; l < 32; l++)
+                if (mask >> l & 1) o[d++] = in_var[l], o[d++] = out_var[l];
+            uint64_t after_ep = ep_at + ep_len;
+            memcpy(o + d, w + after_ep, (type_at - after_ep) * 4), d += type_at - after_ep;
+            for (int l = 0; l < 32; l++) {
+                if (!(mask >> l & 1)) continue;
+                o[d++] = 4u << 16 | SPV_OP_DECORATE, o[d++] = in_var[l], o[d++] = SPV_DEC_LOCATION, o[d++] = (uint32_t)l;
+                o[d++] = 4u << 16 | SPV_OP_DECORATE, o[d++] = out_var[l], o[d++] = SPV_DEC_LOCATION, o[d++] = (uint32_t)l;
+                if (kind[l] != GFX_TYPE_FLOAT) {
+                    o[d++] = 3u << 16 | SPV_OP_DECORATE, o[d++] = in_var[l], o[d++] = DEC_FLAT;
+                    o[d++] = 3u << 16 | SPV_OP_DECORATE, o[d++] = out_var[l], o[d++] = DEC_FLAT;
+                }
+            }
+            memcpy(o + d, w + type_at, (fn_at - type_at) * 4), d += fn_at - type_at;
+            for (int k = 0; k < 3; k++) {
+                if (!need_k[k]) continue;
+                if (emit_sc[k]) {
+                    if (k == GFX_TYPE_FLOAT) o[d++] = 3u << 16 | SPV_OP_TYPE_FLOAT, o[d++] = scalar[k], o[d++] = 32;
+                    else o[d++] = 4u << 16 | SPV_OP_TYPE_INT, o[d++] = scalar[k], o[d++] = 32, o[d++] = (k == GFX_TYPE_SINT);
+                }
+                if (emit_v4[k]) o[d++] = 4u << 16 | OP_TYPE_VECTOR, o[d++] = vec4[k], o[d++] = scalar[k], o[d++] = 4;
+                o[d++] = 4u << 16 | OP_TYPE_ARRAY, o[d++] = arr_id[k], o[d++] = vec4[k], o[d++] = gl_in_len_id;
+                o[d++] = 4u << 16 | SPV_OP_TYPE_POINTER, o[d++] = ptr_in_arr[k], o[d++] = SC_INPUT, o[d++] = arr_id[k];
+                if (emit_pin[k]) o[d++] = 4u << 16 | SPV_OP_TYPE_POINTER, o[d++] = ptr_in_v4[k], o[d++] = SC_INPUT, o[d++] = vec4[k];
+                if (emit_pout[k]) o[d++] = 4u << 16 | SPV_OP_TYPE_POINTER, o[d++] = ptr_out_v4[k], o[d++] = SPV_SC_OUTPUT, o[d++] = vec4[k];
+            }
+            for (int l = 0; l < 32; l++) {
+                if (!(mask >> l & 1)) continue;
+                uint8_t k = kind[l];
+                o[d++] = 4u << 16 | SPV_OP_VARIABLE, o[d++] = ptr_in_arr[k], o[d++] = in_var[l], o[d++] = SC_INPUT;
+                o[d++] = 4u << 16 | SPV_OP_VARIABLE, o[d++] = ptr_out_v4[k], o[d++] = out_var[l], o[d++] = SPV_SC_OUTPUT;
+            }
+            in_entry = 0, cur_k = 0;
+            for (uint64_t i = fn_at; i < n;) {
+                uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+                const uint32_t *a = w + i + 1;
+                if (op == SPV_OP_FUNCTION) in_entry = len >= 3 && a[1] == entry, cur_k = 0;
+                else if (op == OP_FUNCTION_END) in_entry = 0, cur_k = 0;
+                else if (in_entry) {
+                    if ((op == OP_ACCESS_CHAIN || op == OP_IN_BOUNDS_ACCESS_CHAIN) && len >= 5 && a[2] == gl_in_var)
+                        cur_k = a[3];
+                    else if (op == OP_EMIT_VERTEX) {
+                        for (int l = 0; l < 32; l++) {
+                            if (!(mask >> l & 1)) continue;
+                            uint8_t k = kind[l];
+                            uint32_t pid = nb++, vid = nb++;
+                            o[d++] = 5u << 16 | OP_ACCESS_CHAIN, o[d++] = ptr_in_v4[k], o[d++] = pid, o[d++] = in_var[l], o[d++] = cur_k;
+                            o[d++] = 4u << 16 | OP_LOAD, o[d++] = vec4[k], o[d++] = vid, o[d++] = pid;
+                            o[d++] = 3u << 16 | OP_STORE, o[d++] = out_var[l], o[d++] = vid;
+                        }
+                        cur_k = 0;
+                    }
+                }
+                memcpy(o + d, w + i, len * 4), d += len, i += len;
+            }
+            o[3] = nb;
+            *out_n = d;
+        }
+    }
+    free(var_loc), free(ptr_elem), free(arr_elem), free(arr_len), free(per_vtx_struct), free(ptr_sc);
     return o;
 }
 
@@ -1629,6 +1816,27 @@ static const char *geometry_validate(const VkPipeState *s, const VkPhysicalDevic
         (s->fs && gfx_shader_stage(s->fs) != GFX_STAGE_FS)) return "geometry shader stage mismatch";
     const GfxShaderGeometry *g = gfx_shader_geometry(s->gs);
     if (!P.f_geometry) return "device has no geometryShader";
+    if (s->gs_prepared || s->tcs || s->tes) {
+        if (!g || g->output < GFX_GEOMETRY_OUTPUT_POINTS || g->output > GFX_GEOMETRY_OUTPUT_TRIANGLE_STRIP)
+            return "geometry input/stage contract differs from draw";
+        uint8_t gi = (s->gs_prepared && s->prim == NVN_DRAW_PRIMITIVE_QUADS) ? GFX_GEOMETRY_TRIANGLES
+                                                                            : vk_geometry_input(s->prim);
+        if (!(s->tcs || s->tes) && (!gi || gi != g->input))
+            return "geometry input/stage contract differs from draw";
+        if (!g->invocations || g->invocations > limits->maxGeometryShaderInvocations || !g->max_output_vertices ||
+            g->max_output_vertices > limits->maxGeometryOutputVertices)
+            return "geometry invocation/output-vertex device limit";
+        const GfxShader *shaders[] = {s->vs, s->tcs, s->tes, s->gs};
+        for (unsigned j = 0; j < 4; j++) if (shaders[j]) for (int kind = GFX_RES_SSBO; kind < GFX_RES_KINDS; kind++) {
+            const GfxShaderRes *res;
+            int count = gfx_shader_resources(shaders[j], kind, &res);
+            for (int i = 0; i < count; i++)
+                if (!P.f_vertex_stores && ((kind == GFX_RES_SSBO && (res[i].flags & 1)) ||
+                                          (kind == GFX_RES_IMG && (res[i].flags & 4))))
+                    return "pre-raster stores require vertexPipelineStoresAndAtomics";
+        }
+        return NULL;
+    }
     if (!g ||
         (g->version != GFX_GEOMETRY_VERSION && g->version != GFX_GEOMETRY_PASSTHROUGH_VERSION) || g->passthrough ||
         !vk_geometry_input(s->prim) || vk_geometry_input(s->prim) != g->input ||
@@ -1708,7 +1916,7 @@ typedef struct {
 static VkDescriptorType descriptor_type(int kind, const GfxShaderRes *r) {
     int buffer = (r->type & 0xff) == 2;
     switch (kind) {
-    case GFX_RES_UBO: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    case GFX_RES_UBO: return (r->flags & 2) ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     case GFX_RES_SSBO: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     case GFX_RES_TEX:
         if (buffer) return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
@@ -1721,6 +1929,8 @@ static VkDescriptorType descriptor_type(int kind, const GfxShaderRes *r) {
 static VkShaderStageFlags stage_bit(int stage) {
     switch (stage) {
     case GFX_STAGE_VS: return VK_SHADER_STAGE_VERTEX_BIT;
+    case GFX_STAGE_TCS: return VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+    case GFX_STAGE_TES: return VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
     case GFX_STAGE_GS: return VK_SHADER_STAGE_GEOMETRY_BIT;
     case GFX_STAGE_FS: return VK_SHADER_STAGE_FRAGMENT_BIT;
     case GFX_STAGE_CS: return VK_SHADER_STAGE_COMPUTE_BIT;
@@ -1791,9 +2001,22 @@ static int layout_covers(const VkPipeState *s, const Layout *l, uint32_t fs_off,
     uint32_t nv = l->set1 ? l->n0 : l->n;
     int m = module_binding_missing(s->vs, l->b, nv, 0);
     const char *stage = "vertex";
+    uint32_t off = binding_span(s->vs) - 1;
+    if (m < 0 && s->tcs) {
+        if (l->set1) { snprintf(why, cap, "tessellation requires a monolithic layout"); return 0; }
+        m = module_binding_missing(s->tcs, l->b, l->n, off);
+        stage = "tessellation control";
+        off += binding_span(s->tcs) - 1;
+    }
+    if (m < 0 && s->tes) {
+        if (l->set1) { snprintf(why, cap, "tessellation requires a monolithic layout"); return 0; }
+        m = module_binding_missing(s->tes, l->b, l->n, off);
+        stage = "tessellation evaluation";
+        off += binding_span(s->tes) - 1;
+    }
     if (m < 0 && s->gs) {
         if (l->set1) { snprintf(why, cap, "geometry requires a monolithic layout"); return 0; }
-        m = module_binding_missing(s->gs, l->b, l->n, binding_span(s->vs) - 1);
+        m = module_binding_missing(s->gs, l->b, l->n, off);
         stage = "geometry";
     }
     if (m < 0 && s->fs) {
@@ -1860,7 +2083,8 @@ static int64_t bindings_sort(Bindings *B, uint64_t *h) {
 // slots. Other drivers report thousands of samplers per stage, so their sets stay as they were.
 static int push_fits(const VkDescriptorSetLayoutBinding *b, uint32_t n, int64_t total) {
     if (total > (int64_t)P.max_push) return 0;
-    static const VkShaderStageFlags st[] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_GEOMETRY_BIT,
+    static const VkShaderStageFlags st[] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+                                            VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, VK_SHADER_STAGE_GEOMETRY_BIT,
                                             VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_COMPUTE_BIT};
     for (unsigned s = 0; s < sizeof st / sizeof *st; s++) {
         uint64_t k = 0;
@@ -2058,8 +2282,9 @@ typedef struct {                       // normalized: zero where the state is dy
     uint8_t attr_bind[32];
     uint8_t rate[17];                  // per binding: 0 unused, 1 vertex, 2 instance
     uint8_t indep;                     // P.indep when built: the probe draws through both layouts
-    uint8_t geometry_input, pad2;
+    uint8_t geometry_input, patch_size, gs_passthrough, gs_prepared;
     float alpha_ref;                   // 0 without an alpha test
+    const GfxShader *tcs, *tes;
 } GKey;
 
 static int blendable(VkFormat f) {
@@ -2115,9 +2340,15 @@ static float alpha_ref_step(float ref) {
 
 static void gkey_fill(const VkPipeState *s, GKey *k) {
     memset(k, 0, sizeof *k);
-    k->vs = s->vs, k->fs = s->fs, k->gs = s->gs;
-    k->indep = s->gs ? 0 : (uint8_t)P.indep;
-    k->geometry_input = s->gs ? vk_geometry_input(s->prim) : 0;
+    k->vs = s->vs, k->fs = s->fs, k->gs = s->gs, k->tcs = s->tcs, k->tes = s->tes;
+    k->indep = (s->gs || s->tcs || s->tes) ? 0 : (uint8_t)P.indep;
+    const GfxShaderGeometry *g = s->gs ? gfx_shader_geometry(s->gs) : NULL;
+    uint8_t gi = (s->gs_prepared && s->prim == NVN_DRAW_PRIMITIVE_QUADS) ? GFX_GEOMETRY_TRIANGLES
+                                                                        : vk_geometry_input(s->prim);
+    k->geometry_input = s->gs ? ((s->tcs || s->tes) ? (g && g->input ? g->input : GFX_GEOMETRY_TRIANGLES) : gi) : 0;
+    k->patch_size = s->patch_size ? (uint8_t)s->patch_size : 3;
+    k->gs_passthrough = s->gs_passthrough;
+    k->gs_prepared = s->gs_prepared;
     k->n_color = (uint8_t)target_count(s);
     for (int i = 0; i < k->n_color; i++) k->color[i] = target_format(s->color_fmt[i], NULL, NULL);
     int d, st;
@@ -2183,12 +2414,15 @@ static uint32_t vs_union_missing(const VkPipeState *s, GfxShaderIo fin[32]) {
 }
 
 static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Layout *l, uint32_t fs_off) {
-    if (s->gs && (l->set1 || !k->geometry_input || k->geometry_input > GFX_GEOMETRY_TRIANGLES_ADJACENCY)) return VK_NULL_HANDLE;
-    VkShaderModule vm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE, gm = VK_NULL_HANDLE;
+    int has_tess = s->tcs || s->tes;
+    if ((s->gs || has_tess) && l->set1) return VK_NULL_HANDLE;
+    if (s->gs && (!k->geometry_input || k->geometry_input > GFX_GEOMETRY_TRIANGLES_ADJACENCY)) return VK_NULL_HANDLE;
+    VkShaderModule vm = VK_NULL_HANDLE, tm = VK_NULL_HANDLE, em = VK_NULL_HANDLE, gm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE;
     uint64_t vw, fw;
     const uint32_t *vcode = gfx_shader_spirv(s->vs, &vw);
     uint32_t *vpatched = NULL, *fpatched = NULL;
-    if (!s->gs && l->set1) {   // independent layouts: outputs from the vertex shader's union
+    uint32_t v_added = 0;
+    if (!s->gs && !has_tess && l->set1) {   // independent layouts: outputs from the vertex shader's union
         GfxShaderIo fin[32];
         uint32_t missing = vs_union_missing(s, fin);
         if (missing) {
@@ -2199,20 +2433,21 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
         }
     }
     if (s->fs) {
-        if (!s->gs) {
+        if (!has_tess && (!s->gs || k->gs_passthrough)) {
             GfxShaderIo fin[32], vout[32];
             uint32_t need = gfx_shader_inputs(s->fs, fin), have = gfx_shader_outputs(s->vs, vout), missing = 0;
+            uint32_t gout = s->gs ? gfx_shader_outputs(s->gs, NULL) : 0;
             for (int i = 0; i < 32; i++) {
-                if (!(need >> i & 1) || fin[i].packed) continue;
+                if (!(need >> i & 1) || fin[i].packed || (gout >> i & 1)) continue;
                 if (!(have >> i & 1)) missing |= 1u << i;
-                else if (vout[i].type != fin[i].type)
+                else if (!s->gs && vout[i].type != fin[i].type)
                     LOG_ONCE("vk_pipeline: varying %d is type %d in the vertex stage, %d in the fragment stage", i, vout[i].type, fin[i].type);
             }
             if (missing && !l->set1) {
                 uint64_t n2 = 0;
                 vpatched = spirv_add_outputs(vcode, vw, missing, fin, &n2);
                 if (!vpatched) LOG_ONCE("vk_pipeline: cannot add missing vertex outputs (mask %#x)", missing);
-                else vcode = vpatched, vw = n2;
+                else vcode = vpatched, vw = n2, v_added = missing;
             }
         }
         const uint32_t *fcode = gfx_shader_spirv(s->fs, &fw);
@@ -2236,27 +2471,56 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
         // A bound colour target outside the shader's output map gets write mask 0 (target_wmask)
         if (fcode) fm = make_module(s->fs, fcode, fw);
     }
+    uint32_t off = binding_span(s->vs) - 1;
+    if (s->tcs) {
+        uint64_t tw = 0;
+        const uint32_t *tcode = gfx_shader_spirv(s->tcs, &tw);
+        uint32_t *patched = off && tcode ? spirv_rebind(tcode, tw, off) : NULL;
+        if (tcode && (!off || patched)) tm = make_module(s->tcs, patched ? patched : tcode, tw);
+        free(patched);
+        off += binding_span(s->tcs) - 1;
+    }
+    if (s->tes) {
+        uint64_t ew = 0;
+        const uint32_t *ecode = gfx_shader_spirv(s->tes, &ew);
+        uint32_t *patched = off && ecode ? spirv_rebind(ecode, ew, off) : NULL;
+        if (ecode && (!off || patched)) em = make_module(s->tes, patched ? patched : ecode, ew);
+        free(patched);
+        off += binding_span(s->tes) - 1;
+    }
     if (s->gs) {
         uint64_t gw = 0;
         const uint32_t *gcode = gfx_shader_spirv(s->gs, &gw);
-        uint32_t off = binding_span(s->vs) - 1;
-        uint32_t *patched = off && gcode ? spirv_rebind(gcode, gw, off) : NULL;
+        uint32_t *gfwd = NULL, *patched = NULL;
+        if (gcode && k->gs_passthrough && s->fs) {
+            GfxShaderIo pout[32], fin[32];
+            const GfxShader *prod = s->tes ? s->tes : s->vs;
+            uint32_t have = gfx_shader_outputs(prod, pout), need = gfx_shader_inputs(s->fs, fin);
+            if (!has_tess && v_added) {
+                for (int i = 0; i < 32; i++)
+                    if (v_added >> i & 1) pout[i] = fin[i], have |= 1u << i;
+            }
+            uint64_t gw2 = 0;
+            gfwd = spirv_gs_passthrough_forward(gcode, gw, have & need, pout, &gw2);
+            if (gfwd) gcode = gfwd, gw = gw2;
+        }
+        patched = off && gcode ? spirv_rebind(gcode, gw, off) : NULL;
         if (gcode && (!off || patched)) gm = make_module(s->gs, patched ? patched : gcode, gw);
-        free(patched);
+        free(gfwd), free(patched);
     }
     // Only a VS linked to GS uses the GS-chain dead-distance declaration policy.
     // Plain VS/FS modules retain their original fixup path and uploaded bytes.
     vm = make_module_linked(s->vs, vcode, vw, s->gs != NULL);
     free(vpatched), free(fpatched);
     VkPipeline pipe = VK_NULL_HANDLE;
-    if (!vm || (s->fs && !fm) || (s->gs && !gm)) goto out;
+    if (!vm || (s->tcs && !tm) || (s->tes && !em) || (s->gs && !gm) || (s->fs && !fm)) goto out;
 
-    VkPipelineShaderStageCreateInfo stages[3];
-    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rq[3];
-    const GfxShader *shaders[3] = {s->vs, s->gs, s->fs};
-    VkShaderModule modules[3] = {vm, gm, fm};
+    VkPipelineShaderStageCreateInfo stages[5];
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rq[5];
+    const GfxShader *shaders[5] = {s->vs, s->tcs, s->tes, s->gs, s->fs};
+    VkShaderModule modules[5] = {vm, tm, em, gm, fm};
     uint32_t stage_count = 0;
-    for (int i = 0; i < 3; i++) if (shaders[i]) {
+    for (int i = 0; i < 5; i++) if (shaders[i]) {
         VkPipelineShaderStageCreateInfo *st = &stages[stage_count];
         *st = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             .stage = stage_bit(gfx_shader_stage(shaders[i])), .module = modules[i], .pName = "main"};
@@ -2280,13 +2544,15 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
     static const VkPrimitiveTopology class_base[4] = {VK_PRIMITIVE_TOPOLOGY_POINT_LIST, VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
                                                       VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_PRIMITIVE_TOPOLOGY_PATCH_LIST};
     VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-                                                 .topology = class_base[k->topo_class]};
-    if (s->gs) {
+                                                 .topology = has_tess ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : class_base[k->topo_class]};
+    if (s->gs && !has_tess) {
         static const VkPrimitiveTopology gs_base[] = {VK_PRIMITIVE_TOPOLOGY_POINT_LIST, VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
             VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY,
             VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY};
         ia.topology = gs_base[k->geometry_input];
     }
+    VkPipelineTessellationStateCreateInfo tess = {.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+                                                  .patchControlPoints = k->patch_size ? k->patch_size : 3};
     VkPipelineViewportDepthClipControlCreateInfoEXT clip = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT,
                                                             .negativeOneToOne = k->minus_w};
     VkPipelineViewportStateCreateInfo vp = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .pNext = &clip};
@@ -2324,7 +2590,8 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
                                         .depthAttachmentFormat = (VkFormat)k->depth, .stencilAttachmentFormat = (VkFormat)k->stencil};
     VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri,
                                        .stageCount = stage_count, .pStages = stages, .pVertexInputState = &vi,
-                                       .pInputAssemblyState = &ia, .pViewportState = &vp, .pRasterizationState = &rs,
+                                       .pInputAssemblyState = &ia, .pTessellationState = has_tess ? &tess : NULL,
+                                       .pViewportState = &vp, .pRasterizationState = &rs,
                                        .pMultisampleState = &ms, .pDepthStencilState = &ds, .pColorBlendState = &cb,
                                        .pDynamicState = &dy, .layout = l->layout};
     if (k->fbl & 1) pi.flags |= VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
@@ -2341,8 +2608,10 @@ static VkPipeline create_graphics(const VkPipeState *s, const GKey *k, const Lay
     }
 out:
     if (vm) vkDestroyShaderModule(P.device, vm, NULL);
-    if (fm) vkDestroyShaderModule(P.device, fm, NULL);
+    if (tm) vkDestroyShaderModule(P.device, tm, NULL);
+    if (em) vkDestroyShaderModule(P.device, em, NULL);
     if (gm) vkDestroyShaderModule(P.device, gm, NULL);
+    if (fm) vkDestroyShaderModule(P.device, fm, NULL);
     return pipe;
 }
 
@@ -2656,7 +2925,7 @@ static void lib_keys(const VkPipeState *s, const GKey *k, ViKey *v, PrKey *pk, F
 static VkPipeline gpl_link(const VkPipeState *s, const GKey *k, const Layout *lc, int build, int *final) {
     Layout *l = (Layout *)lc;
     *final = 1;
-    if (s->gs || !l->set1 || k->fbl) return VK_NULL_HANDLE;
+    if (s->gs || s->tcs || s->tes || !l->set1 || k->fbl) return VK_NULL_HANDLE;
     uint64_t t0 = qpc();
     ViKey vk_;
     PrKey pk;
@@ -2813,7 +3082,7 @@ static void rec_fill(KeyRec *r, const VkPipeState *s) {
 
 // A pipeline was built for a draw: queue its record for the file. Caller holds P.lock.
 static void keys_note(const VkPipeState *s) {
-    if (s->gs || !A.on || !K.path[0]) return;             // GS prewarm records need a future explicit format
+    if (s->gs || s->tcs || s->tes || !A.on || !K.path[0]) return;             // GS/tess prewarm records need a future explicit format
     KeyRec r;
     rec_fill(&r, s);
     if (!seen_add(rec_hash(&r))) return;
@@ -3054,18 +3323,38 @@ static Pipe *pipe_miss(const VkPipeState *s, const GKey *k, uint64_t h, int mode
     const char *why = NULL;
     Bindings B = {0};
     Layout *l = NULL;
-    uint32_t span = binding_span(s->vs), fs_off = span - 1;
-    if (s->gs) fs_off += binding_span(s->gs) - 1;
-    if (gfx_shader_stage(s->vs) != GFX_STAGE_VS || (s->fs && gfx_shader_stage(s->fs) != GFX_STAGE_FS) ||
-        (s->gs && gfx_shader_stage(s->gs) != GFX_STAGE_GS)) why = "stage mismatch";
-    else if (k->topo_class == 3) why = "patches need tessellation stages, which are not translated";
+    uint32_t off = binding_span(s->vs) - 1;
+    uint32_t tcs_off = off;
+    if (s->tcs) off += binding_span(s->tcs) - 1;
+    uint32_t tes_off = off;
+    if (s->tes) off += binding_span(s->tes) - 1;
+    uint32_t gs_off = off;
+    if (s->gs) off += binding_span(s->gs) - 1;
+    uint32_t fs_off = off;
+    if (gfx_shader_stage(s->vs) != GFX_STAGE_VS || (s->tcs && gfx_shader_stage(s->tcs) != GFX_STAGE_TCS) ||
+        (s->tes && gfx_shader_stage(s->tes) != GFX_STAGE_TES) || (s->gs && gfx_shader_stage(s->gs) != GFX_STAGE_GS) ||
+        (s->fs && gfx_shader_stage(s->fs) != GFX_STAGE_FS)) why = "stage mismatch";
+    else if (s->tcs && !s->tes) why = "tessellation control shader without evaluation shader";
+    else if ((s->tcs || s->tes) && !P.f_tess) why = "device has no tessellationShader";
+    else if (k->topo_class == 3 && !s->tcs && !s->tes) why = "patches require tessellation stages";
     if (!why && s->gs) why = geometry_validate(s, &vk_ctx()->props.limits);
+    else if (!why && (s->tcs || s->tes) && !P.f_vertex_stores) {
+        const GfxShader *shs[] = {s->vs, s->tcs, s->tes};
+        for (unsigned j = 0; j < 3 && !why; j++) if (shs[j]) for (int kind = GFX_RES_SSBO; kind < GFX_RES_KINDS && !why; kind++) {
+            const GfxShaderRes *res;
+            int cnt = gfx_shader_resources(shs[j], kind, &res);
+            for (int i = 0; i < cnt; i++)
+                if ((kind == GFX_RES_SSBO && (res[i].flags & 1)) || (kind == GFX_RES_IMG && (res[i].flags & 4)))
+                    why = "pre-raster stores require vertexPipelineStoresAndAtomics";
+        }
+    }
     if (!why && k->indep) {
         Bindings F = {0};
         if (!add_stage(&B, s->vs, 0) || (s->fs && !add_stage(&F, s->fs, 0))) why = "too many bindings";
         else if (!(l = layout_pair(&B, &F))) why = "descriptor layout creation failed";
         fs_off = 0;
-    } else if (!why && (!add_stage(&B, s->vs, 0) || (s->gs && !add_stage(&B, s->gs, span - 1)) ||
+    } else if (!why && (!add_stage(&B, s->vs, 0) || (s->tcs && !add_stage(&B, s->tcs, tcs_off)) ||
+               (s->tes && !add_stage(&B, s->tes, tes_off)) || (s->gs && !add_stage(&B, s->gs, gs_off)) ||
                (s->fs && !add_stage(&B, s->fs, fs_off)))) why = "too many bindings";
     else if (!why && !l && !(l = layout_get(&B))) why = "descriptor layout creation failed";
     char lack[128];
@@ -3077,10 +3366,8 @@ static Pipe *pipe_miss(const VkPipeState *s, const GKey *k, uint64_t h, int mode
     } else if (!why && !(pipe = create_graphics(s, k, l, fs_off))) {
         why = "pipeline creation failed";
     }
-    if (why) {
-        P.stats.failures++;
-        rt_log("vk_pipeline: graphics pipeline not built: %s", why);
-    } else if (!j) {
+    if (why) P.stats.failures++, rt_log("vk_pipeline: graphics pipeline not built: %s", why);
+    else if (!j) {
         P.stats.graphics++;
         if (mode != 2) keys_note(s);
     }
@@ -3207,7 +3494,7 @@ static VkPipeline graphics(const VkPipeState *s, const VkPipeInfo **info, int as
                       : "builds its libraries itself (TOTK_PIPE_WAIT=draw)");
     }
     double end = wait_ms ? now_ms() + wait_ms : 0;
-    if (p && p->building && P.gpl && !s->gs && !p->info.pipeline && !p->fast_tried && p->lay) {
+    if (p && p->building && P.gpl && !s->gs && !s->tcs && !s->tes && !p->info.pipeline && !p->fast_tried && p->lay) {
         int final = 0, build = wait_ms != 0 && draw_build;
         uint64_t p0 = perf_begin(), t0 = qpc();
         if (build && U.on) {
@@ -3416,11 +3703,112 @@ static void prebuild_start(void) {
     plat_mutex_unlock(&P.lock);
 }
 
+// Clamps oversized compute Workgroup shared-memory arrays to maxComputeSharedMemorySize (P.smem_limit) and fills in
+// the translator's SMEM_WRAP_SENTINEL constant (0x7ffe5a3bu) so wrap indexing stays valid on 32 KiB devices.
+#define SMEM_WRAP_SENTINEL 0x7ffe5a3bu
+static uint32_t *spirv_clamp_shared(const uint32_t *w, uint64_t n, uint32_t limit, uint64_t *out_n,
+                                    uint32_t *from_b, uint32_t *to_b) {
+    enum { OP_TYPE_VECTOR = 23, OP_TYPE_ARRAY = 28, SC_WORKGROUP = 4 };
+    if (!w || n < 5 || !limit || !w[3] || w[3] > (1u << 20)) return NULL;
+    uint32_t bound = w[3];
+    uint32_t *elem_t = calloc(bound, 4), *len_id = calloc(bound, 4), *const_v = calloc(bound, 4), *const_t = calloc(bound, 4);
+    uint32_t *ptr_elem = calloc(bound, 4), *bytes_of = calloc(bound, 4);
+    uint64_t *arr_at = calloc(bound, 8);
+    uint8_t *has_const = calloc(bound, 1), *is_arr = calloc(bound, 1), *ptr_sc = calloc(bound, 1);
+    uint32_t *o = NULL;
+    int bad = !elem_t || !len_id || !const_v || !const_t || !ptr_elem || !bytes_of || !arr_at || !has_const || !is_arr || !ptr_sc;
+    uint64_t sent_at = 0, total_bytes = 0, big_bytes = 0;
+    uint32_t big_arr = 0, big_eb = 0, big_cnt = 0, big_len = 0;
+    for (uint64_t i = 5; !bad && i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) { bad = 1; break; }
+        const uint32_t *a = w + i + 1;
+        if (op == SPV_OP_FUNCTION) break;
+        if ((op == SPV_OP_TYPE_INT || op == SPV_OP_TYPE_FLOAT) && len >= 3 && a[0] < bound) {
+            bytes_of[a[0]] = a[1] / 8u;
+        } else if (op == OP_TYPE_VECTOR && len == 4 && a[0] < bound && a[1] < bound) {
+            bytes_of[a[0]] = bytes_of[a[1]] * a[2];
+        } else if (op == SPV_OP_CONSTANT && len == 4 && a[1] < bound) {
+            const_t[a[1]] = a[0], const_v[a[1]] = a[2], has_const[a[1]] = 1;
+            if (a[2] == SMEM_WRAP_SENTINEL) sent_at = i;
+        } else if (op == OP_TYPE_ARRAY && len == 4 && a[0] < bound && a[1] < bound && a[2] < bound) {
+            is_arr[a[0]] = 1, elem_t[a[0]] = a[1], len_id[a[0]] = a[2], arr_at[a[0]] = i;
+            if (has_const[a[2]] && bytes_of[a[1]]) {
+                uint64_t sz = (uint64_t)bytes_of[a[1]] * const_v[a[2]];
+                bytes_of[a[0]] = sz > UINT32_MAX ? UINT32_MAX : (uint32_t)sz;
+            }
+        } else if (op == SPV_OP_TYPE_POINTER && len == 4 && a[0] < bound) {
+            ptr_sc[a[0]] = (uint8_t)a[1], ptr_elem[a[0]] = a[2];
+        } else if (op == SPV_OP_VARIABLE && len >= 4 && a[2] == SC_WORKGROUP && a[0] < bound && ptr_sc[a[0]] == SC_WORKGROUP) {
+            uint32_t pt = ptr_elem[a[0]];
+            uint32_t sz = pt < bound ? bytes_of[pt] : 0;
+            total_bytes += sz;
+            if (pt < bound && is_arr[pt] && sz > big_bytes) {
+                big_bytes = sz, big_arr = pt, big_eb = elem_t[pt] < bound ? bytes_of[elem_t[pt]] : 0;
+                big_len = len_id[pt], big_cnt = big_len < bound && has_const[big_len] ? const_v[big_len] : 0;
+            }
+        }
+        i += len;
+    }
+    if (!bad && total_bytes && (sent_at || total_bytes > limit)) {
+        *from_b = (uint32_t)(total_bytes > UINT32_MAX ? UINT32_MAX : total_bytes);
+        *to_b = *from_b;
+        uint32_t keep_cnt = big_cnt;
+        if (total_bytes > limit && big_arr && big_eb && arr_at[big_arr] && big_len < bound && const_t[big_len]) {
+            uint64_t other = total_bytes - big_bytes;
+            if (limit >= other + big_eb) {
+                keep_cnt = (uint32_t)((limit - other) / big_eb);
+                *to_b = (uint32_t)(other + (uint64_t)keep_cnt * big_eb);
+            }
+        }
+        uint32_t wrap_val = keep_cnt;
+        if (keep_cnt == big_cnt && sent_at) {
+            uint32_t p2 = 1;
+            while (p2 < big_cnt && p2 < (1u << 30)) p2 <<= 1;
+            wrap_val = big_cnt ? (p2 >= big_cnt ? p2 : big_cnt) : 1;
+        }
+        if (keep_cnt < big_cnt && arr_at[big_arr]) {
+            o = malloc((n + 4) * 4);
+            if (o) {
+                uint64_t ins = arr_at[big_arr];
+                uint32_t new_len = bound++;
+                memcpy(o, w, ins * 4);
+                o[ins] = 4u << 16 | SPV_OP_CONSTANT, o[ins + 1] = const_t[big_len], o[ins + 2] = new_len, o[ins + 3] = keep_cnt;
+                memcpy(o + ins + 4, w + ins, (n - ins) * 4);
+                o[ins + 4 + 3] = new_len;
+                if (sent_at) o[(sent_at >= ins ? sent_at + 4 : sent_at) + 3] = wrap_val;
+                o[3] = bound;
+                *out_n = n + 4;
+            }
+        } else if (sent_at) {
+            o = malloc(n * 4);
+            if (o) {
+                memcpy(o, w, n * 4);
+                o[sent_at + 3] = wrap_val;
+                *out_n = n;
+            }
+        }
+    }
+    free(elem_t), free(len_id), free(const_v), free(const_t), free(ptr_elem), free(bytes_of), free(arr_at);
+    free(has_const), free(is_arr), free(ptr_sc);
+    return o;
+}
+
 // A compute pipeline for cs in layout l; VK_NULL_HANDLE on failure. No lock needed (P.cache is driver-synchronised).
 static VkPipeline compute_create(const GfxShader *cs, const Layout *l) {
     uint64_t words;
     const uint32_t *code = gfx_shader_spirv(cs, &words);
+    uint32_t from_b = 0, to_b = 0;
+    uint64_t cw = words;
+    uint32_t *clamped = P.smem_limit ? spirv_clamp_shared(code, words, P.smem_limit, &cw, &from_b, &to_b) : NULL;
+    if (clamped) {
+        if (from_b > to_b)
+            LOG_ONCE("vk_pipeline: compute shared memory clamped from %u to %u bytes (maxComputeSharedMemorySize %u)",
+                     from_b, to_b, P.smem_limit);
+        code = clamped, words = cw;
+    }
     VkShaderModule m = make_module(cs, code, words);
+    free(clamped);
     if (!m) return VK_NULL_HANDLE;
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rqc;
     VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
@@ -3876,7 +4264,7 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     int front_cw = pl->front == NVN_FRONT_FACE_CW;
     vkCmdSetCullMode(cb, (VkCullModeFlags)(pl->cull & 3));   // NVN_FACE_* has VkCullModeFlagBits' values
     vkCmdSetFrontFace(cb, front_cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
-    vkCmdSetPrimitiveTopology(cb, vk_pipeline_topology(s->prim));
+    vkCmdSetPrimitiveTopology(cb, (s->tcs || s->tes) ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : vk_pipeline_topology(s->prim));
     vkCmdSetDepthTestEnable(cb, d->dt);
     vkCmdSetDepthWriteEnable(cb, d->dw);
     vkCmdSetDepthCompareOp(cb, compare_op(d->df));

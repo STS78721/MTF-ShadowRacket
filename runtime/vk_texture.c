@@ -50,6 +50,8 @@ typedef struct Tex {
     uint8_t hashed;               // chash holds the storage hash taken just before the last upload (untracked pages)
     uint64_t chash;
     struct Tex *next_at;          // other entries at the same storage address
+    struct Tex *image_host;       // pub.image belongs to image_host (a private depth this entry shares)
+    int image_shares;             // other entries sampling this private depth image
     uint8_t gpu_dirty;            // mirrored, and the GPU wrote the image after the last write-back to the storage
     uint32_t gpu_gen;             // page generation when the GPU write that set gpu_dirty was recorded
     uint64_t gpu_seq;             // order of that GPU write among all of them (gpu_writes)
@@ -212,28 +214,55 @@ static VkImageAspectFlags aspect_of(const TexVkFormat *f) {
 }
 
 // Binds img into the pool memory behind its GPU address (physical pools, virtual pools through the page table) when
-// the memory type, alignment and contiguous size allow; 0 otherwise.
-// A depth / stencil image that needs more bytes than its NVN storage (guest_size) is not bound: AMD's RDNA2 driver
-// (26.10.1) puts the depth compression metadata after the depth data, and above 1080p that tail lies over the next
-// texture of the game's heap; each depth write then scrambled it (garbage band at the top, pink glow, blocks in the
-// grass, a blue checkered scene in the menu). Colour images keep their place: the RX 9070 also sizes some of them
-// above their storage, and nothing there showed that the GPU writes the excess.
+// the memory type, alignment and contiguous size allow; 0 otherwise. *why (when set) names the refusal.
+// A depth / stencil image that needs more bytes than its NVN storage (guest_size) is not bound. On RDNA2 that extra
+// is compression metadata past the texels, and binding it scrambled the next texture. On this driver a 2560x1440
+// D24S8 is 19660800 bytes against 15728640 of NVN storage even with every optional usage off, and
+// VK_EXT_image_compression_control is absent, so the image stays in its own memory. create_tex still asks for
+// compression off where the device allows it. A second descriptor of that storage must share this image
+// (share_private_depth): its own copy stays at the clear value, the sun test reads far everywhere, and the court
+// lights from sky fill alone (blue grass, black fur, no contact shadows).
 static int format_compressed(VkFormat f) {   // vkCmdClearColorImage takes no block-compressed format
     return (f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) ||
            (f >= VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK && f <= VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK);
 }
 
-static int bind_pool_memory(VkCtx *c, Tex *e, VkImage img, uint64_t guest_size) {
+static int bind_pool_memory(VkCtx *c, Tex *e, VkImage img, uint64_t guest_size, const char **why) {
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(c->device, img, &req);
-    if ((e->f.depth || e->f.stencil) && req.size > guest_size) return 0;
+    if ((e->f.depth || e->f.stencil) && req.size > guest_size) {
+        if (why) *why = "larger than its NVN storage";
+        static int sized;
+        if (!sized) {
+            sized = 1;
+            rt_log("vk: depth image %#llx needs %llu bytes, NVN storage is %llu",
+                   (unsigned long long)e->pub.addr, (unsigned long long)req.size, (unsigned long long)guest_size);
+        }
+        return 0;
+    }
     VkMemSpan sp;
-    if (!req.size) return 0;   // an image the device could not lay out (image_size)
-    if (!vk_mem_resolve(e->pub.addr, req.size, &sp) || !sp.alloc || sp.alloc_offset % req.alignment) return 0;
+    if (!req.size) {   // an image the device could not lay out (image_size)
+        if (why) *why = "no layout";
+        return 0;
+    }
+    if (!vk_mem_resolve(e->pub.addr, req.size, &sp) || !sp.alloc) {
+        if (why) *why = "storage is not one allocation";
+        return 0;
+    }
+    if (sp.alloc_offset % req.alignment) {
+        if (why) *why = "offset is not aligned";
+        return 0;
+    }
     VmaAllocationInfo info;
     vmaGetAllocationInfo(c->vma, sp.alloc, &info);
-    if (!(req.memoryTypeBits >> info.memoryType & 1)) return 0;
-    if (vmaBindImageMemory2(c->vma, sp.alloc, sp.alloc_offset, img, NULL) != VK_SUCCESS) return 0;
+    if (!(req.memoryTypeBits >> info.memoryType & 1)) {
+        if (why) *why = "memory type cannot hold the image";
+        return 0;
+    }
+    if (vmaBindImageMemory2(c->vma, sp.alloc, sp.alloc_offset, img, NULL) != VK_SUCCESS) {
+        if (why) *why = "bind failed";
+        return 0;
+    }
     e->bound_to = sp.alloc;
     return 1;
 }
@@ -268,6 +297,8 @@ static VkDeviceSize image_size(const VkImageCreateInfo *ci) {
 
 // UNDEFINED -> GENERAL; new depth / stencil images start cleared (LAS textures.c: the game copies depth
 // without stencil, and the stencil of those images must not be whatever the memory held).
+// Depth starts at 1 (far with a 0..1 range). A private sun map that never gets an NVN clear stays at this
+// value; LESS depth writes can then land. Starting at 0 rejected every fragment (nothing is less than 0).
 static void init_image(Tex *e, VkCommandBuffer cb) {
     VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
                                 .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -278,9 +309,9 @@ static void init_image(Tex *e, VkCommandBuffer cb) {
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
     vkCmdPipelineBarrier2(cb, &di);
     if (e->f.depth || e->f.stencil) {
-        VkClearDepthStencilValue zero = {0.0f, 0};
+        VkClearDepthStencilValue far_ds = {1.0f, 0};
         VkImageSubresourceRange rg = {e->pub.aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
-        vkCmdClearDepthStencilImage(cb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+        vkCmdClearDepthStencilImage(cb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, &far_ds, 1, &rg);
         barrier(cb, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
     } else if (vk_fix_zero() && !e->bound_to && !e->pub.mirrored && !format_compressed(e->f.vk)) {
         // GPU-only storage that got memory of its own starts at zero, as the pool it stands for (vk_memory.c
@@ -362,6 +393,18 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
                             .extent = {w, h, depth}, .mipLevels = levels, .arrayLayers = layers,
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    // Compression metadata is stored past the texels. An image bound to NVN storage then writes that tail over the
+    // next texture (blue court, blocked grass). Off, the image is the texel bytes and can alias the allocation.
+    VkImageCompressionControlEXT icc = {.sType = VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_CONTROL_EXT,
+                                        .flags = VK_IMAGE_COMPRESSION_DISABLED_EXT};
+    if (c->has_image_compression_control) {
+        ci.pNext = &icc;
+        static int logged;
+        if (!logged) {
+            logged = 1;
+            rt_log("vk: image compression disabled so textures alias NVN storage without a metadata tail");
+        }
+    }
     int bw, bh, block_views = 0;
     // TOTK_BLOCK_VIEWS_3D (default 0): a 3D BC image also gets block views. On RDNA2 cards (driver 26.10.1, issue #5)
     // the 32x32x32 BC4 volume the game creates at the logo, made BLOCK_TEXEL_VIEW_COMPATIBLE and 2D_ARRAY_COMPATIBLE,
@@ -405,11 +448,12 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     e->pub.addr = k->addr;
     VkImage img = VK_NULL_HANDLE;
     if (nvn_gpu_only(k->addr)) {   // storage in a physical or virtual pool: alias the pool memory (section 3.2)
-        if (vkCreateImage(c->device, &ci, NULL, &img) == VK_SUCCESS && !bind_pool_memory(c, e, img, L.size)) {
+        const char *why = "bind failed";
+        if (vkCreateImage(c->device, &ci, NULL, &img) == VK_SUCCESS && !bind_pool_memory(c, e, img, L.size, &why)) {
             vkDestroyImage(c->device, img, NULL);
             img = VK_NULL_HANDLE;
-            log_limited(&n_unbound, "texture %#llx (%ux%u fmt %#x) cannot alias its pool memory; own memory instead",
-                        (unsigned long long)k->addr, w, h, d->format);
+            log_limited(&n_unbound, "texture %#llx (%ux%u fmt %#x) cannot alias its pool memory (%s); own memory instead",
+                        (unsigned long long)k->addr, w, h, d->format, why);
         }
     }
     if (!img) {
@@ -546,9 +590,39 @@ static void rel_unlink(Tex *e) {
     e->rel_prev = e->rel_next = NULL;
 }
 
+// Drop e's claim on a shared private depth. A borrower just forgets the image. The owner hands the allocation to
+// one borrower so the image stays until the last descriptor of that storage is gone.
+static void release_shared_image(Tex *e) {
+    if (e->image_host) {
+        if (e->image_host->image_shares > 0) e->image_host->image_shares--;
+        e->image_host = NULL;
+        e->pub.image = VK_NULL_HANDLE;
+        e->alloc = NULL;
+        return;
+    }
+    if (e->image_shares <= 0) return;
+    Tex *heir = NULL;
+    for (Tex *p = nvn_hm_get(&by_addr, &e->key.addr); p; p = p->next_at)
+        if (p != e && p->image_host == e) { heir = p; break; }
+    if (!heir) {
+        e->image_shares = 0;
+        return;
+    }
+    heir->alloc = e->alloc;
+    heir->image_host = NULL;
+    heir->image_shares = e->image_shares - 1;
+    for (Tex *p = nvn_hm_get(&by_addr, &e->key.addr); p; p = p->next_at)
+        if (p->image_host == e) p->image_host = heir;
+    e->pub.image = VK_NULL_HANDLE;
+    e->alloc = NULL;
+    e->image_shares = 0;
+}
+
 static void destroy_tex(Tex *e) {
     own_remove(e);
     tex_gen_bump(e->key.addr);
+    // A shared private depth stays while any descriptor still uses it. Otherwise pub.image is still this entry's.
+    if (e->image_host || e->image_shares > 0) release_shared_image(e);
     nvn_hm_del(&by_key, &e->key);
     Tex *head = nvn_hm_get(&by_addr, &e->key.addr);
     if (head == e) {
@@ -559,8 +633,10 @@ static void destroy_tex(Tex *e) {
             if (p->next_at == e) { p->next_at = e->next_at; break; }
     }
     if (e->released) nreleased--, rel_unlink(e);
-    vk_exec_image_gone(e->pub.image);
-    vk_defer_image(e->pub.image, e->alloc);
+    if (e->pub.image) {
+        vk_exec_image_gone(e->pub.image);
+        vk_defer_image(e->pub.image, e->alloc);
+    }
     free(e->snap);
     free(e);
 }
@@ -1123,6 +1199,62 @@ static int alias_copy(Tex *e, const Tex *src) {
     return 1;
 }
 
+// e was given its own image because its depth does not fit the NVN allocation. A live private depth already at this
+// address is the one the passes render; e samples and draws that image instead of a second one cleared to far.
+// The NVN size field is not compared: the driver's depth layout is larger than the guest allocation, so two
+// descriptors of one shadow map often disagree on it and used to each get an image cleared to 0.
+static int share_private_depth(Tex *e) {
+    if (!e->alloc || e->bound_to || !(e->f.depth || e->f.stencil) || !e->pub.image) return 0;
+    Tex *host = NULL, *blocked = NULL;
+    for (Tex *p = nvn_hm_get(&by_addr, &e->key.addr); p; p = p->next_at) {
+        if (p->released || p->image_host || !p->alloc || p->bound_to || !p->pub.image) continue;
+        if (!(p->f.depth || p->f.stencil)) continue;
+        if (p->pub.format != e->pub.format || p->pub.width != e->pub.width || p->pub.height != e->pub.height ||
+            p->pub.depth != e->pub.depth || p->pub.samples != e->pub.samples) continue;
+        if (p->pub.levels < e->pub.levels || p->pub.layers < e->pub.layers) { blocked = p; continue; }
+        host = p;
+        break;
+    }
+    if (!host) {
+        static int logged;
+        if (!logged && e->pub.width >= 512 && e->pub.height >= 512) {
+            logged = 1;
+            rt_log(blocked ? "vk: private depth %#llx %ux%u fmt %d stays separate (the other descriptor has fewer layers)"
+                           : "vk: private depth %#llx %ux%u fmt %d is the only descriptor of that storage",
+                   (unsigned long long)e->pub.addr, e->pub.width, e->pub.height, (int)e->pub.format);
+        }
+        return 0;
+    }
+    vk_defer_image(e->pub.image, e->alloc);
+    e->pub.image = host->pub.image;
+    e->alloc = NULL;
+    e->image_host = host;
+    host->image_shares++;
+    static int logged;
+    if (!logged) {
+        logged = 1;
+        rt_log("vk: private depth %#llx is shared with another descriptor of that storage",
+               (unsigned long long)e->pub.addr);
+    }
+    return 1;
+}
+
+// A colour descriptor over a private depth reads the pool, which the depth pass never writes. Logged so a later
+// run shows whether the sun sample is that kind of view.
+static void note_color_over_private_depth(const Tex *e) {
+    if (e->f.depth || e->f.stencil) return;
+    for (const Tex *p = nvn_hm_get(&by_addr, &e->key.addr); p; p = p->next_at) {
+        if (!p->alloc || p->bound_to || !(p->f.depth || p->f.stencil)) continue;
+        static int logged;
+        if (!logged) {
+            logged = 1;
+            rt_log("vk: texture %#llx fmt %#x %ux%u reads storage whose depth image is private",
+                   (unsigned long long)e->pub.addr, e->t.d.format, e->pub.width, e->pub.height);
+        }
+        return;
+    }
+}
+
 static Tex *entry_of(const tex_t *t) {
     TexKey k;
     make_key(t, &k);
@@ -1147,7 +1279,9 @@ static Tex *entry_of(const tex_t *t) {
                 src = p;
         }
         if (alias) perf_count(PERF_CNT_TEX_ALIAS);
-        if (tex_alias) {
+        if (share_private_depth(e)) {
+            /* host already holds the depth; init_image would clear it back to far */
+        } else if (tex_alias) {
             if (src && alias_copy(e, src)) {
                 n_alias_copied++;
                 if (e->pub.mirrored) {   // the content is src's GPU render, newer than the storage bytes
@@ -1164,6 +1298,7 @@ static Tex *entry_of(const tex_t *t) {
                 }
             }
         }
+        note_color_over_private_depth(e);
         e->next_at = nvn_hm_get(&by_addr, &k.addr);
         nvn_hm_put(&by_addr, &k.addr, e);
         nvn_hm_put(&by_key, &k, e);
@@ -1373,6 +1508,26 @@ uint64_t vk_texture_slot_token(const dpool_ref *pool, int id) {
 }
 uint32_t vk_sampler_gen(void) { return __atomic_load_n(&samp_gen, __ATOMIC_RELAXED); }
 
+// A private depth that was never drawn, while another descriptor of the same storage was. The sun maps that do
+// not fit guest memory are created twice; the one the pass rendered is the one to sample.
+static Tex *rendered_private_depth(Tex *e) {
+    if (!e || e->pub.bound || e->pub.gpu_owned || e->image_host) return e;
+    if (!(e->f.depth || e->f.stencil)) return e;
+    for (Tex *p = nvn_hm_get(&by_addr, &e->key.addr); p; p = p->next_at) {
+        if (p == e || p->released || !p->pub.image || !p->pub.gpu_owned) continue;
+        if (p->pub.format != e->pub.format || p->pub.width != e->pub.width || p->pub.height != e->pub.height) continue;
+        if (!(p->f.depth || p->f.stencil)) continue;
+        static int logged;
+        if (!logged) {
+            logged = 1;
+            rt_log("vk: private depth %#llx %ux%u is sampled from the image that was rendered",
+                   (unsigned long long)e->pub.addr, e->pub.width, e->pub.height);
+        }
+        return p;
+    }
+    return e;
+}
+
 const VkTexImage *vk_texture_by_id(const dpool_ref *pool, int id, view_t *view, int *has_view) {
     lock();
     const VkTexImage *r = vk_texture_by_id_locked(pool, id, view, has_view);
@@ -1406,6 +1561,7 @@ const VkTexImage *vk_texture_by_id_locked(const dpool_ref *pool, int id, view_t 
     }
     if (view) *view = has_view ? s->cview : s->v;
     if (has_view) *has_view = view ? s->chas_view : s->has_view;
+    if (e) e = rendered_private_depth(e);
     return e ? &e->pub : NULL;
 }
 
@@ -1903,9 +2059,20 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
     float lim = c->props.limits.maxSamplerLodBias;
     si.mipLodBias = fmaxf(-lim, fminf(lim, d->lod_bias));
-    if (d->aniso > 1) {
+    // NS2_ANISO=N (Graphics, default 16): floor anisotropic filtering on mipmapped linear-min samplers so
+    // angled grass / court chalk keep detail (MKW_ANISO pattern from mkw-recomp vk_texture.c).
+    static float aniso_min = -1.f;
+    if (aniso_min < 0.f) {
+        const char *av = cfg_value("NS2_ANISO");
+        aniso_min = (av && strcmp(av, "game")) ? (float)atof(av) : 0.f;
+        if (aniso_min > 1.f) rt_log("vk: anisotropic filtering at least %gx (NS2_ANISO)", (double)aniso_min);
+    }
+    float aniso = d->aniso;
+    if (mf >= NVN_MIN_FILTER_NEAREST_MIPMAP_NEAREST && si.minFilter == VK_FILTER_LINEAR && aniso < aniso_min)
+        aniso = aniso_min;
+    if (aniso > 1.f) {
         si.anisotropyEnable = VK_TRUE;
-        si.maxAnisotropy = fminf(d->aniso, c->props.limits.maxSamplerAnisotropy);
+        si.maxAnisotropy = fminf(aniso, c->props.limits.maxSamplerAnisotropy);
     }
     if (d->cmp_mode) {
         si.compareEnable = VK_TRUE;
@@ -2002,6 +2169,35 @@ VkSampler vk_sampler_point_by_id_locked(const dpool_ref *pool, int id) {
         s->sp = sampler_for(c, &k);
     }
     return s->sp;
+}
+
+VkSampler vk_sampler_shadow_by_id_locked(const dpool_ref *pool, int id, int *mode, int *func) {
+    VkCtx *c = vk_ctx();
+    DescSlot *d = descriptor_slot(pool, id, 1u << 12, 0);
+    if (!c || !d || d->kind != DESC_SAMPLER) {
+        if (mode) *mode = -1;
+        if (func) *func = -1;
+        return VK_NULL_HANDLE;
+    }
+    SampSlot *s = &d->u.sampler;
+    if (mode) *mode = s->p.cmp_mode;
+    if (func) *func = s->p.cmp_func;
+    if (s->p.cmp_mode) {
+        if (!s->s) s->s = sampler_for(c, &s->p);
+        return s->s;
+    }
+    // The shader compares (resource type 0x400). Compare left off returns 0 on this driver, so every receiver
+    // is in shadow. The builder's func is kept: with near at -w and a 0..1 depth range, LESS is the lit test.
+    samp_par k = s->p;
+    k.cmp_mode = 1;
+    if (k.cmp_func < NVN_COMPARE_FUNC_NEVER || k.cmp_func > NVN_COMPARE_FUNC_ALWAYS)
+        k.cmp_func = NVN_COMPARE_FUNC_LESS;
+    static int logged;
+    if (!logged) {
+        logged = 1;
+        rt_log("vk: shadow sampler had compare off (func %d); compare enabled", s->p.cmp_func);
+    }
+    return sampler_for(c, &k);
 }
 
 VkSampler vk_sampler_by_id(const dpool_ref *pool, int id) {

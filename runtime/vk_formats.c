@@ -1,9 +1,11 @@
 // NVN format -> VkFormat for the textures of the graphics layer.
 // Ported from the format table of LAS Recomp runtime/nvn/vulkan/textures.c @ da35b83a (MIT, Copyright (c) 2026 Peiikai).
 // Differences from LAS: the table is indexed by the NVNformat values of nvn.h and covers all of them, ASTC decodes to
-// RGBA8 unless the device samples it (vk_astc.c, TOTK_ASTC), D24S8 is always D32S8 (no probing: the RX 9070 lacks
-// it), 3-component formats expand to 4 components, and formats with no Vulkan equivalent are reported with a reason.
+// RGBA8 unless the device samples it (vk_astc.c, TOTK_ASTC), DEPTH24 and D24S8 stay 24-bit when the device can attach
+// them (an RTX does; an RX 9070 cannot, and those fall back to D32), 3-component formats expand to 4 components, and
+// formats with no Vulkan equivalent are reported with a reason.
 #include <string.h>
+#include "host.h"
 #include "tex.h"
 
 #define S VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
@@ -50,9 +52,10 @@ static const Row rows[0x9D] = {
     R(0x2B, VK_FORMAT_R16G16B16A16_SNORM), R(0x2C, VK_FORMAT_R16G16B16A16_UINT), R(0x2D, VK_FORMAT_R16G16B16A16_SINT),
     R(0x2E, VK_FORMAT_R32G32B32A32_SFLOAT), R(0x2F, VK_FORMAT_R32G32B32A32_UINT), R(0x30, VK_FORMAT_R32G32B32A32_SINT),
     R(0x31, VK_FORMAT_S8_UINT), R(0x32, VK_FORMAT_D16_UNORM),
-    N(0x33, VK_FORMAT_D32_SFLOAT, "DEPTH24 has no Vulkan format on this GPU; D32_SFLOAT"),
+    // 0x33 DEPTH24 and 0x35 D24S8 are chosen in tex_vk_format: native 24-bit when the device can attach it.
+    R(0x33, VK_FORMAT_X8_D24_UNORM_PACK32),
     R(0x34, VK_FORMAT_D32_SFLOAT),
-    N(0x35, VK_FORMAT_D32_SFLOAT_S8_UINT, "the RX 9070 has no D24S8 attachments; D32_SFLOAT_S8_UINT"),
+    R(0x35, VK_FORMAT_D24_UNORM_S8_UINT),
     R(0x36, VK_FORMAT_D32_SFLOAT_S8_UINT),
     X(0x37, VK_FORMAT_R8G8B8A8_SRGB), R(0x38, VK_FORMAT_R8G8B8A8_SRGB),
     // RGBA4: A4B4G4R4 (core in 1.3, optional), else B4G4R4A4 whose A, R, G, B hold NVN's R, G, B, A.
@@ -103,6 +106,30 @@ static const struct { uint8_t bw, bh; VkFormat unorm, srgb; } astc[14] = {
     {12, 12, VK_FORMAT_ASTC_12x12_UNORM_BLOCK, VK_FORMAT_ASTC_12x12_SRGB_BLOCK},
 };
 
+// 24-bit depth is what the shadow-map bias and the sun compare were authored for. A D32 stand-in keeps a different
+// minimum step, so the sun test goes fully shadowed (no character shadows, sky-blue fill) or breaks into stipple.
+static int depth_attach_ok(VkFormat fmt) {
+    VkCtx *c = vk_ctx();
+    if (!c) return 0;
+    VkFormatProperties p;
+    vkGetPhysicalDeviceFormatProperties(c->phys, fmt, &p);
+    return (p.optimalTilingFeatures & (S | TX | DS)) == (S | TX | DS);
+}
+
+static void pick_d24(TexVkFormat *o, VkFormat native, VkFormat fallback, int stencil, const char *why) {
+    o->ideal = native;
+    o->vk = depth_attach_ok(native) ? native : fallback;
+    o->depth = 1;
+    o->stencil = stencil ? 1 : 0;
+    o->need = S | TX | DS;
+    if (o->vk != native) o->note = why;
+    static int logged;
+    if (!logged && vk_ctx()) {
+        logged = 1;
+        rt_log("vk: 24-bit depth attachments are %s", o->vk == native ? "native" : "D32 stand-ins");
+    }
+}
+
 int tex_vk_format(int nvn_format, TexVkFormat *o) {
     memset(o, 0, sizeof *o);
     o->vk = o->ideal = VK_FORMAT_UNDEFINED;
@@ -137,6 +164,16 @@ int tex_vk_format(int nvn_format, TexVkFormat *o) {
         o->reason = "integer storage sampled as float (UI2F/I2F): Vulkan has no such format, needs a shader-side conversion";
         return 0;
     }
+    if (f == 0x33) {
+        pick_d24(o, VK_FORMAT_X8_D24_UNORM_PACK32, VK_FORMAT_D32_SFLOAT, 0,
+                 "DEPTH24 is not a depth attachment here; D32_SFLOAT");
+        return 1;
+    }
+    if (f == 0x35) {
+        pick_d24(o, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT, 1,
+                 "D24S8 is not a depth attachment here; D32_SFLOAT_S8_UINT");
+        return 1;
+    }
     const Row *r = &rows[f];
     if (r->vk == VK_FORMAT_UNDEFINED) {
         o->reason = "no table entry";
@@ -154,9 +191,8 @@ int tex_vk_format(int nvn_format, TexVkFormat *o) {
                   "components reordered by the view swizzle";
     }
     if (f == 0x31) o->stencil = 1;
-    if (f >= 0x32 && f <= 0x34) o->depth = 1;
-    if (f == 0x35 || f == 0x36) o->depth = o->stencil = 1;
-    if (f == 0x35) o->ideal = VK_FORMAT_D24_UNORM_S8_UINT;
+    if (f == 0x32 || f == 0x34) o->depth = 1;
+    if (f == 0x36) o->depth = o->stencil = 1;
     if (o->depth || o->stencil) o->need = S | TX | DS;
     return 1;
 }

@@ -1,28 +1,29 @@
-"""Desktop shortcut creator for Donkey Kong Bananza PC Recompiled."""
+"""Desktop shortcut creator for MTF ShadowRacket (Mario Tennis Fever PC Recompiled)."""
 
 import os
 import subprocess
 
-def create_desktop_shortcut(game_dir: str, shortcut_name: str = "Donkey Kong Bananza", target_exe: str = None) -> bool:
-    """Creates a Windows desktop shortcut pointing to DKBLauncher.exe (or dkb.exe) in game_dir."""
+
+def create_desktop_shortcut(game_dir: str, shortcut_name: str = "MTF ShadowRacket", target_exe: str = None) -> bool:
+    """Creates a Windows desktop shortcut pointing to MTFLauncher.exe (or mtf.exe) in game_dir."""
     try:
         desktop_dir = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
         if not os.path.exists(desktop_dir):
             desktop_dir = os.path.join(os.path.expanduser("~"), "Desktop")
 
         shortcut_path = os.path.join(desktop_dir, f"{shortcut_name}.lnk")
-        
-        # Prefer DKBLauncher.exe if present
+
+        # Prefer MTFLauncher.exe if present
         if target_exe:
             chosen_exe = os.path.join(game_dir, target_exe)
-        elif os.path.isfile(os.path.join(game_dir, "DKBLauncher.exe")):
-            chosen_exe = os.path.join(game_dir, "DKBLauncher.exe")
-        elif os.path.isfile(os.path.join(game_dir, "..", "DKBLauncher.exe")):
-            chosen_exe = os.path.abspath(os.path.join(game_dir, "..", "DKBLauncher.exe"))
+        elif os.path.isfile(os.path.join(game_dir, "MTFLauncher.exe")):
+            chosen_exe = os.path.join(game_dir, "MTFLauncher.exe")
+        elif os.path.isfile(os.path.join(game_dir, "..", "MTFLauncher.exe")):
+            chosen_exe = os.path.abspath(os.path.join(game_dir, "..", "MTFLauncher.exe"))
         else:
-            chosen_exe = os.path.join(game_dir, "dkb.exe")
+            chosen_exe = os.path.join(game_dir, "mtf.exe")
 
-        icon_path = os.path.join(game_dir, "dkb.ico")
+        icon_path = os.path.join(game_dir, "mtf.ico")
         if not os.path.exists(icon_path):
             icon_path = chosen_exe
 
@@ -32,7 +33,7 @@ def create_desktop_shortcut(game_dir: str, shortcut_name: str = "Donkey Kong Ban
         $s.TargetPath = '{chosen_exe}'
         $s.WorkingDirectory = '{game_dir}'
         $s.IconLocation = '{icon_path},0'
-        $s.Description = 'Play Donkey Kong Bananza PC Recomp'
+        $s.Description = 'Play Mario Tennis Fever PC (MTF ShadowRacket)'
         $s.Save()
         """
 

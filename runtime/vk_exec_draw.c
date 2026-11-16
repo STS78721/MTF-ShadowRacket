@@ -44,6 +44,8 @@ static const uint32_t (*c0_push)[NVN2_ROOT_WORDS];
 #define NVN_STAGE_VS 0
 #define NVN_STAGE_FS 1
 #define NVN_STAGE_GS 2
+#define NVN_STAGE_TCS 3
+#define NVN_STAGE_TES 4
 #define NVN_STAGE_CS 5
 static uint8_t geometry_input;                              // normalized actual draw primitive; zero outside opt-in GS
 #define ONESHOT_WAIT_MS 1500u   // prepare_draw: capped to 1.5s to prevent Windows TDR (2s watchdog timeout) crashes
@@ -125,12 +127,12 @@ static struct {
     VkBuffer sup_buf;
     VkDeviceSize sup_off;
     int sup_valid;
-    uint8_t c0[4][VK_C0_BYTES];          // last c0 bank per stage (vertex, fragment, compute, geometry) and where it lives
-    VkBuffer c0_buf[4];
-    VkDeviceSize c0_off[4];
-    int c0_valid[4];
+    uint8_t c0[6][VK_C0_BYTES];          // last c0 bank per stage (VS, FS, CS, GS, TCS, TES) and where it lives
+    VkBuffer c0_buf[6];
+    VkDeviceSize c0_off[6];
+    int c0_valid[6];
     struct { p_bind_buf ssbo[16], ubo[16]; uint32_t dim[3], binst; Nvn2C0Layout lay; uint8_t has_lay;
-             uint32_t roots[NVN2_ROOT_TABLES][NVN2_ROOT_WORDS]; } c0_in[4];   // what vk_c0_fill read for c0[k]
+             uint32_t roots[NVN2_ROOT_TABLES][NVN2_ROOT_WORDS]; } c0_in[6];   // what vk_c0_fill read for c0[k]
     VkPipelineLayout ds_layout;          // graphics layout the sets below were last pushed or bound with
     VkDescriptorSet ds_bound[2];         // allocated set bound per set number (0: none or pushed since)
     VkDescriptorSet ds_last[2];          // last allocated and written set per set number, contents in DS
@@ -822,11 +824,32 @@ static int find_stage_scan(const prog_t *p, int nvn_stage, const uint8_t **ctl, 
     for (uint32_t i = 0; i < p->nstage && i < 6; i++) {
         const uint8_t *c = p->sd[i].control;
         if (!c || !p->sd[i].data) continue;
-        uint32_t st;
-        memcpy(&st, c + 0x714, 4);
+        const uint8_t *cd = (const uint8_t *)(uintptr_t)p->sd[i].data;
+        uint32_t magic = 0, ver = 0, st = 0, nlen = 0;
+        memcpy(&magic, c, 4), memcpy(&ver, c + 4, 4);
+        if (magic == 0x98761234u && ver == 0xC9u) {
+            st = c[0x56];
+            if (st >= 6u) {
+                uint32_t sph0 = 0;
+                memcpy(&sph0, cd, 4);
+                uint32_t spt = sph0 & 0x1fu, spv = (sph0 >> 5) & 0x1fu, sps = (sph0 >> 10) & 0xfu;
+                if ((spt == 1u || spt == 2u) && spv == 4u && sps >= 1u && sps <= 5u) {
+                    static const uint8_t map[6] = {0, NVN_STAGE_VS, NVN_STAGE_TCS, NVN_STAGE_TES, NVN_STAGE_GS, NVN_STAGE_FS};
+                    st = map[sps];
+                } else {
+                    st = NVN_STAGE_CS;
+                }
+            }
+            uint32_t c1_sz = 0, c1_off = 0;
+            memcpy(&c1_sz, c + 0x3c, 4), memcpy(&c1_off, c + 0x40, 4), memcpy(&nlen, c + 0x44, 4);
+            if (c1_sz && c1_off <= UINT32_MAX - c1_sz && c1_off + c1_sz > nlen) nlen = c1_off + c1_sz;
+        } else {
+            memcpy(&st, c + 0x714, 4);
+            memcpy(&nlen, c + 0x704, 4);
+        }
         if ((int)st != nvn_stage) continue;
-        memcpy(len, c + 0x704, 4);
-        *ctl = c, *code = (const uint8_t *)(uintptr_t)p->sd[i].data;
+        *len = nlen;
+        *ctl = c, *code = cd;
         return 1;
     }
     return 0;
@@ -847,9 +870,30 @@ static int find_stage(const prog_t *p, int nvn_stage, const uint8_t **ctl, const
         for (uint32_t i = 0; i < p->nstage && i < 6; i++) {
             const uint8_t *c = p->sd[i].control;
             if (!c || !p->sd[i].data) continue;
-            uint32_t st;
-            memcpy(&st, c + 0x714, 4);
-            if (st < 6 && m->idx[st] < 0) m->idx[st] = (int8_t)i, memcpy(&m->len[st], c + 0x704, 4);
+            const uint8_t *cd = (const uint8_t *)(uintptr_t)p->sd[i].data;
+            uint32_t magic = 0, ver = 0, st = 0, nlen = 0;
+            memcpy(&magic, c, 4), memcpy(&ver, c + 4, 4);
+            if (magic == 0x98761234u && ver == 0xC9u) {
+                st = c[0x56];
+                if (st >= 6u) {
+                    uint32_t sph0 = 0;
+                    memcpy(&sph0, cd, 4);
+                    uint32_t spt = sph0 & 0x1fu, spv = (sph0 >> 5) & 0x1fu, sps = (sph0 >> 10) & 0xfu;
+                    if ((spt == 1u || spt == 2u) && spv == 4u && sps >= 1u && sps <= 5u) {
+                        static const uint8_t map[6] = {0, NVN_STAGE_VS, NVN_STAGE_TCS, NVN_STAGE_TES, NVN_STAGE_GS, NVN_STAGE_FS};
+                        st = map[sps];
+                    } else {
+                        st = NVN_STAGE_CS;
+                    }
+                }
+                uint32_t c1_sz = 0, c1_off = 0;
+                memcpy(&c1_sz, c + 0x3c, 4), memcpy(&c1_off, c + 0x40, 4), memcpy(&nlen, c + 0x44, 4);
+                if (c1_sz && c1_off <= UINT32_MAX - c1_sz && c1_off + c1_sz > nlen) nlen = c1_off + c1_sz;
+            } else {
+                memcpy(&st, c + 0x714, 4);
+                memcpy(&nlen, c + 0x704, 4);
+            }
+            if (st < 6 && m->idx[st] < 0) m->idx[st] = (int8_t)i, m->len[st] = nlen;
         }
     }
     int i = m->idx[nvn_stage];
@@ -861,7 +905,7 @@ static int find_stage(const prog_t *p, int nvn_stage, const uint8_t **ctl, const
 // Texture and image types of a stage's first 32 slots, each kept with the handle and the generation and slot token it
 // was looked up under: a slot is looked up again, a hash probe, only when the handle changed or its slot may resolve
 // otherwise (slot_still).
-static struct { uint64_t context, tex[32], img[32], ttok[32], itok[32]; uint32_t tgen[32], igen[32]; uint8_t tt[32], it[32]; } AC[6];
+static struct { uint64_t context, tex[32], img[32], ttok[32], itok[32]; uint32_t tgen[32], igen[32]; uint8_t tt[32], it[32], inum[32]; } AC[6];
 static uint64_t descriptor_serial = 1;
 
 // vk_texture_slot_token of the slot a texture or image handle names; an empty handle always resolves to nothing.
@@ -919,12 +963,16 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
     if (st == NVN_STAGE_VS) vk_pipeline_answers(&ex->pipe, a, NULL);
     else if (st == NVN_STAGE_FS) vk_pipeline_answers(&ex->pipe, NULL, a);
     else if (st == NVN_STAGE_GS) a->geometry_input = geometry_input;
-    else if (st == NVN_STAGE_CS)
+    else if (st == NVN_STAGE_CS && ctl) {
+        uint32_t magic = 0, ver = 0;
+        memcpy(&magic, ctl, 4), memcpy(&ver, ctl + 4, 4);
+        size_t base_off = (magic == 0x98761234u && ver == 0xC9u) ? 0x58 : 0x748;
         for (int k = 0; k < 3; k++) {
             uint32_t l;
-            memcpy(&l, ctl + 0x748 + 4 * k, 4);
+            memcpy(&l, ctl + base_off + 4 * k, 4);
             a->local[k] = (uint16_t)(l ? l : 1);
         }
+    }
     typeof(AC[0]) *c = &AC[st];
     if (c->context != descriptor_serial) {
         memset(c, 0, sizeof *c);
@@ -943,7 +991,11 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
         uint64_t tt = tmiss ? token_of(ex, h) : 0, it = imiss ? token_of(ex, hi) : 0;
         if ((tmiss || imiss || check) && !locked) vk_texture_lock(), locked = 1, BS.ac_miss++;
         if (tmiss) c->tt[slot] = type_of_handle(ex, h), c->tex[slot] = h, c->ttok[slot] = tt, c->tgen[slot] = gen;
-        if (imiss) c->it[slot] = type_of_handle(ex, hi) & GFX_TEX_MASK, c->img[slot] = hi, c->itok[slot] = it, c->igen[slot] = gen;
+        if (imiss) {
+            uint8_t full = type_of_handle(ex, hi);
+            c->it[slot] = full & GFX_TEX_MASK, c->inum[slot] = full & (GFX_TEX_UINT | GFX_TEX_SINT);
+            c->img[slot] = hi, c->itok[slot] = it, c->igen[slot] = gen;
+        }
         if (check && (type_of_handle(ex, h) != c->tt[slot] || (type_of_handle(ex, hi) & GFX_TEX_MASK) != c->it[slot]))   // TOTK_SHADER_MEMO=check
             rt_fatal("vk_exec: kept texture types of stage %d slot %d differ from a lookup", st, slot);
         a->tex_type[slot] = c->tt[slot], a->img_type[slot] = c->it[slot];
@@ -1005,6 +1057,101 @@ static const uint8_t *native_gs_control(const uint8_t *ctl, const uint8_t *code,
     return copy;
 }
 
+static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pending, int await);
+
+static const GfxShader *shader_with_int_img(VkExec *ex, int st, const GfxShader *base) {
+    if (!base || !ex->prog || !gfx_shader_is_prepared(base)) return base;
+    const GfxShaderRes *lists[2] = {NULL, NULL};
+    int counts[2] = {
+        gfx_shader_resources(base, GFX_RES_IMG, &lists[0]),
+        gfx_shader_resources(base, GFX_RES_TEX, &lists[1]),
+    };
+    if (counts[0] <= 0 && counts[1] <= 0) return base;
+    descriptor_state(ex);
+    typeof(AC[0]) *c = &AC[st];
+    if (c->context != descriptor_serial) {
+        memset(c, 0, sizeof *c);
+        c->context = descriptor_serial;
+    }
+    uint32_t gen = vk_texture_slots_gen();
+    uint64_t umask = 0, smask = 0;
+    uint32_t miss_img = 0, miss_tex = 0;
+    uint64_t img_tok[32] = {0}, tex_tok[32] = {0};
+    uint64_t img_bind[32] = {0}, tex_bind[32] = {0};
+    int hi_n = 0;
+    struct { uint64_t h; uint8_t binding; } hi[64];
+    for (int p = 0; p < 2; p++) {
+        for (int i = 0; i < counts[p]; i++) {
+            const GfxShaderRes *r = &lists[p][i];
+            if (r->binding >= 64) continue;
+            uint32_t cnt = r->count ? r->count : 1;
+            int cap = p == 0 ? 32 : 128;
+            for (uint32_t k = 0; k < cnt; k++) {
+                int slot = r->slot + (int)k;
+                if (slot < 0 || slot >= cap) continue;
+                uint64_t h = p == 0 ? ex->img[st][slot] : ex->tex[st][slot];
+                if (!h) continue;
+                if (slot < 32) {
+                    int hit = p == 0 ? (c->img[slot] == h && c->itok[slot] && slot_still(ex, &c->igen[slot], c->itok[slot], h, gen))
+                                     : (c->tex[slot] == h && c->ttok[slot] && slot_still(ex, &c->tgen[slot], c->ttok[slot], h, gen));
+                    if (hit) {
+                        uint8_t num = (p == 0 ? c->inum[slot] : c->tt[slot]) & (GFX_TEX_UINT | GFX_TEX_SINT);
+                        if (num == GFX_TEX_UINT) umask |= 1ull << r->binding;
+                        else if (num == GFX_TEX_SINT) smask |= 1ull << r->binding;
+                    } else if (p == 0) {
+                        if (!(miss_img >> slot & 1u)) img_tok[slot] = token_of(ex, h), miss_img |= 1u << slot;
+                        img_bind[slot] |= 1ull << r->binding;
+                    } else {
+                        if (!(miss_tex >> slot & 1u)) tex_tok[slot] = token_of(ex, h), miss_tex |= 1u << slot;
+                        tex_bind[slot] |= 1ull << r->binding;
+                    }
+                } else if (hi_n < 64) {
+                    hi[hi_n].h = h, hi[hi_n].binding = (uint8_t)r->binding, hi_n++;
+                }
+            }
+        }
+    }
+    if (miss_img || miss_tex || hi_n) {
+        vk_texture_lock();
+        for (uint32_t m = miss_img; m; m &= m - 1) {
+            int slot = __builtin_ctz(m);
+            uint64_t h = ex->img[st][slot];
+            uint8_t full = type_of_handle(ex, h), num = full & (GFX_TEX_UINT | GFX_TEX_SINT);
+            c->it[slot] = full & GFX_TEX_MASK, c->inum[slot] = num;
+            c->img[slot] = h, c->itok[slot] = img_tok[slot], c->igen[slot] = gen;
+            if (num == GFX_TEX_UINT) umask |= img_bind[slot];
+            else if (num == GFX_TEX_SINT) smask |= img_bind[slot];
+        }
+        for (uint32_t m = miss_tex; m; m &= m - 1) {
+            int slot = __builtin_ctz(m);
+            uint64_t h = ex->tex[st][slot];
+            uint8_t full = type_of_handle(ex, h), num = full & (GFX_TEX_UINT | GFX_TEX_SINT);
+            c->tt[slot] = full, c->tex[slot] = h, c->ttok[slot] = tex_tok[slot], c->tgen[slot] = gen;
+            if (num == GFX_TEX_UINT) umask |= tex_bind[slot];
+            else if (num == GFX_TEX_SINT) smask |= tex_bind[slot];
+        }
+        for (int i = 0; i < hi_n; i++) {
+            uint8_t num = type_of_handle(ex, hi[i].h) & (GFX_TEX_UINT | GFX_TEX_SINT);
+            if (num == GFX_TEX_UINT) umask |= 1ull << hi[i].binding;
+            else if (num == GFX_TEX_SINT) smask |= 1ull << hi[i].binding;
+        }
+        vk_texture_unlock();
+    }
+    if (!(umask | smask)) return base;
+    const uint8_t *ctl, *code;
+    uint32_t len;
+    if (!find_stage(ex->prog, st, &ctl, &code, &len)) return base;
+    int gs = st == NVN_STAGE_VS ? GFX_STAGE_VS : st == NVN_STAGE_TCS ? GFX_STAGE_TCS :
+             st == NVN_STAGE_TES ? GFX_STAGE_TES : st == NVN_STAGE_GS ? GFX_STAGE_GS :
+             st == NVN_STAGE_FS ? GFX_STAGE_FS : st == NVN_STAGE_CS ? GFX_STAGE_CS : -1;
+    if (gs < 0) return base;
+    GfxShaderAnswers a;
+    answers_for(ex, st, ctl, 0, &a);
+    a.img_uint = umask, a.img_sint = smask;
+    const GfxShader *v = gfx_shader_get(gs, ctl, code, len, NULL, &a);
+    return v ? v : base;
+}
+
 // *present: the program has this stage. Returns NULL when it has not or the translation failed. pending (graphics
 // stages, vk_pipeline_async_on): a shader not translated yet is queued and NULL returned with *pending = 1. await: a
 // shader queued earlier is waited for (gfx_shader_await) instead.
@@ -1015,7 +1162,10 @@ static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pendin
     if (pending) *pending = 0;
     if (!ex->prog || !find_stage(ex->prog, st, &ctl, &code, &len)) return NULL;
     *present = 1;
-    if (st == NVN_STAGE_GS && native_gs_on() && nvn2_origin(code)) {
+    uint32_t magic = 0, ver = 0;
+    memcpy(&magic, ctl, 4), memcpy(&ver, ctl + 4, 4);
+    int raw_nvn2 = magic == 0x98761234u && ver == 0xC9u;
+    if (st == NVN_STAGE_GS && !raw_nvn2 && native_gs_on() && nvn2_origin(code)) {
         if (!native_gs_vs || !native_gs_fs) {   // its varyings follow from the other stages, which are still pending
             if (pending) *pending = 1;
             return NULL;
@@ -1037,11 +1187,12 @@ static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pendin
                 memmove(&set[1], &set[0], w * sizeof *set);
                 set[0] = hit;
             }
-            return set[0].s;
+            return gfx_shader_is_prepared(set[0].s) ? shader_with_int_img(ex, st, set[0].s) : set[0].s;
         }
     }
-    int gs = st == NVN_STAGE_VS ? GFX_STAGE_VS : st == NVN_STAGE_FS ? GFX_STAGE_FS :
-             st == NVN_STAGE_GS ? GFX_STAGE_GS : st == NVN_STAGE_CS ? GFX_STAGE_CS : -1;
+    int gs = st == NVN_STAGE_VS ? GFX_STAGE_VS : st == NVN_STAGE_TCS ? GFX_STAGE_TCS :
+             st == NVN_STAGE_TES ? GFX_STAGE_TES : st == NVN_STAGE_GS ? GFX_STAGE_GS :
+             st == NVN_STAGE_FS ? GFX_STAGE_FS : st == NVN_STAGE_CS ? GFX_STAGE_CS : -1;
     if (gs < 0) return NULL;
     const GfxShader *s = await ? gfx_shader_await(gs, ctl, code, len, &a)
                        : pending && vk_pipeline_async_on() ? gfx_shader_get_async(gs, ctl, code, len, &a, pending)
@@ -1054,14 +1205,16 @@ static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pendin
         memmove(&set[1], &set[0], (SHADER_WAYS - 1) * sizeof *set);
         set[0] = (ShaderEnt){.serial = serial, .stage = st, .used = 1, .a = a, .s = s};
     }
+    if (s && gfx_shader_is_prepared(s)) s = shader_with_int_img(ex, st, s);
     return s;
 }
 
 // ---- descriptors
 
 static int nvn_stage_of(int gfx_stage) {
-    return gfx_stage == GFX_STAGE_VS ? NVN_STAGE_VS : gfx_stage == GFX_STAGE_FS ? NVN_STAGE_FS :
-           gfx_stage == GFX_STAGE_GS ? NVN_STAGE_GS : gfx_stage == GFX_STAGE_CS ? NVN_STAGE_CS : -1;
+    return gfx_stage == GFX_STAGE_VS ? NVN_STAGE_VS : gfx_stage == GFX_STAGE_TCS ? NVN_STAGE_TCS :
+           gfx_stage == GFX_STAGE_TES ? NVN_STAGE_TES : gfx_stage == GFX_STAGE_GS ? NVN_STAGE_GS :
+           gfx_stage == GFX_STAGE_FS ? NVN_STAGE_FS : gfx_stage == GFX_STAGE_CS ? NVN_STAGE_CS : -1;
 }
 
 static VkDescriptorBufferInfo zero_info(uint64_t max) {
@@ -1132,11 +1285,18 @@ void vk_c0_fill(uint8_t bank[VK_C0_BYTES], int stage, const p_bind_buf ssbo[16],
     if (stage == NVN_STAGE_CS && c0_lay) {
         if (!nvn2_c0_pack(bank, VK_C0_BYTES, c0_lay, c0_push, ssbo, ubo))
             rt_fatal("vk: invalid NVN 2 compute parameter-block layout");
+        if (dispatch && (dispatch[0] || dispatch[1] || dispatch[2])) memcpy(bank + 4, dispatch, 12);
+        size_t tat = nvn2_c0_part(c0_lay, 3);
+        for (uint32_t k = 0; k < c0_lay->textures && tat + 8u * (k + 1u) <= VK_C0_BYTES; k++) {
+            uint64_t idx = k;
+            memcpy(bank + tat + 8u * k, &idx, 8);
+        }
         return;
     }
     memset(bank, 0, VK_C0_BYTES);
-    int base =stage == NVN_STAGE_VS ? 0x110 : stage == NVN_STAGE_FS ? 0x510 : stage == NVN_STAGE_CS ? 0x310 :
-              stage == NVN_STAGE_GS ? 0x410 : -1;   // geometry (DKB_NATIVE_GS): the table ssbo_slot expects
+    int base = stage == NVN_STAGE_VS ? 0x110 : stage == NVN_STAGE_TCS ? 0x210 :
+               stage == NVN_STAGE_TES ? 0x310 : stage == NVN_STAGE_GS ? 0x410 :
+               stage == NVN_STAGE_FS ? 0x510 : stage == NVN_STAGE_CS ? 0x310 : -1;
     if (base < 0) return;
     c0_table(bank + base, ssbo);
     if (stage == NVN_STAGE_CS) {
@@ -1159,9 +1319,11 @@ static int c0_on(void) {   // TOTK_FIX_C0=0: c0 reads zeros instead of the drive
 
 // c0 from replay scratch; a bank equal to the stage's previous one reuses its range, so it costs no copy.
 static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
-    if (st != NVN_STAGE_VS && st != NVN_STAGE_FS && st != NVN_STAGE_CS && st != NVN_STAGE_GS)
+    if (st != NVN_STAGE_VS && st != NVN_STAGE_FS && st != NVN_STAGE_CS && st != NVN_STAGE_GS &&
+        st != NVN_STAGE_TCS && st != NVN_STAGE_TES)
         rt_fatal("vk_exec: synthetic c0 is unavailable for stage %d", st);
-    int k = st == NVN_STAGE_VS ? 0 : st == NVN_STAGE_FS ? 1 : st == NVN_STAGE_GS ? 3 : 2;
+    int k = st == NVN_STAGE_VS ? 0 : st == NVN_STAGE_FS ? 1 : st == NVN_STAGE_GS ? 3 :
+            st == NVN_STAGE_TCS ? 4 : st == NVN_STAGE_TES ? 5 : 2;
     // vk_c0_fill reads buffer bindings, compute root words and dispatch size, or the graphics base instance:
     // equal inputs give the same bank, so neither the fill nor the 2 KiB compare is needed.
     typeof(B.c0_in[0]) in;
@@ -1206,15 +1368,33 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
         const uint8_t *ctl, *code;
         uint32_t len, c1;
         if (find_stage(ex->prog, st, &ctl, &code, &len)) {
-            memcpy(&c1, ctl + 0x700, 4);
-            if (c1 < len && bind_range(ex, (uint64_t)(uintptr_t)code + c1, len - c1, align, max, VK_MUSE_UBO, 0, 0, 0, &bi))
-                return bi;
-            if (c1 < len && len - c1 <= max) {   // NVN 2 stages: the lowered code (nvn2_lower.cpp) is host memory
-                VkBuffer b;
-                VkDeviceSize o;
-                RS.volatile_ = 1;
-                memcpy(scratch(ex, len - c1, &b, &o), code + c1, len - c1);
-                return (VkDescriptorBufferInfo){b, o, len - c1};
+            uint32_t magic = 0, ver = 0;
+            memcpy(&magic, ctl, 4), memcpy(&ver, ctl + 4, 4);
+            if (magic == 0x98761234u && ver == 0xC9u) {
+                uint32_t c1_sz = 0, c1_off = 0, total = 0;
+                memcpy(&c1_sz, ctl + 0x3c, 4), memcpy(&c1_off, ctl + 0x40, 4), memcpy(&total, ctl + 0x44, 4);
+                if (c1_sz && c1_off < total && c1_sz <= total - c1_off) {
+                    if (bind_range(ex, (uint64_t)(uintptr_t)code + c1_off, c1_sz, align, max, VK_MUSE_UBO, 0, 0, 0, &bi))
+                        return bi;
+                    if (c1_sz <= max) {
+                        VkBuffer b;
+                        VkDeviceSize o;
+                        RS.volatile_ = 1;
+                        memcpy(scratch(ex, c1_sz, &b, &o), code + c1_off, c1_sz);
+                        return (VkDescriptorBufferInfo){b, o, c1_sz};
+                    }
+                }
+            } else {
+                memcpy(&c1, ctl + 0x700, 4);
+                if (c1 < len && bind_range(ex, (uint64_t)(uintptr_t)code + c1, len - c1, align, max, VK_MUSE_UBO, 0, 0, 0, &bi))
+                    return bi;
+                if (c1 < len && len - c1 <= max) {   // NVN 2 stages: the lowered code (nvn2_lower.cpp) is host memory
+                    VkBuffer b;
+                    VkDeviceSize o;
+                    RS.volatile_ = 1;
+                    memcpy(scratch(ex, len - c1, &b, &o), code + c1, len - c1);
+                    return (VkDescriptorBufferInfo){b, o, len - c1};
+                }
             }
         }
     } else if (slot == 17 && st != NVN_STAGE_GS) {
@@ -1248,6 +1428,23 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
     return zero_info(max);
 }
 
+// SM86 dynamic constant-bank word view (cbNw, flags & 2): bound as STORAGE_BUFFER using SBO range/alignment limits.
+static VkDescriptorBufferInfo ubo_sbo_info(VkExec *ex, int st, int slot) {
+    if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
+    if (slot >= 3 && slot - 3 < 18) {
+        VkDescriptorBufferInfo bi;
+        const p_bind_buf *b = &ex->ubo[st][slot - 3];
+        uint64_t max = LIM.sbo_max, align = LIM.sbo_align;
+        if (b->size && vk_usnap_find(b->addr, b->size < max ? b->size : max, align, &bi)) {
+            count_use(VK_MCLS_SCRATCH, VK_MUSE_UBO, bi.range);
+            return bi;
+        }
+        if (bind_range(ex, b->addr, b->size, align, max, VK_MUSE_UBO, 0, 0, 0, &bi)) return bi;
+        return zero_info(max);
+    }
+    return ubo_info(ex, st, slot);
+}
+
 // The NVN slot of a storage binding. Ryujinx numbers a shader's storage buffers in the order it meets them
 // (GfxShaderRes.slot); the NVN slot is the entry of the driver constant buffer c0 that holds the buffer's address
 // (cbuf_slot 0, handle = word offset): 16-byte entries at byte 0x110 (vertex), 0x510 (fragment) and 0x310 (compute).
@@ -1260,7 +1457,8 @@ static int ssbo_slot(const GfxShaderRes *r, int st, int *ubo) {
     // Eglantine shader_recompiler/frontend/maxwell/translate_program.cpp::AddNVNStorageBuffers uses a distinct
     // ordinary geometry table at c0+0x410. This only maps declared
     // bindings; it does not synthesize that driver bank or establish the native NVN2 geometry ABI.
-    int off = r->handle * 4, base = st == NVN_STAGE_VS ? 0x110 : st == NVN_STAGE_FS ? 0x510 :
+    int off = r->handle * 4, base = st == NVN_STAGE_VS ? 0x110 : st == NVN_STAGE_TCS ? 0x210 :
+                                  st == NVN_STAGE_TES ? 0x310 : st == NVN_STAGE_FS ? 0x510 :
                                   st == NVN_STAGE_GS ? 0x410 : st == NVN_STAGE_CS ? 0x310 : -1;
     if (st == NVN_STAGE_CS && off >= 0x210 && off < 0x310 && (off - 0x210) % 16 == 0) {
         *ubo = 1;
@@ -1339,11 +1537,19 @@ static p_bind_buf guarded_storage_binding(const VkExec *ex, int st, const GfxSha
         }
     } else if (r->cbuf_slot == 1 && ex->prog) {
         const uint8_t *ctl, *code;
-        uint32_t len, c1;
+        uint32_t len, c1 = 0, magic = 0, ver = 0;
         if (!find_stage(ex->prog, st, &ctl, &code, &len)) return b;
-        memcpy(&c1, ctl + 0x700, 4);
-        if (c1 > len || off > len - c1 || len - c1 - off < 8) return b;
-        memcpy(&b.addr, code + c1 + off, 8);
+        memcpy(&magic, ctl, 4), memcpy(&ver, ctl + 4, 4);
+        if (magic == 0x98761234u && ver == 0xC9u) {
+            uint32_t c1_sz = 0, total = 0;
+            memcpy(&c1_sz, ctl + 0x3c, 4), memcpy(&c1, ctl + 0x40, 4), memcpy(&total, ctl + 0x44, 4);
+            if (!c1_sz || c1 > total || off > total - c1 || total - c1 - off < 8) return b;
+            memcpy(&b.addr, code + c1 + off, 8);
+        } else {
+            memcpy(&c1, ctl + 0x700, 4);
+            if (c1 > len || off > len - c1 || len - c1 - off < 8) return b;
+            memcpy(&b.addr, code + c1 + off, 8);
+        }
     } else if (r->cbuf_slot == 17) {
         // ubo_info binds the synthetic compute push bank here, before its user-UBO mapping. Unwritten words are zero.
         if (off > sizeof ex->push[1][0] - 8) return b;
@@ -1382,7 +1588,18 @@ static VkDescriptorBufferInfo ssbo_info(VkExec *ex, int st, const GfxShaderRes *
     else if (ubo_ptr_res(r)) up.addr = ubo_ptr(ex, st, r), b = &up;   // size 0: up to the end of the backing
     if (b) {
         // vk_caps.c: shaders translated for sbuf_align address the buffer from its address rounded down to it.
+        // Read-only declared SSBOs from NVN 2 compute/vertex stages (which may index from 0 without adding the
+        // sub-alignment lead) can be copied into an aligned scratch slice so offset 0 matches b->addr exactly.
         uint64_t lead = vk_caps.sbuf_align ? b->addr & (vk_caps.sbuf_align - 1) : 0;
+        if (lead && !written && !guarded && b->size && b->size <= (1u << 20)) {
+            VkMemSpan sp;
+            if (vk_mem_resolve(b->addr, b->size, &sp)) {
+                VkBuffer sb;
+                VkDeviceSize so;
+                memcpy(scratch(ex, b->size, &sb, &so), (const void *)(uintptr_t)b->addr, b->size);
+                return (VkDescriptorBufferInfo){sb, so, b->size};
+            }
+        }
         int writeback = written && (!guarded || guarded_is_declared_ssbo(st, r, b));
         if (bind_range(ex, b->addr - lead, b->size ? b->size + lead : 0, align, max, ubo ? VK_MUSE_UBO : VK_MUSE_SSBO,
                        written, writeback, guarded, &bi)) {
@@ -1601,7 +1818,9 @@ static void tex_info_lookup(VkExec *ex, const GfxShaderRes *r, uint64_t h, int s
     descriptor_state(ex);
     int td_on = td_mode();
     VkImage image;
-    if (!h || storage || !td_on) return tex_info_full(ex, r, h, storage, separate, out, &image);
+    // Shadow samples follow whichever private depth image the pass rendered. That choice changes without a new
+    // descriptor, so it is not kept in the memo.
+    if (!h || storage || !td_on || (r->type & 0x400)) return tex_info_full(ex, r, h, storage, separate, out, &image);
     uint32_t gen = vk_texture_slots_gen(), ep = vk_texture_epoch(), sg = vk_sampler_gen();   // before any lookup
     typeof(TD[0]) *m = &TD[(h * 0x9E3779B97F4A7C15ull ^ (uint64_t)r->type << 7 ^ (uint64_t)separate) >> 51];
     if (m->valid && m->context == descriptor_serial && m->h == h && m->type == r->type && m->separate == separate && m->sgen == sg &&
@@ -1640,6 +1859,7 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
         int hv;
         const VkTexImage *img = vk_texture_by_id_locked(&ex->tex_pool, (int)(h & 0xfffff), &v, &hv);
         if (img) view = get_view(ex, img, &v, hv, r->type, storage), *image = img->image;
+        int sh_mode = -1, sh_func = -1;
         if (img && storage) vk_texture_storage_bound_locked(img);
         if (img && !storage && ex->nfbl && in_fbl(ex, img->image)) layout = VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
         if (!storage && !separate) {
@@ -1647,17 +1867,37 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
             // blending neighbouring depths puts reconstructed positions in mid-air at object edges (shadow masks).
             // Integer formats (UINT/SINT and STENCIL) cannot use linear filtering in Vulkan.
             int sid = (int)(h >> 20 & 0xfff);
-            VkFormat vfmt = img ? sampled_view_format(img, &v, hv, 0, NULL, NULL) : VK_FORMAT_UNDEFINED;
-            int is_int = img && (vk_exec_view_aspect(img, &v, hv) == VK_IMAGE_ASPECT_STENCIL_BIT ||
-                                 vk_fmt_num_type(vfmt) != GFX_TYPE_FLOAT);
-            int point = img && (is_int || ((img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && !(r->type & 0x400) &&
-                                           vk_exec_view_aspect(img, &v, hv) != VK_IMAGE_ASPECT_STENCIL_BIT));
-            samp = point ? vk_sampler_point_by_id_locked(&ex->samp_pool, sid) : vk_sampler_by_id_locked(&ex->samp_pool, sid);
+            if (r->type & 0x400)
+                samp = vk_sampler_shadow_by_id_locked(&ex->samp_pool, sid, &sh_mode, &sh_func);
+            else {
+                VkFormat vfmt = img ? sampled_view_format(img, &v, hv, 0, NULL, NULL) : VK_FORMAT_UNDEFINED;
+                int is_int = img && (vk_exec_view_aspect(img, &v, hv) == VK_IMAGE_ASPECT_STENCIL_BIT ||
+                                     vk_fmt_num_type(vfmt) != GFX_TYPE_FLOAT);
+                int point = img && (is_int || ((img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) &&
+                                               vk_exec_view_aspect(img, &v, hv) != VK_IMAGE_ASPECT_STENCIL_BIT));
+                samp = point ? vk_sampler_point_by_id_locked(&ex->samp_pool, sid) : vk_sampler_by_id_locked(&ex->samp_pool, sid);
+            }
+        }
+        if (img && (r->type & 0x400)) {
+            static uint64_t seen[8];
+            static int nseen;
+            uint64_t key = ((uint64_t)img->width << 32) | img->height | ((uint64_t)(img->format & 0xffff) << 48);
+            int known = 0;
+            for (int i = 0; i < nseen; i++)
+                if (seen[i] == key) known = 1;
+            if (!known && nseen < 8) {
+                seen[nseen++] = key;
+                rt_log("vk: shadow sample %ux%u fmt %d %s%s compare %d func %d", img->width, img->height,
+                       (int)img->format, img->bound ? "in guest memory" : "private",
+                       img->gpu_owned ? " rendered" : "", sh_mode, sh_func);
+            }
         }
     }
     if (!view) {
         int di = dummy_index(res_view_type(r->type), ms);
         view = storage ? storage_dummy(di, r->format) : Z.img[di].view;
+        layout = VK_IMAGE_LAYOUT_GENERAL;
+        *image = VK_NULL_HANDLE;
     }
     if (!samp) samp = r->type & 0x400 ? Z.samp_shadow : Z.samp;
     *out = (VkDescriptorImageInfo){separate || storage ? VK_NULL_HANDLE : samp, view, layout};
@@ -2164,7 +2404,9 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
             }
             o->buffer = (VkDescriptorBufferInfo){B.sup_buf, B.sup_off, SUPPORT_BYTES};
         } else if (b->kind == GFX_RES_UBO) {
-            for (uint32_t k = 0; k < cnt; k++) o[k].buffer = ubo_info(ex, st, r->slot + (int)k);
+            for (uint32_t k = 0; k < cnt; k++)
+                o[k].buffer = (r->flags & 2) ? ubo_sbo_info(ex, st, r->slot + (int)k)
+                                             : ubo_info(ex, st, r->slot + (int)k);
         } else if (b->kind == GFX_RES_SSBO) {
             for (uint32_t k = 0; k < cnt; k++) o[k].buffer = ssbo_info(ex, st, r, r->flags & 1);
         } else if (b->kind == GFX_RES_TEX || b->kind == GFX_RES_IMG) {
@@ -2319,8 +2561,24 @@ static void record_fixed(VkExec *ex) {
     if (ex->dirty & VK_EXEC_DIRTY_VIEWPORT) {
         float x = 0, y = 0, w = (float)ex->pass_w, h = (float)ex->pass_h;
         if (ex->has_vp) x = ex->vp[0][0], y = ex->vp[0][1], w = ex->vp[0][2], h = ex->vp[0][3];
-        if (w < 1) w = 1;
-        if (h < 1) h = 1;
+        const VkPhysicalDeviceLimits *lim = &vk_ctx()->props.limits;
+        float max_w = (float)lim->maxViewportDimensions[0], max_h = (float)lim->maxViewportDimensions[1];
+        float bmin = lim->viewportBoundsRange[0], bmax = lim->viewportBoundsRange[1];
+        if (!(w >= 1.0f)) w = 1.0f;
+        if (!(h >= 1.0f)) h = 1.0f;
+        if (w > max_w) w = max_w;
+        if (h > max_h) h = max_h;
+        if (!(x >= bmin)) x = bmin;
+        if (!(x <= bmax - 1.0f)) x = bmax - 1.0f;
+        if (x + w > bmax) w = bmax - x;
+        while (x + w > bmax && w > 1.0f) w -= 1.0f;
+        if (!(w >= 1.0f)) w = 1.0f;
+        if (!(y >= bmin)) y = bmin;
+        if (!(y <= bmax - 1.0f)) y = bmax - 1.0f;
+        if (y + h > bmax) h = bmax - y;
+        while (y + h > bmax && h > 1.0f) h -= 1.0f;
+        while ((y + h) - h < bmin && y < bmax - 1.0f) y += 1.0f;
+        if (!(h >= 1.0f)) h = 1.0f;
         VkViewport v = {x, y + h, w, -h, ex->depth_range[0], ex->depth_range[1]};   // the y flip: negative height
         vkCmdSetViewportWithCount(cb, 1, &v);
         ex->recorded++;
@@ -2426,7 +2684,7 @@ typedef struct {
     const prog_t *prog;
     uint64_t serial;
     uint32_t gen, tex_serial;
-    uint64_t tex[3][32], img[3][32];
+    uint64_t tex[5][32], img[5][32];
     uint8_t geometry_input;
     VkPipeState pipe;
 } MemoKey;
@@ -2581,7 +2839,7 @@ static int skip_fs_listed(const VkExec *ex) {
     return skip_listed(ex, NVN_STAGE_FS, &sl, "TOTK_SKIP_FS", W_SKIP_FS, "DKB_SKIP_FS is active: draws of the listed NVN 2 fragment stages are skipped");
 }
 
-static struct { int on, valid, has_fs, has_gs; MemoKey k; const GfxShader *vs, *fs, *gs; } SM = {-1};
+static struct { int on, valid, has_fs, has_gs, has_tcs, has_tes; MemoKey k; const GfxShader *vs, *fs, *gs, *tcs, *tes; } SM = {-1};
 
 // Numeric handles are relative to the active descriptor tables. Keep the per-handle memos only while those tables
 // and their address mappings stay unchanged. A sampler table switch also changes combined image descriptors.
@@ -2604,6 +2862,8 @@ static void memo_key(const VkExec *ex, uint32_t gen, MemoKey *k) {
     k->prog = ex->prog, k->serial = ex->prog->serial, k->gen = gen, k->tex_serial = ex->tex_serial;
     memcpy(k->tex[0], ex->tex[NVN_STAGE_VS], sizeof k->tex[0]), memcpy(k->tex[1], ex->tex[NVN_STAGE_FS], sizeof k->tex[1]);
     memcpy(k->img[0], ex->img[NVN_STAGE_VS], sizeof k->img[0]), memcpy(k->img[1], ex->img[NVN_STAGE_FS], sizeof k->img[1]);
+    memcpy(k->tex[3], ex->tex[NVN_STAGE_TCS], sizeof k->tex[3]), memcpy(k->tex[4], ex->tex[NVN_STAGE_TES], sizeof k->tex[4]);
+    memcpy(k->img[3], ex->img[NVN_STAGE_TCS], sizeof k->img[3]), memcpy(k->img[4], ex->img[NVN_STAGE_TES], sizeof k->img[4]);
     k->geometry_input = geometry_input;
     if (geometry_input) {
         memcpy(k->tex[2], ex->tex[NVN_STAGE_GS], sizeof k->tex[2]);
@@ -2622,7 +2882,9 @@ static int memo_match(VkExec *ex, uint32_t gen, MemoKey *k) {
                            memcmp(k->img[2], ex->img[NVN_STAGE_GS], sizeof k->img[2]))) return 0;
     if (k->tex_serial == ex->tex_serial) return 1;
     if (memcmp(k->tex[0], ex->tex[NVN_STAGE_VS], sizeof k->tex[0]) || memcmp(k->tex[1], ex->tex[NVN_STAGE_FS], sizeof k->tex[1]) ||
-        memcmp(k->img[0], ex->img[NVN_STAGE_VS], sizeof k->img[0]) || memcmp(k->img[1], ex->img[NVN_STAGE_FS], sizeof k->img[1]))
+        memcmp(k->img[0], ex->img[NVN_STAGE_VS], sizeof k->img[0]) || memcmp(k->img[1], ex->img[NVN_STAGE_FS], sizeof k->img[1]) ||
+        memcmp(k->tex[3], ex->tex[NVN_STAGE_TCS], sizeof k->tex[3]) || memcmp(k->tex[4], ex->tex[NVN_STAGE_TES], sizeof k->tex[4]) ||
+        memcmp(k->img[3], ex->img[NVN_STAGE_TCS], sizeof k->img[3]) || memcmp(k->img[4], ex->img[NVN_STAGE_TES], sizeof k->img[4]))
         return 0;
     k->tex_serial = ex->tex_serial;
     return 1;
@@ -2728,6 +2990,23 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (skip_all < 0) skip_all = getenv("DKB_SKIP_DRAWS") != NULL;
     if (skip_all) return 0;
     int want_gs = geometry_draw(ex, (uint32_t)prim);
+    int want_tcs = 0, want_tes = 0;
+    if (ex->prog) {
+        const uint8_t *c, *k;
+        uint32_t l;
+        if (find_stage(ex->prog, NVN_STAGE_TCS, &c, &k, &l) && gfx_shader_prepared_nvn2(c, k)) want_tcs = 1;
+        if (find_stage(ex->prog, NVN_STAGE_TES, &c, &k, &l) && gfx_shader_prepared_nvn2(c, k)) want_tes = 1;
+        if (find_stage(ex->prog, NVN_STAGE_GS, &c, &k, &l) && gfx_shader_prepared_nvn2(c, k)) {
+            if (!vk_geometry_supported()) {
+                warn_once(W_GEOMETRY, "NVN 2 geometry shader: the device has no geometryShader: draws that need one are skipped");
+                __atomic_fetch_add(&gfx_counters.draws_skipped, 1, __ATOMIC_RELAXED);
+                return 0;
+            }
+            want_gs = 1;
+            geometry_input = want_tes ? GFX_GEOMETRY_TRIANGLES : vk_geometry_input((uint32_t)prim);
+            if (!geometry_input) geometry_input = GFX_GEOMETRY_TRIANGLES;
+        }
+    }
     if (want_gs < 0) return 0;
     cb_res(ex);
     dummies_init();
@@ -2742,16 +3021,22 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     VkRect2D sc = vk_exec_scissor(ex);
     if (!sc.extent.width || !sc.extent.height) return 0;
     if (!ex->prog) return warn_once(W_PROGRAM, "a draw without a bound program is skipped"), 0;
-    int has_vs, has_fs, has_gs = 0, vs_wait = 0, fs_wait = 0, gs_wait = 0, memo = shader_memo_on();
-    const GfxShader *vs, *fs, *gs = NULL;
+    int has_vs, has_fs, has_gs = 0, has_tcs = 0, has_tes = 0;
+    int vs_wait = 0, fs_wait = 0, gs_wait = 0, tcs_wait = 0, tes_wait = 0, memo = shader_memo_on();
+    const GfxShader *vs, *fs, *gs = NULL, *tcs = NULL, *tes = NULL;
     uint32_t gen = memo ? vk_texture_slots_gen() : 0;   // before shader_for, whose lookups may bump it
     if (memo && SM.valid && memo_match(ex, gen, &SM.k)) {
-        vs = SM.vs, fs = SM.fs, gs = SM.gs, has_vs = 1, has_fs = SM.has_fs, has_gs = SM.has_gs;
+        vs = SM.vs, fs = SM.fs, gs = SM.gs, tcs = SM.tcs, tes = SM.tes;
+        has_vs = 1, has_fs = SM.has_fs, has_gs = SM.has_gs, has_tcs = SM.has_tcs, has_tes = SM.has_tes;
         if (memo == 2) {
-            int hv, hf, hg = 0, wv, wf, wg = 0;
-            const GfxShader *v2 = shader_for(ex, NVN_STAGE_VS, &hv, &wv, 0), *f2 = shader_for(ex, NVN_STAGE_FS, &hf, &wf, 0);
+            int hv, hf, hg = 0, ht = 0, he = 0, wv, wf, wg = 0, wt = 0, we = 0;
+            const GfxShader *v2 = shader_for(ex, NVN_STAGE_VS, &hv, &wv, 0);
+            const GfxShader *f2 = shader_for(ex, NVN_STAGE_FS, &hf, &wf, 0);
             const GfxShader *g2 = want_gs ? shader_for(ex, NVN_STAGE_GS, &hg, &wg, 0) : NULL;
-            if (v2 != vs || f2 != fs || g2 != gs || hf != has_fs || hg != has_gs || wv || wf || wg)
+            const GfxShader *t2 = want_tcs ? shader_for(ex, NVN_STAGE_TCS, &ht, &wt, 0) : NULL;
+            const GfxShader *e2 = want_tes ? shader_for(ex, NVN_STAGE_TES, &he, &we, 0) : NULL;
+            if (v2 != vs || f2 != fs || g2 != gs || t2 != tcs || e2 != tes ||
+                hf != has_fs || hg != has_gs || ht != has_tcs || he != has_tes || wv || wf || wg || wt || we)
                 rt_fatal("vk_exec: shader memo of program %llu differs from the lookup", (unsigned long long)ex->prog->serial);
         }
     } else {
@@ -2759,9 +3044,17 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         vs = shader_for(ex, NVN_STAGE_VS, &has_vs, &vs_wait, 0);
         fs = shader_for(ex, NVN_STAGE_FS, &has_fs, &fs_wait, 0);
         native_gs_vs = vs, native_gs_fs = fs;
+        if (want_tcs) tcs = shader_for(ex, NVN_STAGE_TCS, &has_tcs, &tcs_wait, 0);
+        if (want_tes) tes = shader_for(ex, NVN_STAGE_TES, &has_tes, &tes_wait, 0);
         if (want_gs) gs = shader_for(ex, NVN_STAGE_GS, &has_gs, &gs_wait, 0);
-        if (memo && vs && !vs_wait && !fs_wait && !gs_wait && (!has_fs || fs) && (!want_gs || (has_gs && gs)))
-            memo_key(ex, gen, &SM.k), SM.vs = vs, SM.fs = fs, SM.gs = gs, SM.has_fs = has_fs, SM.has_gs = has_gs, SM.valid = 1;
+        if (memo && vs && !vs_wait && !fs_wait && !gs_wait && !tcs_wait && !tes_wait &&
+            (!has_fs || fs) && (!want_gs || (has_gs && gs)) &&
+            (!want_tcs || (has_tcs && tcs)) && (!want_tes || (has_tes && tes))) {
+            memo_key(ex, gen, &SM.k);
+            SM.vs = vs, SM.fs = fs, SM.gs = gs, SM.tcs = tcs, SM.tes = tes;
+            SM.has_fs = has_fs, SM.has_gs = has_gs, SM.has_tcs = has_tcs, SM.has_tes = has_tes;
+            SM.valid = 1;
+        }
     }
     if (!has_vs) return warn_once(W_NO_VS, "a draw with a program that has no vertex stage is skipped"), 0;
     static int bis_lo = -1, bis_hi = 255;   // DKB_DRAW_BISECT=lo-hi (hex): only draws whose program byte is in range
@@ -2792,22 +3085,35 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     // A draw into a target the previous frame did not render (or into none) waits for a pending shader or pipeline:
     // one-shot draws (volumes and LUTs generated once, later only sampled) would leave their target empty for the
     // session. A draw into per-frame targets is skipped until they are ready and comes back next frame.
+    static uint64_t oneshot_frame;
+    static uint64_t oneshot_left_ns;
     int oneshot = -1, skip = pipe_skip_mode();   // -1: not looked up
-    if (vs_wait || fs_wait || gs_wait) {
+    if (vs_wait || fs_wait || gs_wait || tcs_wait || tes_wait) {
         if (!(oneshot = !vk_exec_targets_recent(ex, skip >= 1))) return perf_count(PERF_CNT_SHADER_SKIP), 0;   // skipped until ready
+        uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+        if (f != oneshot_frame) oneshot_frame = f, oneshot_left_ns = 150000000;
+        if (oneshot_left_ns < 1000000) return perf_count(PERF_CNT_SHADER_SKIP), 0;
         perf_count(PERF_CNT_ONESHOT_WAIT);
+        uint64_t st0 = kern_now_ns();
         if (vs_wait) vs = shader_for(ex, NVN_STAGE_VS, &has_vs, NULL, 1);
         if (fs_wait) fs = shader_for(ex, NVN_STAGE_FS, &has_fs, NULL, 1);
         native_gs_vs = vs, native_gs_fs = fs;
+        if (tcs_wait) tcs = shader_for(ex, NVN_STAGE_TCS, &has_tcs, NULL, 1);
+        if (tes_wait) tes = shader_for(ex, NVN_STAGE_TES, &has_tes, NULL, 1);
         if (gs_wait) gs = shader_for(ex, NVN_STAGE_GS, &has_gs, NULL, 1);
+        uint64_t sspent = kern_now_ns() - st0;
+        oneshot_left_ns = sspent < oneshot_left_ns ? oneshot_left_ns - sspent : 0;
     }
     if (stage_diag_skip(ex, vs)) return 0;
     if (light_quad_fault_skip(ex, vs, fs, count) || skip_vs_listed(ex) || skip_fs_listed(ex)) return 0;
-    if (!vs || (has_fs && !fs) || (want_gs && (!has_gs || !gs))) return 0;
+    if (!vs || (has_fs && !fs) || (want_gs && (!has_gs || !gs)) ||
+        (want_tcs && (!has_tcs || !tcs)) || (want_tes && (!has_tes || !tes))) return 0;
     if (!geometry_feedback_safe(ex, vs, gs)) return 0;
     uint32_t fbl = feedback_prepare(ex, fs);
     VkPipeState s = ex->pipe;
-    s.vs = vs, s.fs = fs, s.gs = gs;
+    s.vs = vs, s.fs = fs, s.gs = gs, s.tcs = tcs, s.tes = tes;
+    s.gs_passthrough = (uint8_t)(gs && gfx_shader_is_source_passthrough(gs));
+    s.gs_prepared = (uint8_t)(gs && gfx_shader_is_prepared(gs));
     s.feedback = (uint8_t)((fbl & 0xff ? 1 : 0) | (fbl & 0x100 ? 2 : 0));
     s.prim = (uint8_t)prim;
     s.depth_minus_w = (uint8_t)(nvn_depth_minus_w() != 0);
@@ -2822,12 +3128,16 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     static uint64_t wait_frame;
     static uint64_t wait_left_ns;
     uint32_t wait_ms = 0;
-    uint64_t t0 = 0;
+    uint64_t t0 = 0, ot0 = 0;
     if (oneshot > 0) {
-        wait_ms = ONESHOT_WAIT_MS;
-    } else if (skip < 2 && count <= 6 && (uint64_t)sc.extent.width * sc.extent.height * 2 >= (uint64_t)ex->pass_w * ex->pass_h) {
         uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
-        if (f != wait_frame) wait_frame = f, wait_left_ns = 50000000;
+        if (f != oneshot_frame) oneshot_frame = f, oneshot_left_ns = 150000000;
+        wait_ms = (uint32_t)(oneshot_left_ns / 1000000);
+        if (wait_ms > ONESHOT_WAIT_MS) wait_ms = ONESHOT_WAIT_MS;
+        if (wait_ms) ot0 = kern_now_ns();
+    } else if (skip < 2 && ((count <= 6 && (uint64_t)sc.extent.width * sc.extent.height * 4 >= (uint64_t)ex->pass_w * ex->pass_h) || (ex->pass_ncolor == 0 && ex->pass_depth != VK_FORMAT_UNDEFINED))) {
+        uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+        if (f != wait_frame) wait_frame = f, wait_left_ns = 300000000;
         wait_ms = (uint32_t)(wait_left_ns / 1000000);
         if (wait_ms) t0 = kern_now_ns();
     }
@@ -2841,18 +3151,31 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         info = PM.info, pending = 0;
         p = __atomic_load_n(&info->pipeline, __ATOMIC_ACQUIRE);
     } else {
-        w0 = t0 ? t0 : wait_ms ? kern_now_ns() : 0;   // the clock is read only for draws that may wait
+        w0 = ot0 ? ot0 : t0 ? t0 : wait_ms ? kern_now_ns() : 0;   // the clock is read only for draws that may wait
         p = vk_pipeline_graphics_async(&s, &info, &pending, wait_ms);
+        if (ot0) {
+            uint64_t spent = kern_now_ns() - ot0;
+            oneshot_left_ns = spent < oneshot_left_ns ? oneshot_left_ns - spent : 0;
+        }
         if (t0) {
             uint64_t spent = kern_now_ns() - t0;
             wait_left_ns = spent < wait_left_ns ? wait_left_ns - spent : 0;
         }
         why = oneshot > 0 ? "one-shot, shader" : wait_ms ? "full-screen" : NULL;
         if (pending && oneshot < 0 && !vk_exec_targets_recent(ex, skip >= 1)) {
-            perf_count(PERF_CNT_ONESHOT_WAIT);
-            why = "one-shot";
-            if (!w0) w0 = kern_now_ns();
-            p = vk_pipeline_graphics_async(&s, &info, &pending, ONESHOT_WAIT_MS);
+            uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+            if (f != oneshot_frame) oneshot_frame = f, oneshot_left_ns = 150000000;
+            uint32_t ow_ms = (uint32_t)(oneshot_left_ns / 1000000);
+            if (ow_ms > ONESHOT_WAIT_MS) ow_ms = ONESHOT_WAIT_MS;
+            if (ow_ms) {
+                perf_count(PERF_CNT_ONESHOT_WAIT);
+                why = "one-shot";
+                uint64_t ow0 = kern_now_ns();
+                if (!w0) w0 = ow0;
+                p = vk_pipeline_graphics_async(&s, &info, &pending, ow_ms);
+                uint64_t ospent = kern_now_ns() - ow0;
+                oneshot_left_ns = ospent < oneshot_left_ns ? oneshot_left_ns - ospent : 0;
+            }
         }
         PM.valid = !pending && p && info;
         if (PM.valid) PM.s = s, PM.info = info;
@@ -2868,7 +3191,14 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
                pending ? ", skipped after all" : "", count, ex->pass_w, ex->pass_h, tg);
     }
     if (pending) return 0;   // a background worker is building it: the draw is skipped until it is ready
-    if (!p || !info) return warn_once(W_PIPELINE, "a graphics pipeline could not be created: draws with it are skipped"), 0;
+    if (!p || !info) {
+        if (s.prim == NVN_DRAW_PRIMITIVE_PATCHES) {
+            static int npatch;
+            if (npatch < 8)
+                rt_log("vk: patch draw skipped, pass %ux%u (%d so far)", ex->pass_w, ex->pass_h, ++npatch);
+        }
+        return warn_once(W_PIPELINE, "a graphics pipeline could not be created: draws with it are skipped"), 0;
+    }
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
     if (!B.st_valid || memcmp(&B.st, &s, sizeof s)) {
         vk_pipeline_set_dynamic(ex->cb, &s);

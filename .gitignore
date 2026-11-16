@@ -88,5 +88,7 @@ desktop.ini
 # The SPIR-V handed to the driver (DKB_DUMP_SPV=1) is derived from the game shaders: local only.
 spv/
 *.spv
+/spirv/
+/sm86/instructions.json
 
 /runtime_disabled_upscalers/

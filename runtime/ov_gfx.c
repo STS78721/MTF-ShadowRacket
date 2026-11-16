@@ -145,7 +145,7 @@ static void ov_refresh_rate_2(Cpu *c) {
 static void ov_display_max_res(Cpu *c) {
     int32_t *out = arg_p(c, 0);
     unsigned wh[2] = {1920, 1080};
-    res_wanted(wh);
+    res_display_size(wh);
     if (out) { out[0] = (int32_t)wh[0]; out[1] = (int32_t)wh[1]; }
     ret_x(c, 0);
 }

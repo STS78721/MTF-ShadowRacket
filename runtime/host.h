@@ -265,11 +265,20 @@ void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene
 int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 (the test res_init and romfs.c share)
 int res_wants_wide_overlay(const unsigned out[2]);         // not 16:9 on a game version with the camera aspect patch
 void res_wanted(unsigned out[2]);                          // the output size TOTK_OUTPUT_RES asks for
+void res_display_size(unsigned out[2]);                    // size reported to oe/vi (crop / RESOLUTION / docked)
 void res_fov_live(void);                                   // TOTK_FOV to the camera (set fov); on a settings change
 void res_apply_live(void);                                 // universal NS2 live resolution / mode sync on present
 void res_record_game_surface(uint32_t win_w, uint32_t win_h, int cx, int cy, int cw, int ch);
 void res_live_snapshot(unsigned win_sz[2], unsigned crop_sz[2], unsigned out_tgt[2], int *handheld);
 void ff_get_target_resolutions(uint32_t *canvas_w, uint32_t *canvas_h, uint32_t *scene_w, uint32_t *scene_h);
+int res_mtf_lines(void);                                   // NS2_RESOLUTION: MTF frame lines, 0 = the game's own
+void res_mtf_size(uint32_t *w, uint32_t *h);               // chosen internal WxH, or 0,0 when original
+void res_mtf_target(uint32_t *w, uint32_t *h);             // active supersample target (0,0 = none)
+void res_mtf_base(uint32_t *w, uint32_t *h);               // setter's base frame before supersample
+void res_mtf_scale(float *sx, float *sy);                  // target/base; 1,1 when not supersampling
+void res_mtf_bump_tex_size(uint32_t *w, uint32_t *h);      // stock/2-3 frame targets -> internal WxH (host images)
+void res_mtf_adjust_crop(int tex_w, int tex_h, int *x, int *y, int *w, int *h);  // scale present crop with frame
+void res_mtf_scale_crop(int crop[4]);                      // scale a window crop in place for host present
 void ov_notify_operation_mode_changed(void);               // signal live 0x1e/0x1f Switch 2 console mode change
 // ---- code patches (patches.c) and the frame step (frame_rate.c)
 void rt_patches_init(void);                                // after ldr_load: switches from the environment, the patch

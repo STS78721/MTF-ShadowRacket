@@ -244,6 +244,7 @@ typedef struct {
     VkPhysicalDevicePresentIdFeaturesKHR pid;
     VkPhysicalDeviceAddressBindingReportFeaturesEXT abr;
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pei;
+    VkPhysicalDeviceImageCompressionControlFeaturesEXT icc;
 } FeatureChain;
 
 static int create_device(void) {
@@ -278,6 +279,11 @@ static int create_device(void) {
     // Ryujinx's SPIR-V declares fragment shader interlock whenever the host reports it (vk_pipeline.c spirv_fixup).
     OPTIONAL_EXT(has_fragment_shader_interlock, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME, fsi,
                  VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT);
+    // Without this, a depth image's compression metadata is stored past the NVN allocation. Binding that image
+    // scribbles the next texture (blue court, blocked grass); refusing the bind leaves the depth private so every
+    // other view of that storage samples empty.
+    OPTIONAL_EXT(has_image_compression_control, VK_EXT_IMAGE_COMPRESSION_CONTROL_EXTENSION_NAME, icc,
+                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_COMPRESSION_CONTROL_FEATURES_EXT);
     // Feedback loops (vk.h VkCtx.feedback): the layout, and barriers inside dynamic rendering
     int has_fbl = 0, has_lr = 0;
     if (has_ext(ep, ne, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) &&
@@ -359,6 +365,8 @@ static int create_device(void) {
     else if (!h->textureCompressionBC) miss = "textureCompressionBC";
     if (miss) { rt_log("vk: required feature missing on %s: %s", g_vk.props.deviceName, miss); free(c); return 0; }
     if (!c->fault.deviceFault) g_vk.has_device_fault = 0;   // vkGetDeviceFaultInfoEXT needs the feature, not just the extension
+    if (g_vk.has_image_compression_control && !c->icc.imageCompressionControl) g_vk.has_image_compression_control = 0;
+    rt_log("vk: image compression control %s", g_vk.has_image_compression_control ? "on" : "off");
     if (g_vk.has_address_binding_report && !c->abr.reportAddressBinding) g_vk.has_address_binding_report = 0;
     if (g_vk.has_pipeline_exec_info && !c->pei.pipelineExecutableInfo) g_vk.has_pipeline_exec_info = 0;
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;

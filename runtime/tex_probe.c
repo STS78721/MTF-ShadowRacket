@@ -281,12 +281,16 @@ static int test_formats(void) {
             printf("probe-vkmem: unsupported %#x: VkFormat %d lacks features %#x on this GPU\n", f, (int)t.vk, (unsigned)t.need);
         }
     }
-    // The GPU-side promises of the fallbacks: RGBA8 and D32S8 must be usable, otherwise the fallback is empty.
+    // RGBA8 must be usable. D24S8 is native when the device can attach it; D32S8 is the stand-in and must still be usable.
     TexVkFormat t;
     tex_vk_format(0x79, &t);
     int ok_astc = tex_vk_format_supported(&t);
     tex_vk_format(0x35, &t);
-    int ok_d = tex_vk_format_supported(&t) && t.vk == VK_FORMAT_D32_SFLOAT_S8_UINT;
+    int d24 = t.vk == VK_FORMAT_D24_UNORM_S8_UINT || t.vk == VK_FORMAT_D32_SFLOAT_S8_UINT;
+    t.vk = VK_FORMAT_D32_SFLOAT_S8_UINT;
+    t.need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+             VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    int ok_d = d24 && tex_vk_format_supported(&t);
     if (!ok_astc || !ok_d) { printf("probe-vkmem: FAIL fallback formats (RGBA8 %d, D32S8 %d)\n", ok_astc, ok_d); return 1; }
     return 0;
 }
