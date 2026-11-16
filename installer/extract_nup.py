@@ -343,12 +343,12 @@ def extract_file(nup, zstd, idx, dest, verify):
             tmp.unlink(missing_ok=True)
 
 
-def extract_tree(nup, zstd, pkg, which, out_dir, verify, quiet):
-    entries = nup.package_files(pkg, which)
+def extract_entries(nup, zstd, entries, which, out_dir, verify, quiet):
     total = sum(nup.files[i][1] for _, i in entries)
     done = 0
     skipped = 0
     t0 = time.time()
+    last_report = t0
     root = out_dir.resolve()
     for n, (parts, idx) in enumerate(entries, 1):
         dest = (out_dir.joinpath(*parts)).resolve()
@@ -358,12 +358,19 @@ def extract_tree(nup, zstd, pkg, which, out_dir, verify, quiet):
         if dest.exists() and dest.stat().st_size == size and not (verify and size and _hash(dest) != nup.files[idx][4]):
             skipped += 1
             done += size
-            continue
-        done += extract_file(nup, zstd, idx, dest, verify)
-        if not quiet and (n % 200 == 0 or n == len(entries)):
-            rate = done / max(time.time() - t0, 1e-6) / 1e6
-            print(f'  {which}: {n}/{len(entries)} files, {done / 1e9:.2f} of {total / 1e9:.2f} GB ({rate:.0f} MB/s)')
+        else:
+            done += extract_file(nup, zstd, idx, dest, verify)
+        now = time.time()
+        if not quiet and (n % 100 == 0 or (now - last_report) >= 0.5 or n == len(entries)):
+            last_report = now
+            rate = done / max(now - t0, 1e-6) / 1e6
+            print(f'  {which}: {n}/{len(entries)} files, {done / 1e9:.2f} of {total / 1e9:.2f} GB ({rate:.0f} MB/s)',
+                  flush=True)
     return len(entries), total, skipped
+
+
+def extract_tree(nup, zstd, pkg, which, out_dir, verify, quiet):
+    return extract_entries(nup, zstd, nup.package_files(pkg, which), which, out_dir, verify, quiet)
 
 
 def _hash(path):
@@ -452,15 +459,28 @@ def main(argv=None):
         zstd = Zstd()
         packages, mode = packages_for_extract(nup, args.package, args.overlay_update)
         if mode and not args.quiet:
-            print(f'extract mode: {mode}')
-        for pkg in packages:
+            print(f'extract mode: {mode}', flush=True)
+        if len(packages) > 1:
+            desc = ' + '.join(
+                f'[{p.index}] {p.kind_name} {p.title_id:016x} {p.display_version or p.version}'
+                for p in packages
+            )
+            print(f'extracting overlay {desc} to {args.out}', flush=True)
+        else:
+            pkg = packages[0]
             print(f'extracting package [{pkg.index}] {pkg.kind_name} {pkg.title_id:016x} '
-                  f'{pkg.display_version or pkg.version} to {args.out}')
-            for which in ((args.only,) if args.only else ('exefs', 'romfs')):
-                count, total, skipped = extract_tree(nup, zstd, pkg, which, args.out / which,
-                                                     not args.no_verify, args.quiet)
-                print(f'  {which}: {count} files, {total / 1e9:.2f} GB'
-                      f'{f" ({skipped} already there)" if skipped else ""}')
+                  f'{pkg.display_version or pkg.version} to {args.out}', flush=True)
+        for which in ((args.only,) if args.only else ('exefs', 'romfs')):
+            # Merge packages in memory so base blobs superseded by the update are extracted once.
+            merged = {}
+            for pkg in packages:
+                for parts, idx in nup.package_files(pkg, which):
+                    merged[parts] = idx
+            entries = list(merged.items())
+            count, total, skipped = extract_entries(nup, zstd, entries, which, args.out / which,
+                                                    not args.no_verify, args.quiet)
+            print(f'  {which}: {count} files, {total / 1e9:.2f} GB'
+                  f'{f" ({skipped} already there)" if skipped else ""}', flush=True)
         return 0
     except NupError as e:
         print(f'error: {e}', file=sys.stderr)

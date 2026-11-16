@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import os
+import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "launcher"))
@@ -242,6 +246,88 @@ class MtfDumpDiscoverTest(unittest.TestCase):
                 upd_nup, out_dir, extract_script=ROOT / "tools" / "extract_nup.py", root=ROOT
             )
         self.assertIn("subsdk0", str(ctx.exception))
+
+    def test_reuse_extracted_nup_hits_and_invalidates(self) -> None:
+        base_tid, upd_tid, base_trees, sparse_upd_trees, _ = self._mtf_trees()
+        nup_path = self.root / "combined.nup"
+        nup_path.write_bytes(
+            nec.build([(0, base_tid, 0, base_trees), (1, upd_tid, 327680, sparse_upd_trees)])
+        )
+        out_dir = self.root / "work" / "nup-extract"
+        self.assertIsNone(md.reuse_extracted_nup(nup_path, out_dir))
+        res = md.extract_nup_overlay(
+            nup_path, out_dir, extract_script=ROOT / "tools" / "extract_nup.py", root=ROOT
+        )
+        hit = md.reuse_extracted_nup(nup_path, out_dir)
+        self.assertIsNotNone(hit)
+        assert hit is not None
+        self.assertEqual(hit.exefs.resolve(), res.exefs.resolve())
+        self.assertEqual(hit.romfs.resolve(), res.romfs.resolve())
+
+        # Removing an ExeFS file invalidates reuse.
+        saved_sub = (res.exefs / "subsdk0").read_bytes()
+        (res.exefs / "subsdk0").unlink()
+        self.assertIsNone(md.reuse_extracted_nup(nup_path, out_dir))
+        (res.exefs / "subsdk0").write_bytes(saved_sub)
+        self.assertIsNotNone(md.reuse_extracted_nup(nup_path, out_dir))
+
+        # Changing the .nup bytes/mtime invalidates reuse.
+        nup_path.write_bytes(
+            nec.build([(0, base_tid, 0, base_trees), (1, upd_tid, 327681, sparse_upd_trees)])
+        )
+        self.assertIsNone(md.reuse_extracted_nup(nup_path, out_dir))
+
+    def test_rmtree_retry_recovers_after_transient_winerror32(self) -> None:
+        locked = self.root / "locked-dir"
+        write(locked / "a.bin", b"data")
+        calls = {"n": 0}
+        real_rmtree = shutil.rmtree
+
+        def flaky_rmtree(path, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                exc = PermissionError(errno.EACCES, "File in use")
+                exc.winerror = 32
+                raise exc
+            return real_rmtree(path, *args, **kwargs)
+
+        with mock.patch("mtf_dump.shutil.rmtree", flaky_rmtree), mock.patch("mtf_dump.time.sleep"):
+            md.rmtree_retry(locked, attempts=5)
+        self.assertFalse(locked.exists())
+        self.assertGreaterEqual(calls["n"], 3)
+
+    def test_extract_nup_overlay_progress_and_rmtree_lock_fallback(self) -> None:
+        base_tid, upd_tid, base_trees, sparse_upd_trees, _ = self._mtf_trees()
+        nup_path = self.root / "combined.nup"
+        nup_path.write_bytes(
+            nec.build([(0, base_tid, 0, base_trees), (1, upd_tid, 327680, sparse_upd_trees)])
+        )
+        out_dir = self.root / "work" / "nup-extract"
+        write(out_dir / "stale.part", b"locked")
+        events: list[tuple[str, int | None]] = []
+
+        def locked_rmtree(path, *args, **kwargs):
+            exc = PermissionError(errno.EACCES, "Sharing violation")
+            exc.winerror = 32
+            raise exc
+
+        with mock.patch("mtf_dump.shutil.rmtree", locked_rmtree), mock.patch("mtf_dump.time.sleep"):
+            res = md.extract_nup_overlay(
+                nup_path,
+                out_dir,
+                extract_script=ROOT / "tools" / "extract_nup.py",
+                root=ROOT,
+                on_progress=lambda line, pct: events.append((line, pct)),
+            )
+        self.assertNotEqual(res.exefs.parent.resolve(), out_dir.resolve())
+        self.assertTrue(res.exefs.parent.name.startswith("nup-extract-"))
+        self.assertEqual(md.exefs_missing(res.exefs), [])
+        self.assertTrue(any(pct is not None and 0 <= pct <= 100 for _, pct in events), events)
+        # Fallback directory is also discovered by reuse_extracted_nup.
+        hit = md.reuse_extracted_nup(nup_path, out_dir)
+        self.assertIsNotNone(hit)
+        assert hit is not None
+        self.assertEqual(hit.exefs.resolve(), res.exefs.resolve())
 
 
 if __name__ == "__main__":

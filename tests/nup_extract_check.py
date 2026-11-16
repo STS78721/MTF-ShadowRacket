@@ -313,6 +313,39 @@ class ExtractNupTest(unittest.TestCase):
         self.assertFalse((out_dir / 'romfs' / 'x.bin').exists())
         self.assertNotEqual((out_dir / 'exefs' / 'subsdk0').read_bytes(), b'wrong-sub')
 
+    def test_overlay_single_pass_skips_superseded_base_blobs(self):
+        base_tid = 0x0400D4201C6EA000
+        update_tid = base_tid | 0x800
+        base_trees = {
+            'exefs': {'main': MAIN, 'main.npdm': NPDM, 'rtld': b'rtld-b', 'sdk': b'sdk-b', 'subsdk0': b'sub-b'},
+            'romfs': {'keep.bin': b'keep', 'shared.bin': b'old-shared'},
+        }
+        update_trees = {
+            'exefs': {'main': MAIN[::-1], 'main.npdm': NPDM, 'rtld': b'rtld-u', 'sdk': b'sdk-u'},
+            'romfs': {'shared.bin': b'new-shared', 'extra.bin': b'extra'},
+        }
+        path = self.write(build([(0, base_tid, 0, base_trees), (1, update_tid, 327680, update_trees)]))
+        out_dir = self.dir / 'out_single_pass'
+        calls = []
+        real_extract_file = nup.extract_file
+
+        def spy_extract_file(n, z, idx, dest, verify):
+            calls.append((str(dest), n.files[idx][0], idx))
+            return real_extract_file(n, z, idx, dest, verify)
+
+        with mock.patch('extract_nup.extract_file', spy_extract_file):
+            code, out, err = run(path, '--out', out_dir, '--overlay-update')
+        self.assertEqual(code, 0, err)
+        dests = [c[0] for c in calls]
+        self.assertEqual(len(dests), len(set(dests)), f'superseded files extracted twice: {calls}')
+        self.assertEqual(len(calls), 8)  # 5 exefs + 3 romfs extracted exactly once
+        self.assertIn('exefs: 5/5 files', out)
+        self.assertIn('romfs: 3/3 files', out)
+        self.assertEqual((out_dir / 'exefs' / 'main').read_bytes(), MAIN[::-1])
+        self.assertEqual((out_dir / 'exefs' / 'subsdk0').read_bytes(), b'sub-b')
+        self.assertEqual((out_dir / 'romfs' / 'shared.bin').read_bytes(), b'new-shared')
+        self.assertEqual((out_dir / 'romfs' / 'keep.bin').read_bytes(), b'keep')
+
     def test_package_by_index_and_only(self):
         path = self.write(build([(0, TID_A, 0, BASE_TREES), (1, TID_A, 65536, UPDATE_TREES)]))
         out_dir = self.dir / 'out'

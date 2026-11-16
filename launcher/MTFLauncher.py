@@ -32,6 +32,7 @@ from mtf_dump import (
     extract_nup_overlay,
     find_extract_nup,
     load_expected_mtf as load_expected_mtf_dump,
+    reuse_extracted_nup,
     verify_exefs_hashes,
 )
 
@@ -862,10 +863,12 @@ class MTFLauncherApp(tk.Tk):
             relief=tk.FLAT,
             font=("Segoe UI", 9),
         ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 8), ipady=5)
-        self._plain_btn(dump_row, "Folder...", self._pick_dump_root, width=9).pack(side=tk.RIGHT, padx=(4, 0))
-        self._plain_btn(dump_row, ".NUP...", self._pick_nup_file, width=8).pack(side=tk.RIGHT)
-        self._path_picker(card, "ExeFS Folder (main, rtld, sdk, subsdk0):", self.exefs_var, self._pick_exefs)
-        self._path_picker(card, "RomFS Folder (raw dump or romfs_packed):", self.romfs_var, self._pick_romfs)
+        self.folder_btn = self._plain_btn(dump_row, "Folder...", self._pick_dump_root, width=9)
+        self.folder_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        self.nup_btn = self._plain_btn(dump_row, ".NUP...", self._pick_nup_file, width=8)
+        self.nup_btn.pack(side=tk.RIGHT)
+        self.exefs_browse_btn = self._path_picker(card, "ExeFS Folder (main, rtld, sdk, subsdk0):", self.exefs_var, self._pick_exefs)
+        self.romfs_browse_btn = self._path_picker(card, "RomFS Folder (raw dump or romfs_packed):", self.romfs_var, self._pick_romfs)
 
         opt_row = tk.Frame(card, bg=C_PANEL)
         opt_row.pack(fill=tk.X, pady=(8, 6))
@@ -900,23 +903,36 @@ class MTFLauncherApp(tk.Tk):
         self.setup_log.pack(fill=tk.BOTH, expand=True)
         return page
 
-    def _path_picker(self, parent: tk.Misc, label: str, var: tk.StringVar, cmd) -> None:
+    def _path_picker(self, parent: tk.Misc, label: str, var: tk.StringVar, cmd) -> tk.Button:
         row = tk.Frame(parent, bg=C_PANEL)
         row.pack(fill=tk.X, pady=3)
         tk.Label(row, text=label, width=38, anchor="w", font=("Segoe UI", 9), fg=C_TEXT_DIM, bg=C_PANEL).pack(side=tk.LEFT)
         tk.Entry(row, textvariable=var, bg=C_BG_DEEP, fg=C_TEXT, insertbackground=C_OPTIC, relief=tk.FLAT,
                  font=("Segoe UI", 9)).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 8), ipady=5)
-        self._plain_btn(row, "Browse...", cmd, width=10).pack(side=tk.RIGHT)
+        btn = self._plain_btn(row, "Browse...", cmd, width=10)
+        btn.pack(side=tk.RIGHT)
+        return btn
 
-    def _apply_dump_resolve(self, resolved, *, log: bool = True) -> None:
+    def _set_setup_busy(self, busy: bool) -> None:
+        self.setup_running = busy
+        state = tk.DISABLED if busy else tk.NORMAL
+        for attr in ("folder_btn", "nup_btn", "exefs_browse_btn", "romfs_browse_btn", "build_btn"):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.configure(state=state)
+
+    def _apply_dump_resolve(self, resolved, *, log: bool = True, update_status: bool = True) -> None:
         self.exefs_var.set(str(resolved.exefs))
         self.romfs_var.set(str(resolved.romfs))
         if log:
             for note in resolved.notes:
                 self._log_setup(note)
+        if update_status:
             self.setup_status_var.set("Dump paths resolved. Click VERIFY & BUILD MTF.EXE when ready.")
 
     def _pick_dump_root(self) -> None:
+        if self.setup_running:
+            return
         d = filedialog.askdirectory(title="Select Mario Tennis Fever Dump Root / NUP-extracted Folder")
         if not d:
             return
@@ -932,7 +948,54 @@ class MTFLauncherApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror(APP_TITLE, f"Could not auto-detect dump folders:\n{exc}", parent=self)
 
+    def _resolve_or_extract_nup(
+        self,
+        nup: Path,
+        *,
+        exefs_hint: str = "",
+        pct_lo: int = 2,
+        pct_hi: int = 99,
+    ):
+        nup_out = self.root_dir / "work" / "nup-extract"
+        resolved = reuse_extracted_nup(nup, nup_out)
+        if resolved is None and exefs_hint:
+            cand_parent = Path(exefs_hint).parent
+            if cand_parent.name.startswith("nup-extract"):
+                resolved = reuse_extracted_nup(nup, cand_parent)
+        if resolved is not None:
+            self.after(0, lambda: self._log_setup("Reusing extracted NUP tree (no re-extract needed)."))
+            return resolved
+
+        self.after(
+            0,
+            lambda name=nup.name: self.setup_status_var.set(
+                f"Extracting {name} (base+update if present, else update alone)…"
+            ),
+        )
+
+        def on_progress(line: str, pct: int | None) -> None:
+            def _ui() -> None:
+                self._log_setup(line)
+                if pct is not None:
+                    p = pct_lo + int((pct_hi - pct_lo) * max(0, min(100, pct)) / 100)
+                    self.setup_prog.configure(value=p)
+                    self.setup_status_var.set(f"Extracting {nup.name}… {pct}%")
+
+            self.after(0, _ui)
+
+        script = find_extract_nup(self.root_dir, resource_bases=[resource_base(), resource_base().parent])
+        return extract_nup_overlay(
+            nup,
+            nup_out,
+            python=self._find_setup_python(),
+            extract_script=script,
+            root=self.root_dir,
+            on_progress=on_progress,
+        )
+
     def _pick_nup_file(self) -> None:
+        if self.setup_running:
+            return
         path = filedialog.askopenfilename(
             title="Select Mario Tennis Fever .NUP Container",
             filetypes=[("NX Package (NUP)", "*.nup"), ("All files", "*.*")],
@@ -942,41 +1005,48 @@ class MTFLauncherApp(tk.Tk):
         nup = Path(path)
         self.dump_root_var.set(str(nup))
         self.setup_log.delete("1.0", tk.END)
+        self._set_setup_busy(True)
+        self.setup_prog.configure(value=2)
         self.setup_status_var.set(f"Extracting {nup.name} (base+update if present, else update alone)…")
         self.update_idletasks()
 
         def worker() -> None:
             try:
-                script = find_extract_nup(self.root_dir, resource_bases=[resource_base(), resource_base().parent])
-                out = self.root_dir / "work" / "nup-extract"
-                resolved = extract_nup_overlay(
-                    nup,
-                    out,
-                    python=self._find_setup_python(),
-                    extract_script=script,
-                    root=self.root_dir,
-                )
+                resolved = self._resolve_or_extract_nup(nup, pct_lo=2, pct_hi=99)
                 self._last_nup_extract = (nup.resolve(), resolved.exefs.resolve(), resolved.romfs.resolve())
-                self.after(0, lambda: (self._apply_dump_resolve(resolved), None))
+                self.after(
+                    0,
+                    lambda r=resolved: (
+                        self.setup_prog.configure(value=100),
+                        self._apply_dump_resolve(r),
+                    ),
+                )
             except Exception as exc:
                 err = str(exc)
                 self.after(
                     0,
-                    lambda: (
-                        self.setup_status_var.set(f"NUP extract failed: {err}"),
-                        self._log_setup(f"ERROR: {err}"),
-                        messagebox.showerror(APP_TITLE, err, parent=self),
+                    lambda e=err: (
+                        self.setup_prog.configure(value=0),
+                        self.setup_status_var.set(f"NUP extract failed: {e}"),
+                        self._log_setup(f"ERROR: {e}"),
+                        messagebox.showerror(APP_TITLE, e, parent=self),
                     ),
                 )
+            finally:
+                self.after(0, lambda: self._set_setup_busy(False))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _pick_exefs(self) -> None:
+        if self.setup_running:
+            return
         d = filedialog.askdirectory(title="Select ExeFS Folder (main, main.npdm, rtld, sdk, subsdk0)")
         if d:
             self.exefs_var.set(d)
 
     def _pick_romfs(self) -> None:
+        if self.setup_running:
+            return
         d = filedialog.askdirectory(title="Select RomFS or Packed RomFS Folder")
         if d:
             self.romfs_var.set(d)
@@ -1166,80 +1236,25 @@ class MTFLauncherApp(tk.Tk):
         exefs_txt = self.exefs_var.get().strip()
         romfs_txt = self.romfs_var.get().strip()
 
-        # Prefer re-resolving a dump root / .nup so NUP update trees get base overlays.
-        # Also re-resolve when the chosen ExeFS sits under updates/<ver>/.
-        resolve_root: Path | None = None
-        if dump_root:
-            resolve_root = Path(dump_root)
-        elif exefs_txt:
-            exefs_path = Path(exefs_txt)
-            if any(part.lower() == "updates" for part in exefs_path.parts):
-                for parent in exefs_path.parents:
-                    if parent.name.lower() == "updates":
-                        resolve_root = parent.parent
-                        break
-
-        if resolve_root is not None:
-            try:
-                work = self.root_dir / "work" / "dump-resolve"
-                work.mkdir(parents=True, exist_ok=True)
-                if resolve_root.is_file() and resolve_root.suffix.lower() == ".nup":
-                    already = False
-                    if self._last_nup_extract is not None and exefs_txt and romfs_txt:
-                        prev_nup, prev_exefs, prev_romfs = self._last_nup_extract
-                        if (
-                            resolve_root.resolve() == prev_nup
-                            and Path(exefs_txt).resolve() == prev_exefs
-                            and Path(romfs_txt).resolve() == prev_romfs
-                            and prev_exefs.is_dir()
-                            and prev_romfs.is_dir()
-                            and all((prev_exefs / name).is_file() for name in EXEFS_REQUIRED)
-                        ):
-                            already = True
-                    if already:
-                        resolved = None
-                    else:
-                        script = find_extract_nup(self.root_dir, resource_bases=[resource_base(), resource_base().parent])
-                        resolved = extract_nup_overlay(
-                            resolve_root,
-                            self.root_dir / "work" / "nup-extract",
-                            python=self._find_setup_python(),
-                            extract_script=script,
-                            root=self.root_dir,
-                        )
-                        self._last_nup_extract = (
-                            resolve_root.resolve(),
-                            resolved.exefs.resolve(),
-                            resolved.romfs.resolve(),
-                        )
-                elif resolve_root.is_dir():
-                    resolved = discover_dump(resolve_root, work)
-                else:
-                    resolved = None
-                if resolved is not None:
-                    self._apply_dump_resolve(resolved, log=True)
-                    exefs_txt = str(resolved.exefs)
-                    romfs_txt = str(resolved.romfs)
-            except DumpError as exc:
-                messagebox.showerror(APP_TITLE, str(exc), parent=self)
-                return
-            except Exception as exc:
-                messagebox.showerror(APP_TITLE, f"Dump auto-detect failed:\n{exc}", parent=self)
-                return
-
-        exefs = Path(exefs_txt)
-        romfs = Path(romfs_txt)
-        if not exefs.is_dir() or not romfs.is_dir():
+        has_root = bool(dump_root and Path(dump_root).exists())
+        has_pair = bool(exefs_txt and romfs_txt and Path(exefs_txt).is_dir() and Path(romfs_txt).is_dir())
+        if not has_root and not has_pair:
             messagebox.showwarning(
                 APP_TITLE,
                 "Please select a dump folder / .nup, or both ExeFS and RomFS folders first.",
                 parent=self,
             )
             return
-        self.setup_running = True
-        self.build_btn.configure(state=tk.DISABLED)
-        self.setup_prog.configure(value=5)
-        threading.Thread(target=self._run_setup_worker, args=(exefs, romfs), daemon=True).start()
+
+        self.setup_log.delete("1.0", tk.END)
+        self._set_setup_busy(True)
+        self.setup_prog.configure(value=2)
+        self.setup_status_var.set("Resolving Mario Tennis Fever 1.1.1 dump...")
+        threading.Thread(
+            target=self._run_setup_worker,
+            args=(dump_root, exefs_txt, romfs_txt),
+            daemon=True,
+        ).start()
 
     def _find_setup_python(self) -> Path:
         for cand in (
@@ -1275,8 +1290,56 @@ class MTFLauncherApp(tk.Tk):
         if rc != 0:
             raise RuntimeError(f"Step failed with exit code {rc}: {' '.join(cmd[:3])}")
 
-    def _run_setup_worker(self, exefs: Path, romfs: Path) -> None:
+    def _run_setup_worker(self, dump_root: str, exefs_txt: str, romfs_txt: str) -> None:
         try:
+            # Resolve dump root / .nup off the Tkinter UI thread.
+            resolve_root: Path | None = None
+            if dump_root:
+                resolve_root = Path(dump_root)
+            elif exefs_txt:
+                exefs_path = Path(exefs_txt)
+                if any(part.lower() == "updates" for part in exefs_path.parts):
+                    for parent in exefs_path.parents:
+                        if parent.name.lower() == "updates":
+                            resolve_root = parent.parent
+                            break
+
+            if resolve_root is not None:
+                resolved = None
+                if resolve_root.is_file() and resolve_root.suffix.lower() == ".nup":
+                    try:
+                        resolved = self._resolve_or_extract_nup(
+                            resolve_root,
+                            exefs_hint=exefs_txt,
+                            pct_lo=2,
+                            pct_hi=16,
+                        )
+                    except DumpError as exc:
+                        raise RuntimeError(str(exc)) from exc
+                    self._last_nup_extract = (
+                        resolve_root.resolve(),
+                        resolved.exefs.resolve(),
+                        resolved.romfs.resolve(),
+                    )
+                    self.after(0, lambda: self.setup_prog.configure(value=16))
+                elif resolve_root.is_dir():
+                    work = self.root_dir / "work" / "dump-resolve"
+                    work.mkdir(parents=True, exist_ok=True)
+                    try:
+                        resolved = discover_dump(resolve_root, work)
+                    except DumpError as exc:
+                        raise RuntimeError(str(exc)) from exc
+
+                if resolved is not None:
+                    self.after(0, lambda r=resolved: self._apply_dump_resolve(r, log=True, update_status=False))
+                    exefs_txt = str(resolved.exefs)
+                    romfs_txt = str(resolved.romfs)
+
+            exefs = Path(exefs_txt)
+            romfs = Path(romfs_txt)
+            if not exefs.is_dir() or not romfs.is_dir():
+                raise RuntimeError("Please select a dump folder / .nup, or both ExeFS and RomFS folders first.")
+
             self.after(0, lambda: self.setup_status_var.set("1/4 Verifying Mario Tennis Fever 1.1.1 ExeFS hashes..."))
             expected = load_expected_mtf(self.root_dir)
             try:
@@ -1432,15 +1495,15 @@ class MTFLauncherApp(tk.Tk):
             err = str(exc)
             self.after(
                 0,
-                lambda: (
-                    self.setup_status_var.set(f"Setup failed: {err}"),
-                    self._log_setup(f"ERROR: {err}"),
-                    messagebox.showerror(APP_TITLE, err, parent=self),
+                lambda e=err: (
+                    self.setup_prog.configure(value=0),
+                    self.setup_status_var.set(f"Setup failed: {e}"),
+                    self._log_setup(f"ERROR: {e}"),
+                    messagebox.showerror(APP_TITLE, e, parent=self),
                 ),
             )
         finally:
-            self.setup_running = False
-            self.after(0, lambda: self.build_btn.configure(state=tk.NORMAL))
+            self.after(0, lambda: self._set_setup_busy(False))
 
     def check_for_updates(self) -> None:
         if getattr(self, "release_check_active", False) or getattr(self, "update_in_progress", False):

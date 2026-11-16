@@ -2,18 +2,20 @@
 
 ## MTF-ShadowRacket Alpha 0.1.3
 
-This update pairs the complete Mario Tennis Fever 1.1.1 native runtime, internal resolution scaling, and shadow/grass fixes with full single-file and split `.nup` setup support. Base (…000) and update (…800) packages match automatically by title family whether stored in one `.nup` container or two sibling `.nup` files in the same folder, Windows file-lock retries are hardened, and built `mtf.exe` installs stay self-contained inside the install folder.
+This update pairs the complete Mario Tennis Fever 1.1.1 native runtime, internal resolution scaling, and shadow/grass fixes with faster single-pass `.nup` extraction, live progress tracking, and split `.nup` setup support. Base (…000) and update (…800) packages match automatically by title family whether stored in one `.nup` container or two sibling `.nup` files in the same folder, and built `mtf.exe` installs stay self-contained inside the install folder.
 
 ■ Major Updates
 
 - Restored full Mario Tennis Fever 1.1.1 native runtime support (`mtf.exe`), including internal frame resolution scaling (`Original ~960p`, `720p`, `900p`, `1080p`, and `1440p`), full-precision D24 shadow handling, and Championship Turf in-game settings (`F1` / `Esc` / `Back + Y`).
+- Combined base+update `.nup` extraction now merges overlays in a single pass so files replaced by the update are extracted once instead of twice.
+- **MTFLauncher** streams live `.nup` extract progress, locks setup controls while unpacking, and reuses completed extractions automatically when clicking **Verify & Build mtf.exe**.
 - NUP `--overlay-update` and **Browse .NUP…** match base (…000) and update (…800) packages by application title family across both single-container `.nup` archives and split base/update `.nup` files in the same folder.
-- Verified ExeFS modules and `romfs-index.bin` are staged directly inside the install folder so `mtf.exe` runs self-contained without depending on temporary extraction directories.
-- Hardened `.nup` file finalization against transient Windows antivirus locks (`WinError 5` / `WinError 32`) with retries and copy fallback.
-- Standalone update-only `.nup` and ExeFS trees remain supported when every required 1.1.1 module is present.
+- Verified ExeFS modules and `romfs-index.bin` are staged directly inside the install folder so `mtf.exe` runs self-contained.
+- Hardened `.nup` file finalization and extract folder cleanup against Windows Defender and file-sharing locks (`WinError 5` / `WinError 32`).
 
 ■ Bug Fixes
 
+- Fixed `[WinError 32]` sharing violations and stalled 0% progress bars when clicking **Verify & Build mtf.exe** while a `.nup` unpack was still in progress.
 - Fixed builds producing the wrong target layout or omitting Mario Tennis Fever 1.1.1 runtime resolution, shader, and shadow fixes.
 - Fixed **Browse .NUP…** leaving ExeFS missing unchanged modules such as `subsdk0` on combined base+update containers or split base/update `.nup` files in the same folder.
 - Fixed NUP extraction aborting with `PermissionError` (`WinError 5`) when finalizing extracted files under Windows Defender scans.

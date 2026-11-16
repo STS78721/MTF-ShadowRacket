@@ -7,6 +7,7 @@ shipping or accepting the wrong game silently.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
@@ -15,6 +16,8 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +25,7 @@ EXEFS_REQUIRED = ("main", "main.npdm", "rtld", "sdk", "subsdk0")
 MTF_TITLE_ID = "0400D4201C6EA000"
 MTF_DISPLAY = "1.1.1"
 MAX_WALK_DEPTH = 6
+NUP_READY_NAME = ".nup-ready.json"
 
 # Known wrong / alternate ExeFS main prefixes -> human hint (prefix only; never full dumps).
 KNOWN_MAIN_HINTS: dict[str, str] = {
@@ -580,6 +584,155 @@ def _pick_mtf_preferred(mod, pkgs: list[tuple[int, int, int, int]], kind: int) -
     return max(pool, key=lambda p: p[3])
 
 
+_PROGRESS_RE = re.compile(
+    r"^\s*(exefs|romfs):\s*(\d+)/(\d+)\s+files,\s*([\d.]+)\s+of\s+([\d.]+)\s+GB",
+    re.I,
+)
+_FILES_RE = re.compile(r"^\s*(exefs|romfs):\s*(\d+)/(\d+)\s+files", re.I)
+
+
+def _is_win_lock_error(exc: OSError) -> bool:
+    winerr = getattr(exc, "winerror", None)
+    return winerr in (5, 32) or exc.errno in (errno.EACCES, errno.EPERM, errno.EBUSY)
+
+
+def rmtree_retry(path: Path, attempts: int = 8) -> None:
+    """Remove directory tree, retrying transient Windows WinError 5/32 locks."""
+    if not path.exists():
+        return
+    delay = 0.05
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError as exc:
+            if not _is_win_lock_error(exc) or attempt + 1 >= attempts:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2.0, 0.5)
+
+
+def _prepare_clean_out_dir(out_dir: Path) -> Path:
+    """Clear out_dir with lock retries; fall back to a sibling folder if AV/indexer keeps a handle."""
+    if out_dir.exists():
+        try:
+            rmtree_retry(out_dir)
+        except OSError as exc:
+            if not _is_win_lock_error(exc):
+                raise
+            stamp = int(time.time())
+            for idx in range(100):
+                suffix = f"{stamp}" if idx == 0 else f"{stamp}-{idx}"
+                alt = out_dir.with_name(f"{out_dir.name}-{suffix}")
+                if not alt.exists():
+                    out_dir = alt
+                    break
+            else:
+                raise DumpError(
+                    f"Could not clear temporary NUP extract folder under {out_dir.parent}: {exc}"
+                ) from exc
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def _write_nup_ready(nup_path: Path, out_dir: Path, exefs: Path, romfs: Path) -> None:
+    st = nup_path.stat()
+    payload = {
+        "nup": str(nup_path.resolve()),
+        "size": st.st_size,
+        "mtime_ns": st.st_mtime_ns,
+        "exefs": str(exefs.resolve()),
+        "romfs": str(romfs.resolve()),
+    }
+    ready = out_dir / NUP_READY_NAME
+    tmp = out_dir / f"{NUP_READY_NAME}.tmp"
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(ready)
+
+
+def _check_nup_ready_dir(nup_path: Path, cand_dir: Path) -> DumpResolve | None:
+    ready = cand_dir / NUP_READY_NAME
+    if not ready.is_file() or not nup_path.is_file():
+        return None
+    try:
+        data = json.loads(ready.read_text(encoding="utf-8"))
+        st = nup_path.stat()
+        if (
+            data.get("nup") != str(nup_path.resolve())
+            or data.get("size") != st.st_size
+            or data.get("mtime_ns") != st.st_mtime_ns
+        ):
+            return None
+    except Exception:
+        return None
+    exefs = Path(data.get("exefs") or (cand_dir / "exefs"))
+    romfs = Path(data.get("romfs") or (cand_dir / "romfs"))
+    if not is_exefs_dir(exefs) or exefs_missing(exefs) or not is_romfs_dir(romfs):
+        return None
+    return DumpResolve(
+        exefs=exefs,
+        romfs=romfs,
+        notes=[
+            f"Reusing extracted NUP tree for {nup_path.name} (no re-extract needed).",
+            f"Using ExeFS: {exefs}",
+            f"Using RomFS: {romfs}",
+        ],
+        staged=True,
+        source="nup",
+    )
+
+
+def reuse_extracted_nup(nup_path: Path, out_dir: Path) -> DumpResolve | None:
+    """Return an existing verified NUP extract under out_dir (or sibling fallback) if fresh."""
+    hit = _check_nup_ready_dir(nup_path, out_dir)
+    if hit is not None:
+        return hit
+    if out_dir.parent.is_dir():
+        siblings = sorted(
+            (p for p in out_dir.parent.glob(f"{out_dir.name}-*") if p.is_dir()),
+            key=lambda p: p.name,
+            reverse=True,
+        )
+        for sib in siblings:
+            hit = _check_nup_ready_dir(nup_path, sib)
+            if hit is not None:
+                return hit
+    return None
+
+
+def _parse_extract_progress(line: str) -> int | None:
+    m = _PROGRESS_RE.match(line)
+    if m:
+        which = m.group(1).lower()
+        n, total = int(m.group(2)), max(1, int(m.group(3)))
+        done_gb, total_gb = float(m.group(4)), float(m.group(5))
+        frac = (done_gb / total_gb) if total_gb > 0.0 else (n / total)
+        frac = max(0.0, min(1.0, frac))
+        return (1 + int(4 * frac)) if which == "exefs" else (5 + int(93 * frac))
+    m2 = _FILES_RE.match(line)
+    if m2:
+        which = m2.group(1).lower()
+        n, total = int(m2.group(2)), max(1, int(m2.group(3)))
+        frac = max(0.0, min(1.0, n / total))
+        return (1 + int(4 * frac)) if which == "exefs" else (5 + int(93 * frac))
+    return None
+
+
+def _scaled_progress(
+    on_progress: Callable[[str, int | None], None] | None,
+    lo: int,
+    hi: int,
+) -> Callable[[str, int | None], None] | None:
+    if on_progress is None:
+        return None
+
+    def _cb(line: str, pct: int | None) -> None:
+        scaled = None if pct is None else lo + int((hi - lo) * max(0, min(100, pct)) / 100)
+        on_progress(line, scaled)
+
+    return _cb
+
+
 def _run_extract_nup(
     py: str,
     script: Path,
@@ -588,24 +741,36 @@ def _run_extract_nup(
     *,
     overlay_update: bool = False,
     package: str | None = None,
+    on_progress: Callable[[str, int | None], None] | None = None,
 ) -> str:
     cmd = [py, str(script), str(nup_path), "--out", str(out_dir)]
     if overlay_update:
         cmd.append("--overlay-update")
     elif package is not None:
         cmd.extend(["--package", str(package)])
-    proc = subprocess.run(
+    lines: list[str] = []
+    with subprocess.Popen(
         cmd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
         text=True,
         encoding="utf-8",
         errors="replace",
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip()
-        raise DumpError(f"NUP extract failed: {detail or f'exit {proc.returncode}'}")
-    return (proc.stdout or "") + "\n" + (proc.stderr or "")
+    ) as proc:
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            text = raw.rstrip("\r\n")
+            lines.append(text)
+            if on_progress is not None and text.strip():
+                on_progress(text, _parse_extract_progress(text))
+        rc = proc.wait()
+    combined = "\n".join(lines)
+    if rc != 0:
+        detail = combined.strip()
+        raise DumpError(f"NUP extract failed: {detail or f'exit {rc}'}")
+    return combined
 
 
 def _merge_missing_from_extracted_base(search_root: Path, out_dir: Path, exefs: Path, romfs: Path) -> bool:
@@ -667,6 +832,7 @@ def extract_nup_overlay(
     python: Path | str | None = None,
     extract_script: Path | None = None,
     root: Path | None = None,
+    on_progress: Callable[[str, int | None], None] | None = None,
 ) -> DumpResolve:
     """Extract a .nup: base+update (same container or sibling split .nup) when present, else standalone."""
     if not nup_path.is_file():
@@ -689,12 +855,9 @@ def extract_nup_overlay(
         except Exception:
             pkgs = None
 
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    exefs = out_dir / "exefs"
-    romfs = out_dir / "romfs"
+    actual_out_dir = _prepare_clean_out_dir(out_dir)
+    exefs = actual_out_dir / "exefs"
+    romfs = actual_out_dir / "romfs"
     mode = "base + update overlay"
 
     has_base = bool(pkgs and any(p[1] == 0 for p in pkgs))
@@ -704,17 +867,26 @@ def extract_nup_overlay(
         # Case A: user selected a base-only .nup; check sibling *.nup for a matching-family update.
         base_pkg = _pick_mtf_preferred(mod, pkgs, 0)
         base_arg = "base" if sum(1 for p in pkgs if p[1] == 0) == 1 else str(base_pkg[0])
-        _run_extract_nup(py, script, nup_path, out_dir, package=base_arg)
         sibling = _find_sibling_nup(mod, nup_path, want_kind=1, title_id=base_pkg[2])
         if sibling is not None:
             sib_upd_path, _sib_upd_pkg, _sib_pkgs = sibling
-            # Keep out_dir intact so the sibling update overlays directly onto the base files.
-            _run_extract_nup(py, script, sib_upd_path, out_dir, overlay_update=True)
+            _run_extract_nup(
+                py, script, nup_path, actual_out_dir, package=base_arg,
+                on_progress=_scaled_progress(on_progress, 0, 60),
+            )
+            # Keep actual_out_dir intact so the sibling update overlays directly onto the base files.
+            _run_extract_nup(
+                py, script, sib_upd_path, actual_out_dir, overlay_update=True,
+                on_progress=_scaled_progress(on_progress, 60, 100),
+            )
             mode = f"base ({nup_path.name}) + sibling update ({sib_upd_path.name})"
         else:
+            _run_extract_nup(py, script, nup_path, actual_out_dir, package=base_arg, on_progress=on_progress)
             mode = "base only (no sibling update .nup found)"
     else:
-        combined = _run_extract_nup(py, script, nup_path, out_dir, overlay_update=True)
+        combined = _run_extract_nup(
+            py, script, nup_path, actual_out_dir, overlay_update=True, on_progress=on_progress
+        )
         update_only = "update-only" in combined.lower()
         if update_only:
             mode = "update alone (no base package in this .nup)"
@@ -731,17 +903,24 @@ def extract_nup_overlay(
             if sibling is not None:
                 sib_base_path, sib_base_pkg, sib_pkgs = sibling
                 sib_base_arg = "base" if sum(1 for p in sib_pkgs if p[1] == 0) == 1 else str(sib_base_pkg[0])
-                shutil.rmtree(out_dir)
-                out_dir.mkdir(parents=True, exist_ok=True)
-                _run_extract_nup(py, script, sib_base_path, out_dir, package=sib_base_arg)
-                _run_extract_nup(py, script, nup_path, out_dir, package=upd_arg)
+                actual_out_dir = _prepare_clean_out_dir(actual_out_dir)
+                exefs = actual_out_dir / "exefs"
+                romfs = actual_out_dir / "romfs"
+                _run_extract_nup(
+                    py, script, sib_base_path, actual_out_dir, package=sib_base_arg,
+                    on_progress=_scaled_progress(on_progress, 0, 60),
+                )
+                _run_extract_nup(
+                    py, script, nup_path, actual_out_dir, package=upd_arg,
+                    on_progress=_scaled_progress(on_progress, 60, 100),
+                )
                 mode = f"sibling base ({sib_base_path.name}) + update ({nup_path.name})"
-            elif _merge_missing_from_extracted_base(nup_path.parent, out_dir, exefs, romfs):
+            elif _merge_missing_from_extracted_base(nup_path.parent, actual_out_dir, exefs, romfs):
                 mode = "extracted base folder + update overlay"
 
     if not is_exefs_dir(exefs) or not is_romfs_dir(romfs):
         raise DumpError(
-            f"NUP extract did not produce exefs/ and romfs/ under {out_dir}. "
+            f"NUP extract did not produce exefs/ and romfs/ under {actual_out_dir}. "
             "The container needs a Mario Tennis Fever program package (update alone is fine)."
         )
     missing = exefs_missing(exefs)
@@ -753,6 +932,7 @@ def extract_nup_overlay(
             "both are in the same container or sibling .nup files in the same folder; a standalone "
             "update-only .nup must already include every ExeFS module."
         )
+    _write_nup_ready(nup_path, actual_out_dir, exefs, romfs)
     notes = [
         f"Extracted {nup_path.name} ({mode}).",
         f"Using ExeFS: {exefs}",
