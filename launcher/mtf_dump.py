@@ -426,27 +426,30 @@ def discover_dump(root: Path, work_dir: Path) -> DumpResolve:
         notes.append(f"Found NUP-style update ExeFS at updates/{ver}/exefs.")
         base_exefs = find_base_exefs(search_root, upd_exefs)
         missing = exefs_missing(upd_exefs)
-        if missing and base_exefs is None:
-            raise DumpError(
-                f"Update ExeFS at {upd_exefs} is missing {', '.join(missing)}. "
-                "NUP update packages often omit unchanged modules (for example subsdk0). "
-                "Select the parent extracted dump folder that also contains the base ExeFS, "
-                "or extract the .nup with tools/extract_nup.py --overlay-update."
-            )
-        if missing or (base_exefs is not None and base_exefs.resolve() != upd_exefs.resolve()):
-            if base_exefs is not None:
-                notes.append(f"Overlaying update ExeFS onto base ExeFS ({base_exefs}).")
+        # Simple rule: base present → overlay; otherwise work from the update alone.
+        # Emulators/testers often have update-only trees — a separate base folder is optional.
+        if base_exefs is not None and (
+            missing or base_exefs.resolve() != upd_exefs.resolve()
+        ):
+            notes.append(f"Overlaying update ExeFS onto base ExeFS ({base_exefs}).")
             dest = work_dir / "merged-exefs"
             chosen_exefs = merge_exefs(base_exefs, upd_exefs, dest)
             staged = True
-            still = exefs_missing(chosen_exefs)
-            if still:
-                raise DumpError(
-                    f"Merged ExeFS is still missing {', '.join(still)}. "
-                    "The dump does not contain a complete Mario Tennis Fever program."
-                )
         else:
+            if base_exefs is None and missing:
+                notes.append(
+                    "No base ExeFS beside this update; using the update ExeFS alone."
+                )
             chosen_exefs = upd_exefs
+        still = exefs_missing(chosen_exefs)
+        if still:
+            raise DumpError(
+                f"ExeFS is missing {', '.join(still)} under {chosen_exefs}. "
+                "Mario Tennis Fever 1.1.1 needs main, main.npdm, rtld, sdk, and subsdk0. "
+                "If your .nup includes a base package, use Browse .NUP… (base+update overlay). "
+                "Update-only dumps work when the update ExeFS already contains every module — "
+                "a separate base dump folder is not required."
+            )
 
         upd_romfs = find_matching_romfs(upd_exefs, search_root)
         base_romfs = find_base_romfs(search_root, upd_romfs)
@@ -527,7 +530,7 @@ def extract_nup_overlay(
     extract_script: Path | None = None,
     root: Path | None = None,
 ) -> DumpResolve:
-    """Extract a .nup with base+newest-update overlay into out_dir/exefs + romfs."""
+    """Extract a .nup: base+update when both exist, else the update (or chosen) package alone."""
     if not nup_path.is_file():
         raise DumpError(f".nup file not found: {nup_path}")
     if nup_path.suffix.lower() != ".nup":
@@ -559,10 +562,22 @@ def extract_nup_overlay(
     if not is_exefs_dir(exefs) or not is_romfs_dir(romfs):
         raise DumpError(
             f"NUP extract did not produce exefs/ and romfs/ under {out_dir}. "
-            "Check that the container includes Mario Tennis Fever base + update packages."
+            "The container needs a Mario Tennis Fever program package (update alone is fine)."
         )
+    missing = exefs_missing(exefs)
+    if missing:
+        raise DumpError(
+            f"NUP extract under {exefs} is missing {', '.join(missing)}. "
+            "Mario Tennis Fever 1.1.1 needs main, main.npdm, rtld, sdk, and subsdk0. "
+            "When the .nup has a base package for the same title, Browse .NUP… overlays it "
+            "automatically; update-only containers must already include every ExeFS module."
+        )
+    mode = "base + update overlay"
+    combined = ((proc.stdout or "") + "\n" + (proc.stderr or "")).lower()
+    if "update-only" in combined:
+        mode = "update alone (no base package in this .nup)"
     notes = [
-        f"Extracted {nup_path.name} with base + newest update overlay.",
+        f"Extracted {nup_path.name} ({mode}).",
         f"Using ExeFS: {exefs}",
         f"Using RomFS: {romfs}",
     ]
@@ -580,8 +595,8 @@ def format_hash_mismatch(fname: str, got: str, want: str) -> str:
         f"SHA-256 mismatch for {fname}: got {got[:16]}…, expected {want[:16]}… "
         f"(Mario Tennis Fever {MTF_DISPLAY} is required; title {MTF_TITLE_ID})."
         f"{hint} "
-        "If you selected an updates/<ver>/exefs folder from a NUP extract, pick the parent "
-        "extracted dump (so base + update can be merged) or open the .nup with Browse .NUP…"
+        "Use Browse .NUP… on your .nup (base+update when both exist, update alone otherwise), "
+        "or point Dump Folder at a complete 1.1.1 ExeFS. A separate base dump is optional."
     )
 
 
@@ -593,8 +608,9 @@ def verify_exefs_hashes(exefs: Path, expected: dict[str, str]) -> list[str]:
         raise DumpError(
             f"Missing ExeFS file(s) under {exefs}: {', '.join(missing)}. "
             "Mario Tennis Fever 1.1.1 needs main, main.npdm, rtld, sdk, and subsdk0. "
-            "NUP update-only trees often omit unchanged modules — select the parent dump "
-            "folder or extract with --overlay-update."
+            "Update/NUP-only dumps are fine when those modules are present; if a base package "
+            "exists in the same .nup, Browse .NUP… overlays it automatically. "
+            "A separate base dump folder is not required."
         )
     for fname, want in sorted(expected.items()):
         fpath = exefs / fname

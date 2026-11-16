@@ -1,5 +1,28 @@
 # Changelog
 
+## MTF-ShadowRacket Alpha 0.1.2
+
+MTF-ShadowRacket Alpha 0.1.2
+
+Dump setup follows a simple rule: if a base dump is present, overlay base+update; if not, use the update or `.nup` alone. Testers with update-only trees (common for emulators) no longer need a separate parent base folder. Errors no longer push “select the parent dump” as the fix.
+
+■ Major Updates
+
+- Update-only ExeFS / NUP paths are first-class: complete update trees verify without a base folder.
+- `tools/extract_nup.py --overlay-update` overlays a matching-title base when present, otherwise extracts the update alone.
+- Clearer missing-module messages (e.g. `subsdk0`) that do not require a parent base dump.
+
+■ Bug Fixes
+
+- Fixed Portable Alpha 0.1.1 messaging that told update-only users to select a parent dump after Browse .NUP… / `work\nup-extract`.
+- NUP overlay now matches the update’s title ID when choosing a base package (avoids wrong-title bases in multi-game containers).
+
+■ Install & Update
+
+- **New install:** Run `SteelTemple-MTF-ShadowRacket-Alpha-0.1.2-Full-Setup-Wizard.exe`, open **MTFLauncher**, pick your dump folder or `.nup`, click **Verify & Build mtf.exe**, and press **Play**.
+- **Portable:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.2-Portable-StandAlone.zip` anywhere and launch `MTFLauncher.exe`.
+- **Update:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.2-Update.zip` over an existing folder or run the Setup Wizard over it.
+
 ## MTF-ShadowRacket Alpha 0.1.1
 
 MTF-ShadowRacket Alpha 0.1.1

@@ -647,7 +647,7 @@ class MTFLauncherApp(tk.Tk):
         tk.Label(
             card,
             text="No copyrighted game data is shipped with MTF ShadowRacket. Select your dumped Switch 2 ExeFS and RomFS folders, "
-            "a NUP-extracted dump tree (base + updates\\<ver>), or a .nup container. Setup verifies Mario Tennis Fever 1.1.1 "
+            "a NUP-extracted dump tree (update alone or base + updates\\<ver>), or a .nup container. Setup verifies Mario Tennis Fever 1.1.1 "
             "SHA-256 hashes, packs RomFS, lifts ARM64 modules, and compiles mtf.exe locally.",
             font=("Segoe UI", 9),
             fg=C_TEXT_SOFT,
@@ -756,7 +756,7 @@ class MTFLauncherApp(tk.Tk):
         nup = Path(path)
         self.dump_root_var.set(str(nup))
         self.setup_log.delete("1.0", tk.END)
-        self.setup_status_var.set(f"Extracting {nup.name} (base + update overlay)…")
+        self.setup_status_var.set(f"Extracting {nup.name} (base+update if present, else update alone)…")
         self.update_idletasks()
 
         def worker() -> None:

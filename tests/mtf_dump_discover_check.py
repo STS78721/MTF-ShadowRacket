@@ -63,17 +63,30 @@ class MtfDumpDiscoverTest(unittest.TestCase):
         self.assertEqual(resolved.exefs.name, "exefs")
         self.assertTrue((resolved.exefs / "subsdk0").is_file())
 
-    def test_update_only_without_base_errors_clearly(self) -> None:
-        base = self.root / "extracted"
-        upd = base / "updates" / "327680" / "exefs"
+    def test_update_only_complete_without_base(self) -> None:
+        """Update-only trees with every ExeFS module work; no parent base required."""
+        root = self.root / "extracted"
+        upd = root / "updates" / "327680"
+        for name in md.EXEFS_REQUIRED:
+            write(upd / "exefs" / name, f"upd-{name}".encode() * 4)
+        write(upd / "romfs" / "a.bin", b"a")
+        resolved = md.discover_dump(root, self.root / "work")
+        self.assertEqual(resolved.exefs, upd / "exefs")
+        self.assertTrue((resolved.exefs / "subsdk0").is_file())
+        self.assertFalse(resolved.staged)
+
+    def test_update_only_incomplete_errors_without_requiring_parent(self) -> None:
+        root = self.root / "extracted"
+        upd = root / "updates" / "327680" / "exefs"
         write(upd / "main", b"main-only")
         write(upd / "sdk", b"sdk")
-        write(base / "updates" / "327680" / "romfs" / "a.bin", b"a")
+        write(root / "updates" / "327680" / "romfs" / "a.bin", b"a")
         with self.assertRaises(md.DumpError) as ctx:
-            md.discover_dump(base, self.root / "work")
+            md.discover_dump(root, self.root / "work")
         msg = str(ctx.exception)
         self.assertIn("subsdk0", msg)
-        self.assertIn("overlay", msg.lower())
+        self.assertIn("not required", msg.lower())
+        self.assertNotIn("parent extracted dump", msg.lower())
 
     def test_hash_mismatch_message_mentions_known_prefix(self) -> None:
         got = "2846cd27dee" + "0" * 53

@@ -192,6 +192,31 @@ class ExtractNupTest(unittest.TestCase):
         self.assertEqual((out_dir / 'exefs' / 'main').read_bytes(), MAIN[::-1])
         self.assertEqual((out_dir / 'exefs' / 'main.npdm').read_bytes(), NPDM)
 
+    def test_overlay_update_only_nup_without_base(self):
+        path = self.write(build([(1, 0x0100AAAA, 65536, UPDATE_TREES)]))
+        out_dir = self.dir / 'out'
+        code, out, err = run(path, '--out', out_dir, '--overlay-update')
+        self.assertEqual(code, 0, err)
+        self.assertIn('update-only', out.lower())
+        self.assertEqual((out_dir / 'exefs' / 'main').read_bytes(), MAIN[::-1])
+        self.assertEqual((out_dir / 'romfs' / 'a.bin').read_bytes(), b'updated')
+        self.assertFalse((out_dir / 'exefs' / 'main.npdm').exists())
+
+    def test_overlay_matches_update_title_base(self):
+        # Wrong-title base first must not be used; matching-title base supplies main.npdm.
+        other = {'exefs': {'main': b'wrong-title-main'}, 'romfs': {'x.bin': b'x'}}
+        path = self.write(build([
+            (0, 0x0100BBBB, 0, other),
+            (0, 0x0100AAAA, 0, BASE_TREES),
+            (1, 0x0100AAAA, 65536, UPDATE_TREES),
+        ]))
+        out_dir = self.dir / 'out'
+        code, _, err = run(path, '--out', out_dir, '--overlay-update', '--quiet')
+        self.assertEqual(code, 0, err)
+        self.assertEqual((out_dir / 'exefs' / 'main').read_bytes(), MAIN[::-1])
+        self.assertEqual((out_dir / 'exefs' / 'main.npdm').read_bytes(), NPDM)
+        self.assertFalse((out_dir / 'romfs' / 'x.bin').exists())
+
     def test_package_by_index_and_only(self):
         path = self.write(build([(0, 0x0100AAAA, 0, BASE_TREES), (1, 0x0100AAAA, 65536, UPDATE_TREES)]))
         out_dir = self.dir / 'out'
