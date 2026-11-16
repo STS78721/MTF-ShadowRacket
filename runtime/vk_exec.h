@@ -202,4 +202,7 @@ void vk_exec_op_xfer(VkExec *ex, uint32_t op, const void *payload);
 // when counting and none is active), and the open pass about to end (ends the active query).
 void vk_exec_oq_draw(VkExec *ex);
 void vk_exec_oq_pass_end(VkExec *ex);
+// Orchid query-cache flush analogue: wait until samples-passed reports overlapping [addr,addr+size) have
+// landed in guest memory (completion callbacks ran). Used from pool/buffer InvalidateMappedRange.
+void vk_exec_oq_sync_range(uint64_t addr, uint64_t size);
 void vk_exec_mark_depth_cleared(const VkTexImage *img, uint32_t base_layer, uint32_t layers);

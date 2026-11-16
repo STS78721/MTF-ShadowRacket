@@ -285,10 +285,8 @@ static int create_device(void) {
     // other view of that storage samples empty.
     OPTIONAL_EXT(has_image_compression_control, VK_EXT_IMAGE_COMPRESSION_CONTROL_EXTENSION_NAME, icc,
                  VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_COMPRESSION_CONTROL_FEATURES_EXT);
-    // Orchid/Maxwell: polygon-offset units are depth-format dependent (UNORM steps). FORCE_UNORM keeps D24-style
-    // constant bias when a cascade is a D32F stand-in, and matches Orchid's SetDepthBias path on native D24 too.
-    OPTIONAL_EXT(has_depth_bias_control, VK_EXT_DEPTH_BIAS_CONTROL_EXTENSION_NAME, dbc,
-                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_BIAS_CONTROL_FEATURES_EXT);
+    // VK_EXT_depth_bias_control / FORCE_UNORM was tried for Orchid parity; on this GPU (native D24) it washed MTF
+    // court lighting blue vs Gemini/Orchid stills. Leave disabled; D24→D32F rescale in vk_exec_draw.c covers stand-ins.
     // Feedback loops (vk.h VkCtx.feedback): the layout, and barriers inside dynamic rendering
     int has_fbl = 0, has_lr = 0;
     if (has_ext(ep, ne, VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME) &&
@@ -372,10 +370,6 @@ static int create_device(void) {
     if (!c->fault.deviceFault) g_vk.has_device_fault = 0;   // vkGetDeviceFaultInfoEXT needs the feature, not just the extension
     if (g_vk.has_image_compression_control && !c->icc.imageCompressionControl) g_vk.has_image_compression_control = 0;
     rt_log("vk: image compression control %s", g_vk.has_image_compression_control ? "on" : "off");
-    if (g_vk.has_depth_bias_control &&
-        !(c->dbc.depthBiasControl && c->dbc.leastRepresentableValueForceUnormRepresentation))
-        g_vk.has_depth_bias_control = 0;
-    rt_log("vk: depth bias control %s", g_vk.has_depth_bias_control ? "FORCE_UNORM" : "off");
     if (g_vk.has_address_binding_report && !c->abr.reportAddressBinding) g_vk.has_address_binding_report = 0;
     if (g_vk.has_pipeline_exec_info && !c->pei.pipelineExecutableInfo) g_vk.has_pipeline_exec_info = 0;
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
@@ -409,11 +403,6 @@ static int create_device(void) {
     VkResult r = vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.device);
     free(c);
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateDevice failed (%d)", (int)r); return 0; }
-    if (g_vk.has_depth_bias_control) {
-        g_vk.cmd_set_depth_bias2 =
-            (PFN_vkCmdSetDepthBias2EXT)vkGetDeviceProcAddr(g_vk.device, "vkCmdSetDepthBias2EXT");
-        if (!g_vk.cmd_set_depth_bias2) g_vk.has_depth_bias_control = 0;
-    }
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 0, &g_vk.gfx_queue);
     if (g_vk.xfer_family != g_vk.gfx_family) vkGetDeviceQueue(g_vk.device, g_vk.xfer_family, 0, &g_vk.xfer_queue);
     else { g_vk.xfer_queue = g_vk.gfx_queue; g_vk.xfer_shared = 1; }

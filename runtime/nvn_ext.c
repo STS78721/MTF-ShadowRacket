@@ -70,9 +70,18 @@ NVN_API(nvnMemoryPoolInvalidateMappedRange) {
     int64_t off = (int64_t)arg_x(c, 1);
     if (off >= 0) nvn_pool_invalidate(arg_p(c, 0), (uint64_t)off, arg_x(c, 2));
 }
-// void nvnBufferInvalidateMappedRange(const NVNbuffer *b, ptrdiff_t offset, size_t size): buffers are pool storage,
-// which the GPU writes directly
-NVN_API(nvnBufferInvalidateMappedRange) { (void)c; }
+// void nvnBufferInvalidateMappedRange(const NVNbuffer *b, ptrdiff_t offset, size_t size): same as the pool invalidate
+// over the buffer's storage — needed so samples-passed reports in buffers flush like Orchid's query-cache path.
+NVN_API(nvnBufferInvalidateMappedRange) {
+    const buf_t *b = arg_p(c, 0);
+    int64_t off = (int64_t)arg_x(c, 1);
+    uint64_t size = arg_x(c, 2);
+    if (!b || !b->pool || off < 0) return;
+    uint64_t base = (uint64_t)b->off + (uint64_t)off;
+    if (base >= b->pool->size) return;
+    if (size > b->pool->size - base) size = b->pool->size - base;
+    nvn_pool_invalidate(b->pool, base, size);
+}
 
 // ---------- texture builder and texture queries
 static const tex_builder_t *tb_of(const Cpu *c) { return arg_p(c, 0); }

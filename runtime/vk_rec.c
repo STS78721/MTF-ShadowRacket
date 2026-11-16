@@ -632,24 +632,9 @@ static void exec_packet(uint32_t op, void *p) {
     F(SetCullMode, a->v)
     case R_SetDepthBias: {
         A_SetDepthBias *a = p;
-        VkCtx *v = vk_ctx();
-        // Orchid: FORCE_UNORM so constant bias uses D24-style steps (Maxwell DEPTH_FORMAT_DEPENDENT).
-        if (v && v->has_depth_bias_control && v->cmd_set_depth_bias2) {
-            VkDepthBiasRepresentationInfoEXT rep = {
-                .sType = VK_STRUCTURE_TYPE_DEPTH_BIAS_REPRESENTATION_INFO_EXT,
-                .depthBiasRepresentation = VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORCE_UNORM_EXT,
-            };
-            VkDepthBiasInfoEXT info = {
-                .sType = VK_STRUCTURE_TYPE_DEPTH_BIAS_INFO_EXT,
-                .pNext = &rep,
-                .depthBiasConstantFactor = a->c,
-                .depthBiasClamp = a->cl,
-                .depthBiasSlopeFactor = a->s,
-            };
-            v->cmd_set_depth_bias2(cb, &info);
-        } else {
-            vkCmdSetDepthBias(cb, a->c, a->cl, a->s);
-        }
+        // Do not FORCE_UNORM here: on this GPU (native D24) enabling VK_EXT_depth_bias_control washed the MTF
+        // court blue (sky-fill) vs Gemini/Orchid stills. D24→D32F stand-in rescale in vk_exec_draw.c remains.
+        vkCmdSetDepthBias(cb, a->c, a->cl, a->s);
         break;
     }
     F(SetDepthBiasEnable, a->v)

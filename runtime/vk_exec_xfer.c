@@ -40,7 +40,6 @@
 
 #include "host.h"
 #include "cfg.h"
-#include "game_profile.h"
 #include "nvn_api.h"
 #include "nvn_tex.h"
 #include "tex.h"
@@ -220,6 +219,30 @@ void vk_exec_xfer_shutdown(void) {
     memset((void *)oq_busy, 0, sizeof oq_busy);
 }
 
+// Wait for any still-pending samples-passed reports whose NVNcounterData overlaps [addr, addr+size).
+// Matches Orchid flushing the query cache before the guest DMA-reads an occlusion report (macro.cpp): without this,
+// InvalidateMappedRange only waited for texture writebacks and the CPU could sample a stale 0 and cull far casters
+// (Lakitu) or keep lights lit from a provisional seed.
+void vk_exec_oq_sync_range(uint64_t addr, uint64_t size) {
+    if (!size || !addr) return;
+    uint64_t lo = addr, hi = addr + size, need = 0;
+    uint64_t done = vk_sync_fence_done();
+    for (unsigned k = 1; k <= PENDING; k++) {
+        unsigned i = (pending_head - k) % PENDING;
+        if (!pending[i].unknown || !pending[i].addr || pending[i].fence <= done) continue;
+        uint64_t a = pending[i].addr, b = a + sizeof(uint64_t) * 2;  // NVNcounterData {counter, timestamp}
+        if (a < hi && b > lo && pending[i].fence > need) need = pending[i].fence;
+    }
+    if (need) {
+        static int logged;
+        if (!logged) {
+            logged = 1;
+            rt_log("vk: samples-passed InvalidateMappedRange waits for query fence (Orchid query-cache flush)");
+        }
+        vk_sync_fence_wait(need, UINT64_MAX);
+    }
+}
+
 static void oq_cb(void *arg) {
     OqSegment *s = arg;
     VkDevice dev = vk_ctx()->device;
@@ -251,14 +274,13 @@ static void oq_cb(void *arg) {
         oq_count += sum;
         if (s->lost && !oq_count) oq_count = 1;
         if (s->addr) {
-            // MTF: tiny far proxies (Lakitu) often cover 0 precise/non-precise samples under wide camera; a 0 here
-            // culls the caster before shadow maps run. Orchid keeps those shadows; floor empty reports to visible.
-            const RtGameProfile *gp = game_profile();
-            int mtf = gp && gp->short_name && !strcmp(gp->short_name, "mtf");
-            if (mtf && !oq_count && s->n) {
-                oq_count = 1;
-                LOG_ONCE("vk: MTF samples-passed empty report floored to visible (Orchid far-proxy match)");
-            }
+            // Do not floor empty reports to 1: that kept culled lights/effects lit and washed the court out.
+            // Orchid returns the real samples-passed count (after flushing the query cache on guest DMA read).
+            // Leave the previous guest value alone until this write; conditional rendering already treats a
+            // still-pending samples-passed report as unknown/visible (counter_word → cond_enabled).
+            if (!oq_count && s->n)
+                LOG_ONCE("vk: samples-passed report wrote 0 after %u query slot(s); guest may cull far proxies",
+                         s->n);
             write_counter(s->addr, oq_count);
         }
     }
@@ -285,9 +307,10 @@ static void reset_counter(VkExec *ex, const p_reset_counter *p) {
 // A samples-passed report: the segment goes with it (addr 0: no CPU-visible memory) and counting stops until the next
 // reset, unless reports came without resets before.
 static void oq_report(VkExec *ex, uint64_t addr) {
-    // Guest CPU cull paths can read the counter before the completion thread lands the real sum. Seed "visible" so a
-    // late read cannot see a stale 0 and drop far casters (Lakitu); the fence callback overwrites with the true count.
-    if (addr) write_counter(addr, 1);
+    // Do not seed the guest counter as visible here. A provisional 1 made every pending report look lit until the
+    // real sum landed (court washout). Pending reports stay marked unknown in `pending[]` so conditional rendering
+    // keeps drawing; the fence callback overwrites guest memory with the true count. Until then the previous frame's
+    // value remains (Orchid-style: no fake visibility).
     oq_segment(ex, addr, 0);
     if (oq_reported && !oq_keep) {
         oq_keep = 1;
