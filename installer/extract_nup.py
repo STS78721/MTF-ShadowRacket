@@ -12,7 +12,9 @@ The output is game data: keep it under build/. Every extracted file is checked a
 (--no-verify skips that), and the table of contents against the one in the superblock.
 
 By default the base package is extracted (DKB Recomp supports base 1.0.0 only). --package picks another package by
-index (see --list); --overlay-update also lays the newest update package over the base, as Eglantine's loader does.
+index (see --list). --overlay-update extracts the newest update and, when the same title also has a base package,
+lays the update over that base (Eglantine-style). Update-only containers extract the update alone — no separate
+base dump is required.
 
 zstd comes from `compression.zstd` (Python 3.14), the `zstandard` module, or a `zstd` program on PATH, in that order.
 Everything else is the standard library.
@@ -21,6 +23,7 @@ The layout is Eglantine's core/file_sys/nup_container.cpp (GPL-3.0-or-later); th
 same format, with the same checks.
 """
 import argparse
+import errno
 import hashlib
 import os
 import shutil
@@ -41,12 +44,25 @@ NO_DIR = 0xFFFFFFFF
 CODEC_RAW, CODEC_ZSTD = 0, 1
 KINDS = {0: 'base', 1: 'update', 2: 'addon'}
 CHUNK = 4 << 20
+# Same mask as Eglantine/Orchid FileSys::GetBaseTitleID: application and its update
+# share a family (…000 vs …800). Exact title_id equality wrongly treats those as
+# unrelated and skips the base overlay that supplies unchanged modules like subsdk0.
+BASE_TITLE_ID_MASK = 0xFFFFFFFFFFFFE000
 
 META_NPDM, META_DISPLAY_VERSION, META_TITLE_NAME = 1, 4, 5
 
 
 class NupError(Exception):
     pass
+
+
+def base_title_id(title_id):
+    """Application title family for a base / update / AOC id."""
+    return title_id & BASE_TITLE_ID_MASK
+
+
+def same_title_family(a, b):
+    return base_title_id(a) == base_title_id(b)
 
 
 class Package:
@@ -239,6 +255,43 @@ def _read_exact(src, n):
     return data
 
 
+def atomic_replace(src, dest, attempts=10):
+    """Move src onto dest. Retries Windows WinError 5/32 (AV / indexer briefly locking the .part
+    or destination under Downloads), then falls back to copy + unlink.
+    """
+    src, dest = Path(src), Path(dest)
+    delay = 0.05
+    last = None
+    for _ in range(attempts):
+        try:
+            os.replace(src, dest)
+            return
+        except OSError as exc:
+            last = exc
+            winerr = getattr(exc, 'winerror', None)
+            if winerr not in (5, 32) and exc.errno not in (errno.EACCES, errno.EPERM, errno.EBUSY):
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2.0, 1.0)
+    # Fallback when replace stays denied: copy over dest, then drop the temp.
+    try:
+        if dest.exists():
+            for _ in range(5):
+                try:
+                    dest.unlink()
+                    break
+                except OSError:
+                    time.sleep(0.1)
+        shutil.copyfile(src, dest)
+        try:
+            src.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+    except OSError as exc:
+        raise last if last is not None else exc
+
+
 def extract_file(nup, zstd, idx, dest, verify):
     name, size, ext_off, ext_size, sha, codec = nup.files[idx]
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -268,11 +321,22 @@ def extract_file(nup, zstd, idx, dest, verify):
                         h.update(chunk)
                         out.write(chunk)
                         written += len(chunk)
+            # Flush/close before replace so Windows AV can finish scanning without holding the handle.
+            out.flush()
+            os.fsync(out.fileno())
         if written != size:
             raise NupError(f'{name}: expected {size} bytes, got {written}')
         if verify and h.digest() != sha:
             raise NupError(f'{name}: SHA-256 differs from the container record (corrupt container)')
-        os.replace(tmp, dest)
+        try:
+            atomic_replace(tmp, dest)
+        except OSError as exc:
+            raise NupError(
+                f'{name}: could not finalize extracted file ({exc}). '
+                f'Close other programs using that folder and retry; Windows Defender often locks '
+                f'new files under Downloads briefly.'
+            ) from exc
+        tmp = None  # consumed by replace/copy
         return written
     finally:
         if tmp is not None:
@@ -325,14 +389,15 @@ def list_packages(nup):
               f'romfs: {len(rom)} files, {sum(nup.files[i][1] for _, i in rom) / 1e9:.2f} GB')
 
 
-def pick(nup, which):
+def pick(nup, which, title_id=None):
     if which == 'base':
         for pkg in nup.packages:
-            if pkg.kind == 0:
+            if pkg.kind == 0 and (title_id is None or same_title_family(pkg.title_id, title_id)):
                 return pkg
         raise NupError('no base package in the container (see --list)')
     if which == 'update':
-        best = [p for p in nup.packages if p.kind == 1]
+        best = [p for p in nup.packages
+                if p.kind == 1 and (title_id is None or same_title_family(p.title_id, title_id))]
         if not best:
             raise NupError('no update package in the container (see --list)')
         return max(best, key=lambda p: p.version)
@@ -342,6 +407,29 @@ def pick(nup, which):
         raise NupError(f'--package takes base, update or an index from --list, not {which!r}')
 
 
+def packages_for_extract(nup, package_arg, overlay_update):
+    """Base+update when a matching-title base exists; otherwise the chosen / update package alone.
+
+    Emulators and testers often ship update-only NUPs. A separate base dump is optional: when the
+    container has both, overlay; when it only has an update (or --package update), extract that.
+
+    Base and update title IDs are matched by application family (…000 / …800), not exact equality —
+    otherwise a full base+update .nup is misclassified as update-only and unchanged ExeFS modules
+    such as subsdk0 never appear in the extract.
+    """
+    if overlay_update:
+        update = pick(nup, 'update')
+        try:
+            base = pick(nup, 'base', title_id=update.title_id)
+        except NupError:
+            base = None
+        if base is None:
+            return [update], 'update-only (no matching base package in this .nup)'
+        family = base_title_id(update.title_id)
+        return [base, update], f'base+update overlay (title family {family:016x})'
+    return [pick(nup, package_arg)], None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('nup', type=Path, help='the .nup file')
@@ -349,7 +437,7 @@ def main(argv=None):
     ap.add_argument('--list', action='store_true', help='list the packages and exit')
     ap.add_argument('--package', default='base', help='base (default), update, or an index from --list')
     ap.add_argument('--overlay-update', action='store_true',
-                    help='after the chosen package, extract the newest update package over it')
+                    help='extract newest update; overlay matching-title base when present, else update alone')
     ap.add_argument('--only', choices=('exefs', 'romfs'), help='extract just one of the two folders')
     ap.add_argument('--no-verify', action='store_true', help='skip the per-file SHA-256 check')
     ap.add_argument('--quiet', action='store_true')
@@ -362,9 +450,9 @@ def main(argv=None):
                 print('\nGive --out <folder> to extract.')
             return 0
         zstd = Zstd()
-        packages = [pick(nup, args.package)]
-        if args.overlay_update:
-            packages.append(pick(nup, 'update'))
+        packages, mode = packages_for_extract(nup, args.package, args.overlay_update)
+        if mode and not args.quiet:
+            print(f'extract mode: {mode}')
         for pkg in packages:
             print(f'extracting package [{pkg.index}] {pkg.kind_name} {pkg.title_id:016x} '
                   f'{pkg.display_version or pkg.version} to {args.out}')

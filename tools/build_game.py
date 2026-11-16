@@ -316,10 +316,10 @@ def module_glue(layout, linked, hashes, paths, version, title_id=0x040074a01bf12
 
 
 def port_version():
-    """Return the clean VERSION string (e.g. 'Alpha 0.1.0') as displayed across Launcher, Setup, and F1 Menu."""
+    """Return the clean VERSION string (e.g. 'Alpha 0.1.3') as displayed across Launcher, Setup, and F1 Menu."""
     path = ROOT / 'VERSION'
-    version = path.read_text(encoding='utf-8').strip() if path.is_file() else 'Alpha 0.1.0'
-    return version.splitlines()[0].strip() if version else 'Alpha 0.1.0'
+    version = path.read_text(encoding='utf-8-sig').strip() if path.is_file() else 'Alpha 0.1.3'
+    return version.splitlines()[0].strip() if version else 'Alpha 0.1.3'
 
 
 def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False, is_mtf=False):
@@ -799,7 +799,7 @@ def main():
             sys.exit(f'no expected hashes known for {args.version}; pass --expected')
         else:
             expected = ROOT / 'tools' / 'data' / f'expected-v{DISPLAY_VERSIONS[args.version]}.json'
-    exp_data = json.loads(Path(expected).read_text())
+    exp_data = json.loads(Path(expected).read_text(encoding='utf-8-sig'))
     hashes = exp_data['exefs_sha256']
     title_id = int(exp_data.get('title_id', '0400D4201C6EA000'), 16)
     short_name = exp_data.get('short_name') or ''.join(ch for ch in args.version if ch.isalpha()).lower() or 'ns2'

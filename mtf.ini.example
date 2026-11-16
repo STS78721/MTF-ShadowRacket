@@ -1,21 +1,41 @@
-; Mario Tennis Fever (NS2-to-PC) default configuration template.
-; The game creates mtf.ini automatically on first change in the in-game menu,
-; or uses built-in clean defaults when mtf.ini does not exist.
-;
-; Keep defaults neutral so every user starts smoothly regardless of GPU/display.
+# Mario Tennis Fever (MTF ShadowRacket) — example / safe defaults
+# Hardware-agnostic baseline. Do not ship a personal mtf.ini in releases.
+# Users raise resolution, upscaling, and frame generation themselves after install.
 
-[graphics]
+[paths]
+exefs = ./exefs
+romfs = ./romfs
+
+[performance]
+timer_1ms = 1
+replay_async = 0
+experimental_geometry = 1
+native_gs = 1
+nx2_read_nowait = 1
+LANG = en-US
+MENU_LANG = en
+
+[display]
+operation_mode = docked
 window_size = 1920x1080
 fullscreen = 0
 output_res = 1920x1080
-resolution = original
+# original = native ~1706x960 internal; leave unset/original for the safe baseline
 upscaler = fsr
+upscaler_preset = quality
 sharpness = 80
-fg_mode = off
+perf_overlay = off
+vk_present = mailbox
+smaa = 0
+fxaa = 0
 color_preset = default
-fps_limit = 60
-pipe_skip = any
 
-[gameplay]
-; Free camera speed multiplier
-; camera_speed = 1.0
+[frame rate]
+fps_limit = 60
+realtime = 1
+cloth_realtime = 1
+fg_mode = off
+
+[input]
+pad_layout = auto
+rumble_strength = 100

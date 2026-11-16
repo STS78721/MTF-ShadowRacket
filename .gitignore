@@ -10,6 +10,15 @@ __pycache__/
 # Personal paths to game files and keys
 /config.local.toml
 
+# Personal runtime configs (never ship high/personal settings; only *.ini.example is tracked)
+/mtf.ini
+/dkb.ini
+/totk.ini
+/mkw.ini
+/*.ini
+!/*.ini.example
+!/config.example.toml
+
 # Game inputs and everything derived from them. Never commit these.
 # tools/check_content.py enforces the same rule in CI and the pre-commit hook.
 /game/
@@ -92,3 +101,7 @@ spv/
 /sm86/instructions.json
 
 /runtime_disabled_upscalers/
+
+# Local dump resolve / NUP extract staging (never ship)
+/work/
+
