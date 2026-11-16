@@ -1,15 +1,13 @@
-# Changelog
+﻿# Changelog
 
 ## Unreleased (Lakitu / far-shadow Orchid match)
 
 ■ Bug Fixes
-- D24→D32F depth-bias unit rescale when DEPTH24 is a stand-in (maxwell.md 1.7). Reverted `VK_EXT_depth_bias_control` FORCE_UNORM — on native D24 it washed the court blue (sky-fill) vs Gemini/Orchid stills.
-- Occlusion samples-passed default to non-precise like Orchid (`OQ_PRECISE=1` to opt in). Removed the provisional visible seed and MTF empty-report floor that kept culled lights lit (milky overexposure).
-- `InvalidateMappedRange` on pools/buffers now waits for pending samples-passed reports in range (Orchid query-cache flush) so the guest reads real occlusion counts instead of a stale 0 that culls far casters like Lakitu.
-- Shadow `clamp_border` fallback with compare enabled follows Orchid’s brightness heuristic (prefer far/white) instead of transparent black.
+- `InvalidateMappedRange` on pools/buffers waits for pending samples-passed reports (Orchid query-cache flush) so the guest reads real occlusion counts instead of a stale 0 that can cull far casters like Lakitu.
+- Reverted f147c11 washout levers vs Orchid court stills: FORCE_UNORM depth-bias, D24→D32F bias rescale, empty OQ floor/provisional visible seed, non-precise OQ default, clamp_border brightness heuristic.
 
 ■ Known Issues
-- Far-distance Lakitu cast shadow still needs side-build court verify against `orchid-expected/04-serve-lakitu-shadow.png` before shipping.
+- Far Lakitu cast shadow still needs outdoor-court verify against `orchid-expected/04-serve-lakitu-shadow.png`.
 
 ## MTF-ShadowRacket Alpha 0.1.0
 

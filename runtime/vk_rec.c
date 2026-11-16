@@ -630,13 +630,7 @@ static void exec_packet(uint32_t op, void *p) {
     F(ResetQueryPool, a->p, a->f, a->n)
     F(SetBlendConstants, a->c)
     F(SetCullMode, a->v)
-    case R_SetDepthBias: {
-        A_SetDepthBias *a = p;
-        // Do not FORCE_UNORM here: on this GPU (native D24) enabling VK_EXT_depth_bias_control washed the MTF
-        // court blue (sky-fill) vs Gemini/Orchid stills. D24→D32F stand-in rescale in vk_exec_draw.c remains.
-        vkCmdSetDepthBias(cb, a->c, a->cl, a->s);
-        break;
-    }
+    F(SetDepthBias, a->c, a->cl, a->s)
     F(SetDepthBiasEnable, a->v)
     F(SetDepthCompareOp, a->v)
     F(SetDepthTestEnable, a->v)
