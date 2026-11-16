@@ -40,6 +40,7 @@
 
 #include "host.h"
 #include "cfg.h"
+#include "game_profile.h"
 #include "nvn_api.h"
 #include "nvn_tex.h"
 #include "tex.h"
@@ -278,13 +279,19 @@ static void oq_cb(void *arg) {
         oq_count += sum;
         if (s->lost && !oq_count) oq_count = 1;
         if (s->addr) {
-            // Do not floor empty reports to 1: that kept culled lights/effects lit and washed the court out.
-            // Orchid returns the real samples-passed count (after flushing the query cache on guest DMA read).
-            // Leave the previous guest value alone until this write; conditional rendering already treats a
-            // still-pending samples-passed report as unknown/visible (counter_word → cond_enabled).
-            if (!oq_count && s->n)
+            // MTF far/high proxies (Lakitu cloud, opposite-baseline players) often cover 0 samples even with
+            // non-precise OQ; a 0 here CPU-culls their casters so contact/cast shadows pop in only when near.
+            // Floor empty reports to visible. Do not provisional-seed on report (that washed the court with
+            // FORCE_UNORM); sync-on-invalidate still lands the real count when samples exist.
+            const RtGameProfile *gp = game_profile();
+            int mtf = gp && gp->short_name && !strcmp(gp->short_name, "mtf");
+            if (mtf && !oq_count && s->n) {
+                oq_count = 1;
+                LOG_ONCE("vk: MTF samples-passed empty report floored to visible (far-proxy shadow cull)");
+            } else if (!oq_count && s->n) {
                 LOG_ONCE("vk: samples-passed report wrote 0 after %u query slot(s); guest may cull far proxies",
                          s->n);
+            }
             write_counter(s->addr, oq_count);
         }
     }

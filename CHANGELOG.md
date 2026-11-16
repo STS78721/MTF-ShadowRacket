@@ -5,8 +5,9 @@
 ■ Bug Fixes
 - `InvalidateMappedRange` on pools/buffers waits for pending samples-passed reports (Orchid query-cache flush) so the guest reads real occlusion counts instead of a stale 0 that can cull far casters like Lakitu.
 - Occlusion queries default to **non-precise** (Orchid unless GPU High); precise under-counts tiny far proxies so the guest drops their shadows (Lakitu, far players). Opt in with `OQ_PRECISE=1`.
+- MTF empty samples-passed reports floor to visible (1) so far/high casters are not CPU-culled when OQ still returns 0; matches distance-pop evidence (`mtf-shadow-pops-near`, `mtf-lakitu-shadow-MISSING`).
 - Shadow `clamp_border` without custom-border support uses Orchid's brightness heuristic (prefer opaque white/far) so out-of-cascade UVs are not depth-0 black.
-- Still avoided washout levers: no FORCE_UNORM depth-bias, no empty-report floor / provisional visible seed.
+- Still avoided washout levers: no FORCE_UNORM depth-bias, no provisional visible seed on report.
 
 ■ Known Issues
 - Packed Stadium Court vs `orchid-expected/03`–`04` still needs a Free-Play input path; Practice outdoor is the current verify gate.
