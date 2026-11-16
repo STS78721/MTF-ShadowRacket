@@ -44,12 +44,25 @@ NO_DIR = 0xFFFFFFFF
 CODEC_RAW, CODEC_ZSTD = 0, 1
 KINDS = {0: 'base', 1: 'update', 2: 'addon'}
 CHUNK = 4 << 20
+# Same mask as Eglantine/Orchid FileSys::GetBaseTitleID: application and its update
+# share a family (…000 vs …800). Exact title_id equality wrongly treats those as
+# unrelated and skips the base overlay that supplies unchanged modules like subsdk0.
+BASE_TITLE_ID_MASK = 0xFFFFFFFFFFFFE000
 
 META_NPDM, META_DISPLAY_VERSION, META_TITLE_NAME = 1, 4, 5
 
 
 class NupError(Exception):
     pass
+
+
+def base_title_id(title_id):
+    """Application title family for a base / update / AOC id."""
+    return title_id & BASE_TITLE_ID_MASK
+
+
+def same_title_family(a, b):
+    return base_title_id(a) == base_title_id(b)
 
 
 class Package:
@@ -379,11 +392,12 @@ def list_packages(nup):
 def pick(nup, which, title_id=None):
     if which == 'base':
         for pkg in nup.packages:
-            if pkg.kind == 0 and (title_id is None or pkg.title_id == title_id):
+            if pkg.kind == 0 and (title_id is None or same_title_family(pkg.title_id, title_id)):
                 return pkg
         raise NupError('no base package in the container (see --list)')
     if which == 'update':
-        best = [p for p in nup.packages if p.kind == 1 and (title_id is None or p.title_id == title_id)]
+        best = [p for p in nup.packages
+                if p.kind == 1 and (title_id is None or same_title_family(p.title_id, title_id))]
         if not best:
             raise NupError('no update package in the container (see --list)')
         return max(best, key=lambda p: p.version)
@@ -394,10 +408,14 @@ def pick(nup, which, title_id=None):
 
 
 def packages_for_extract(nup, package_arg, overlay_update):
-    """Base+update when a matching base exists; otherwise the chosen / update package alone.
+    """Base+update when a matching-title base exists; otherwise the chosen / update package alone.
 
     Emulators and testers often ship update-only NUPs. A separate base dump is optional: when the
     container has both, overlay; when it only has an update (or --package update), extract that.
+
+    Base and update title IDs are matched by application family (…000 / …800), not exact equality —
+    otherwise a full base+update .nup is misclassified as update-only and unchanged ExeFS modules
+    such as subsdk0 never appear in the extract.
     """
     if overlay_update:
         update = pick(nup, 'update')
@@ -407,7 +425,8 @@ def packages_for_extract(nup, package_arg, overlay_update):
             base = None
         if base is None:
             return [update], 'update-only (no matching base package in this .nup)'
-        return [base, update], f'base+update overlay (title {update.title_id:016x})'
+        family = base_title_id(update.title_id)
+        return [base, update], f'base+update overlay (title family {family:016x})'
     return [pick(nup, package_arg)], None
 
 

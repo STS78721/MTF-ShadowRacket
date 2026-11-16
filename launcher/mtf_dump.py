@@ -569,8 +569,9 @@ def extract_nup_overlay(
         raise DumpError(
             f"NUP extract under {exefs} is missing {', '.join(missing)}. "
             "Mario Tennis Fever 1.1.1 needs main, main.npdm, rtld, sdk, and subsdk0. "
-            "When the .nup has a base package for the same title, Browse .NUP… overlays it "
-            "automatically; update-only containers must already include every ExeFS module."
+            "Browse .NUP… overlays a matching-title base (…000) onto the update (…800) when "
+            "both are in the container; a true update-only .nup must already include every "
+            "ExeFS module."
         )
     mode = "base + update overlay"
     combined = ((proc.stdout or "") + "\n" + (proc.stderr or "")).lower()

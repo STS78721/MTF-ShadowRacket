@@ -4,16 +4,19 @@
 
 MTF-ShadowRacket Alpha 0.1.3
 
-This hotfix keeps Browse .NUP… and update-only Mario Tennis Fever 1.1.1 extracts reliable on Windows: finalizing extracted files no longer fails when antivirus briefly locks a new file under Downloads, so complete update trees (including modules such as `subsdk0`) finish writing. Update-only and base+update overlay behavior is unchanged. MTFLauncher still checks GitLab Releases and can install the latest Update.zip automatically. Personal dumps, saves, and mtf.ini stay on the PC.
+This hotfix makes Browse .NUP… reliable for real Mario Tennis Fever 1.1.1 containers: base and update packages are matched by title family (application …000 with update …800), so unchanged ExeFS modules such as `subsdk0` are kept from the base when the update is sparse. Windows antivirus locks during extract finalize remain hardened. MTFLauncher still checks GitLab Releases and can install the latest Update.zip automatically. Personal dumps, saves, and mtf.ini stay on the PC.
 
 ■ Major Updates
 
+- NUP `--overlay-update` matches base and update by application title family, not exact title ID, so base+update containers overlay correctly.
+- Sparse update ExeFS trees keep unchanged modules (for example `subsdk0`) from the matching base package inside the same `.nup`.
 - Hardened `tools/extract_nup.py` file finalize: retries when Windows briefly denies replace (common under Downloads), then falls back to copy so every ExeFS/RomFS entry is written.
-- Update-only NUP / ExeFS paths remain first-class: complete update trees verify and build without a separate base folder; matching-title base+update overlay still applies when both packages are present.
+- Update-only NUP / ExeFS paths remain first-class when the update package already contains every required module.
 
 ■ Bug Fixes
 
-- Fixed Browse .NUP… / NUP extract aborting with PermissionError (WinError 5) while renaming temporary extract files onto their final names (for example `main.npdm`), which could leave incomplete trees missing modules such as `subsdk0`.
+- Fixed Browse .NUP… leaving `work\nup-extract\exefs` missing `subsdk0` when the `.nup` held both a base (…000) and an update (…800) — exact title matching skipped the base overlay.
+- Fixed Browse .NUP… / NUP extract aborting with PermissionError (WinError 5) while renaming temporary extract files onto their final names (for example `main.npdm`).
 
 ■ Known Issues
 
@@ -24,7 +27,7 @@ This hotfix keeps Browse .NUP… and update-only Mario Tennis Fever 1.1.1 extrac
 
 - **New install:** Run `SteelTemple-MTF-ShadowRacket-Alpha-0.1.3-Full-Setup-Wizard.exe`, open **MTFLauncher**, pick your Mario Tennis Fever 1.1.1 dump folder, NUP-extracted tree, or `.nup`, click **Verify & Build mtf.exe**, and press **Play**.
 - **Portable:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.3-Portable-StandAlone.zip` anywhere and launch `MTFLauncher.exe`.
-- **Update:** Apply `SteelTemple-MTF-ShadowRacket-Alpha-0.1.3-Update.zip` over an existing Alpha 0.1.1 (or later) folder, or run the Setup Wizard over it. From Alpha 0.1.2 onward, MTFLauncher can pull Update.zip from GitLab Releases automatically — open the launcher (or use Check for Updates) to pick up 0.1.3. Dumps, saves, and personal `mtf.ini` stay on the PC.
+- **Update:** Apply `SteelTemple-MTF-ShadowRacket-Alpha-0.1.3-Update.zip` over an existing Alpha 0.1.1 (or later) folder, or run the Setup Wizard over it. From Alpha 0.1.2 onward, MTFLauncher can pull Update.zip from GitLab Releases automatically — open the launcher (or use Check for Updates) to pick up this build. Dumps, saves, and personal `mtf.ini` stay on the PC.
 
 ## MTF-ShadowRacket Alpha 0.1.2
 

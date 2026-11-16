@@ -128,6 +128,9 @@ def run(*args):
 MAIN = bytes(range(256)) * 40
 NPDM = b'META' + bytes(60)
 BIG = (b'rock ' * 5000) + bytes(range(50))
+# Full-width Nintendo-style IDs so BASE_TITLE_ID_MASK family checks stay distinct in tests.
+TID_A = 0x0100AAAA00000000
+TID_B = 0x0100BBBB00000000
 BASE_TREES = {
     'exefs': {'main': MAIN, 'main.npdm': NPDM},
     'romfs': {'a.bin': b'alpha' * 100, 'empty.bin': b'', 'sub': {'b.bin': b'beta', 'deep': {'c.bin': b'c' * 33}},
@@ -148,7 +151,7 @@ class ExtractNupTest(unittest.TestCase):
         return path
 
     def test_list(self):
-        path = self.write(build([(0, 0x0100AAAA, 0, BASE_TREES), (1, 0x0100AAAA, 65536, UPDATE_TREES)]))
+        path = self.write(build([(0, TID_A, 0, BASE_TREES), (1, TID_A, 65536, UPDATE_TREES)]))
         code, out, _ = run(path, '--list')
         self.assertEqual(code, 0)
         self.assertIn('2 package(s)', out)
@@ -157,7 +160,7 @@ class ExtractNupTest(unittest.TestCase):
         self.assertIn('exefs: 2 files', out)
 
     def test_extract_base(self):
-        path = self.write(build([(0, 0x0100AAAA, 0, BASE_TREES), (1, 0x0100AAAA, 65536, UPDATE_TREES)]))
+        path = self.write(build([(0, TID_A, 0, BASE_TREES), (1, TID_A, 65536, UPDATE_TREES)]))
         out_dir = self.dir / 'out'
         code, out, err = run(path, '--out', out_dir, '--quiet')
         self.assertEqual(code, 0, err)
@@ -174,7 +177,7 @@ class ExtractNupTest(unittest.TestCase):
     def test_zstd_files(self):
         if zstd_compress(b'x') is None:
             self.skipTest('no zstd backend (compression.zstd, zstandard or a zstd program)')
-        path = self.write(build([(0, 0x0100AAAA, 0, BASE_TREES)], use_zstd=True))
+        path = self.write(build([(0, TID_A, 0, BASE_TREES)], use_zstd=True))
         with contextlib.closing(nup.Nup(path)) as parsed:
             codecs = {parsed.files[i][0]: parsed.files[i][5] for i in range(len(parsed.files))}
         self.assertEqual(codecs['big.z'], 1)
@@ -184,7 +187,7 @@ class ExtractNupTest(unittest.TestCase):
         self.assertEqual((out_dir / 'romfs' / 'big.z').read_bytes(), BIG)
 
     def test_overlay_update(self):
-        path = self.write(build([(0, 0x0100AAAA, 0, BASE_TREES), (1, 0x0100AAAA, 65536, UPDATE_TREES)]))
+        path = self.write(build([(0, TID_A, 0, BASE_TREES), (1, TID_A, 65536, UPDATE_TREES)]))
         out_dir = self.dir / 'out'
         code, _, err = run(path, '--out', out_dir, '--overlay-update', '--quiet')
         self.assertEqual(code, 0, err)
@@ -195,7 +198,7 @@ class ExtractNupTest(unittest.TestCase):
         self.assertEqual((out_dir / 'exefs' / 'main.npdm').read_bytes(), NPDM)
 
     def test_overlay_update_only_nup_without_base(self):
-        path = self.write(build([(1, 0x0100AAAA, 65536, UPDATE_TREES)]))
+        path = self.write(build([(1, TID_A, 65536, UPDATE_TREES)]))
         out_dir = self.dir / 'out'
         code, out, err = run(path, '--out', out_dir, '--overlay-update')
         self.assertEqual(code, 0, err)
@@ -244,7 +247,7 @@ class ExtractNupTest(unittest.TestCase):
         self.assertFalse(src.exists())
 
     def test_extract_overwrites_existing_dest(self):
-        path = self.write(build([(0, 0x0100AAAA, 0, BASE_TREES)]))
+        path = self.write(build([(0, TID_A, 0, BASE_TREES)]))
         out_dir = self.dir / 'out'
         (out_dir / 'exefs').mkdir(parents=True)
         (out_dir / 'exefs' / 'main.npdm').write_bytes(b'stale-locked-target')
@@ -256,9 +259,9 @@ class ExtractNupTest(unittest.TestCase):
         # Wrong-title base first must not be used; matching-title base supplies main.npdm.
         other = {'exefs': {'main': b'wrong-title-main'}, 'romfs': {'x.bin': b'x'}}
         path = self.write(build([
-            (0, 0x0100BBBB, 0, other),
-            (0, 0x0100AAAA, 0, BASE_TREES),
-            (1, 0x0100AAAA, 65536, UPDATE_TREES),
+            (0, TID_B, 0, other),
+            (0, TID_A, 0, BASE_TREES),
+            (1, TID_A, 65536, UPDATE_TREES),
         ]))
         out_dir = self.dir / 'out'
         code, _, err = run(path, '--out', out_dir, '--overlay-update', '--quiet')
@@ -267,8 +270,51 @@ class ExtractNupTest(unittest.TestCase):
         self.assertEqual((out_dir / 'exefs' / 'main.npdm').read_bytes(), NPDM)
         self.assertFalse((out_dir / 'romfs' / 'x.bin').exists())
 
+    def test_overlay_matches_base_title_family_when_update_uses_800(self):
+        """Real dumps use update title …800 vs base …000; exact match misses base and drops subsdk0."""
+        base_tid = 0x0400D4201C6EA000  # Mario Tennis Fever application
+        update_tid = base_tid | 0x800  # 0400D4201C6EA800
+        wrong = {'exefs': {'main': b'wrong', 'subsdk0': b'wrong-sub'}, 'romfs': {'x.bin': b'x'}}
+        base_trees = {
+            'exefs': {
+                'main': MAIN,
+                'main.npdm': NPDM,
+                'rtld': b'rtld-base',
+                'sdk': b'sdk-base',
+                'subsdk0': b'subsdk0-from-base',
+            },
+            'romfs': {'keep.bin': b'keep', 'a.bin': b'old'},
+        }
+        # Sparse update: no subsdk0 (unchanged module stays on base only).
+        update_trees = {
+            'exefs': {
+                'main': MAIN[::-1],
+                'main.npdm': NPDM,
+                'rtld': b'rtld-upd',
+                'sdk': b'sdk-upd',
+            },
+            'romfs': {'a.bin': b'updated', 'new.bin': b'new'},
+        }
+        path = self.write(build([
+            (0, 0x04003F40232DE000, 0, wrong),
+            (0, base_tid, 0, base_trees),
+            (1, update_tid, 327680, update_trees),
+        ]))
+        out_dir = self.dir / 'out'
+        code, out, err = run(path, '--out', out_dir, '--overlay-update')
+        self.assertEqual(code, 0, err)
+        self.assertIn('base+update overlay', out.lower())
+        self.assertIn('title family 0400d4201c6ea000', out.lower())
+        self.assertEqual((out_dir / 'exefs' / 'main').read_bytes(), MAIN[::-1])
+        self.assertEqual((out_dir / 'exefs' / 'subsdk0').read_bytes(), b'subsdk0-from-base')
+        self.assertEqual((out_dir / 'exefs' / 'rtld').read_bytes(), b'rtld-upd')
+        self.assertEqual((out_dir / 'romfs' / 'keep.bin').read_bytes(), b'keep')
+        self.assertEqual((out_dir / 'romfs' / 'a.bin').read_bytes(), b'updated')
+        self.assertFalse((out_dir / 'romfs' / 'x.bin').exists())
+        self.assertNotEqual((out_dir / 'exefs' / 'subsdk0').read_bytes(), b'wrong-sub')
+
     def test_package_by_index_and_only(self):
-        path = self.write(build([(0, 0x0100AAAA, 0, BASE_TREES), (1, 0x0100AAAA, 65536, UPDATE_TREES)]))
+        path = self.write(build([(0, TID_A, 0, BASE_TREES), (1, TID_A, 65536, UPDATE_TREES)]))
         out_dir = self.dir / 'out'
         code, _, err = run(path, '--out', out_dir, '--package', '1', '--only', 'romfs', '--quiet')
         self.assertEqual(code, 0, err)
@@ -276,7 +322,7 @@ class ExtractNupTest(unittest.TestCase):
         self.assertFalse((out_dir / 'exefs').exists())
 
     def test_resume_skips_existing(self):
-        path = self.write(build([(0, 0x0100AAAA, 0, BASE_TREES)]))
+        path = self.write(build([(0, TID_A, 0, BASE_TREES)]))
         out_dir = self.dir / 'out'
         self.assertEqual(run(path, '--out', out_dir, '--quiet')[0], 0)
         code, out, _ = run(path, '--out', out_dir, '--quiet')
@@ -284,7 +330,7 @@ class ExtractNupTest(unittest.TestCase):
         self.assertIn('already there', out)
 
     def test_preexisting_part_symlink_is_not_followed(self):
-        path = self.write(build([(0, 0x0100AAAA, 0, {'exefs': {'main': MAIN}})]))
+        path = self.write(build([(0, TID_A, 0, {'exefs': {'main': MAIN}})]))
         out_dir = self.dir / 'out' / 'exefs'
         out_dir.mkdir(parents=True)
         outside = self.write(b'outside sentinel', 'outside.txt')
@@ -303,7 +349,7 @@ class ExtractNupTest(unittest.TestCase):
 
     def test_part_named_entry_and_file_both_survive_resume(self):
         expected = {'foo.part': b'legitimate archive part file', 'foo': b'different final bytes'}
-        path = self.write(build([(0, 0x0100AAAA, 0, {'exefs': expected})]))
+        path = self.write(build([(0, TID_A, 0, {'exefs': expected})]))
         out_dir = self.dir / 'out' / 'exefs'
         with contextlib.closing(nup.Nup(path)) as parsed:
             self.assertEqual([parts for parts, _ in parsed.package_files(parsed.packages[0], 'exefs')],
@@ -318,7 +364,7 @@ class ExtractNupTest(unittest.TestCase):
             self.assertEqual({p.name: p.read_bytes() for p in out_dir.iterdir()}, expected)
 
     def test_hash_failure_preserves_existing_final_and_stale_parts(self):
-        data = bytearray(build([(0, 0x0100AAAA, 0, {'exefs': {'main': MAIN}})]))
+        data = bytearray(build([(0, TID_A, 0, {'exefs': {'main': MAIN}})]))
         data[-5] ^= 0xff
         path = self.write(data)
         out_dir = self.dir / 'out' / 'exefs'
@@ -332,7 +378,7 @@ class ExtractNupTest(unittest.TestCase):
         self.assertEqual({p.name: p.read_bytes() for p in out_dir.iterdir()}, expected)
 
     def test_stream_failure_removes_only_its_created_temp(self):
-        path = self.write(build([(0, 0x0100AAAA, 0, {'exefs': {'main': MAIN}})]))
+        path = self.write(build([(0, TID_A, 0, {'exefs': {'main': MAIN}})]))
         out_dir = self.dir / 'out' / 'exefs'
         out_dir.mkdir(parents=True)
         expected = {'main.part': b'stale partial', 'other.part': b'unrelated data'}
@@ -364,7 +410,7 @@ class ExtractNupTest(unittest.TestCase):
         self.assertEqual({p.name: p.read_bytes() for p in out_dir.iterdir()}, expected)
 
     def test_publish_failure_preserves_unrelated_files(self):
-        path = self.write(build([(0, 0x0100AAAA, 0, {'exefs': {'main': MAIN}})]))
+        path = self.write(build([(0, TID_A, 0, {'exefs': {'main': MAIN}})]))
         out_dir = self.dir / 'out' / 'exefs'
         out_dir.mkdir(parents=True)
         expected = {'main': b'old final', 'main.part': b'stale partial', 'other.part': b'unrelated data'}
@@ -377,7 +423,7 @@ class ExtractNupTest(unittest.TestCase):
         self.assertEqual({p.name: p.read_bytes() for p in out_dir.iterdir()}, expected)
 
     def test_corrupt_file_is_refused(self):
-        data = bytearray(build([(0, 0x0100AAAA, 0, {'exefs': {'main': MAIN}})]))
+        data = bytearray(build([(0, TID_A, 0, {'exefs': {'main': MAIN}})]))
         data[-5] ^= 0xFF   # inside the last extent (main)
         path = self.write(bytes(data))
         out_dir = self.dir / 'out'
@@ -390,14 +436,14 @@ class ExtractNupTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
 
     def test_corrupt_toc_is_refused(self):
-        data = bytearray(build([(0, 0x0100AAAA, 0, BASE_TREES)]))
+        data = bytearray(build([(0, TID_A, 0, BASE_TREES)]))
         data[nup.SUPER_SIZE + 0x10] ^= 0x01
         code, _, err = run(self.write(bytes(data)), '--list')
         self.assertEqual(code, 1)
         self.assertIn('table of contents', err)
 
     def test_truncated_file_is_refused(self):
-        data = build([(0, 0x0100AAAA, 0, BASE_TREES)])
+        data = build([(0, TID_A, 0, BASE_TREES)])
         code, _, err = run(self.write(data[:-40]), '--list')
         self.assertEqual(code, 1)
 
@@ -408,7 +454,7 @@ class ExtractNupTest(unittest.TestCase):
 
     def test_unsafe_names_are_refused(self):
         for bad in ('..', 'a/b', 'a\\b', 'c:x'):
-            path = self.write(build([(0, 0x0100AAAA, 0, {'exefs': {bad: b'x'}})]), name='bad.nup')
+            path = self.write(build([(0, TID_A, 0, {'exefs': {bad: b'x'}})]), name='bad.nup')
             out_dir = self.dir / 'out'
             code, _, err = run(path, '--out', out_dir, '--quiet')
             self.assertEqual(code, 1, bad)
