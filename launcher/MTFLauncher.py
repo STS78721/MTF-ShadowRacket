@@ -32,7 +32,7 @@ from mtf_dump import (
 
 APP_TITLE = "MTF ShadowRacket"
 APP_SUBTITLE = "Mario Tennis Fever  ·  Native Windows PC Recompilation"
-DEFAULT_VERSION = "Alpha 0.1.0"
+DEFAULT_VERSION = "Alpha 0.1.1"
 
 # Championship Turf & Optic Yellow-Green palette (matches runtime/ui/theme.h THEME_TENNIS)
 C_BG_DEEP = "#08120C"

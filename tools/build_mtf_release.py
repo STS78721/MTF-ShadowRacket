@@ -67,7 +67,7 @@ def read_version() -> str:
     p = ROOT / "VERSION"
     if p.is_file():
         return p.read_text(encoding="utf-8").strip().splitlines()[0].strip()
-    return "Alpha 0.1.0"
+    return "Alpha 0.1.1"
 
 
 def version_slug(ver: str) -> str:
@@ -280,9 +280,13 @@ def stage_sources_and_runtime_lib(stage: Path, llvm: Path, gen_dir: Path, lib_wo
             stage / "bin" / "ninja.exe",
         ]
     )
-    built_lib = lib_work / "libmtfrt.a"
-    if not built_lib.is_file():
-        sys.exit(f"Expected {built_lib} from --make-runtime-lib")
+    # build_game.py --make-runtime-lib currently emits libtotkrt.a; ship as libmtfrt.a for MTFLauncher.
+    built_lib = next(
+        (p for p in (lib_work / "libmtfrt.a", lib_work / "libtotkrt.a") if p.is_file()),
+        None,
+    )
+    if built_lib is None:
+        sys.exit(f"Expected libmtfrt.a or libtotkrt.a in {lib_work} from --make-runtime-lib")
     shutil.copy2(built_lib, rt_dst / "libmtfrt.a")
 
     # Stage runtime headers, INSTALL_SIDE C sources, MTF resources, and shaders (NO totk/dkb icons or .rc!)

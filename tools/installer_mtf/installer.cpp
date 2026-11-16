@@ -623,7 +623,7 @@ int main(int argc, char **argv) {
     bool auto_run = auto_mode;
     if (getenv("MTF_SETUP_NO_SHORTCUTS")) desk = menu = false;
     if (auto_run && !uninstall && !shot_frame) page = P_FOLDER;
-    const char *ver_str = !pl.version.empty() ? pl.version.c_str() : "Alpha 0.1.0";
+    const char *ver_str = !pl.version.empty() ? pl.version.c_str() : "Alpha 0.1.1";
     std::thread worker;
     float phase = 1.2f;
     bool quit = false;

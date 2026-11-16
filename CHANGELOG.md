@@ -1,112 +1,89 @@
 # Changelog
 
-All notable changes to the **SteelTempSaint Donkey Kong Bananza PC Recomp (DKB)** project are documented in this file.
+## MTF-ShadowRacket Alpha 0.1.1
 
----
+MTF-ShadowRacket Alpha 0.1.1
 
-## [Alpha 1f] - 2026-11-08
+This patch makes setup from real Switch 2 dumps reliable: NUP-extracted folders and `.nup` containers are understood correctly, incomplete update ExeFS trees no longer fail on missing modules like `subsdk0`, and the wrong game version is rejected with a clear message. Fresh installs stay on safe, hardware-agnostic defaults.
 
-### 🍌 Native Nodix Super Motion, Handheld/Docked Scaling & Optical Flow Fixes (Alpha 1f)
-- **100% Native In-Engine Nodix Super Motion SMRS + Frame Generation:**
-  - Integrated Nodix Super Motion directly into `dkb.exe` and `DKBLauncher.exe` with zero external apps.
-  - Eliminated all dependencies on `Mfg Super Motion.exe`, preventing window focus conflicts, alt-tab capture drops, and background process clutter.
-- **Dynamic Handheld (1080p) & Docked (1620p) SMRS Workload Scaling:**
-  - Resolved the recomp's fixed 1620p virtual display limitation by hooking SMRS presets directly into `nn::oe::GetOperationMode()` in `runtime/ov_system.c`.
-  - **Balanced & Performance Presets:** Switch the engine dynamically to Handheld mode (`1920x1080`), reducing GPU pixel fill rate by **55.6%** for an immediate **35–50% base FPS boost**.
-  - **Quality & Native (DLAA) Presets:** Switch the engine dynamically to Docked mode (`2880x1620`) for full 1620p resolution with edge reconstruction.
-  - Relaxed FSR/RCAS bypass logic in `runtime/vk_fsr.c` to allow edge sharpening on 1080p 1:1 scale.
-- **Dedicated Sharpness & Optical Flow Controls:**
-  - Fixed duplicate "FSR sharpness" slider bug in the in-game menu (`runtime/ui/menu.cpp`).
-  - Added dedicated text identifiers: `UI_MENU_SMRS_SHARPNESS` ("Super Motion sharpness") and `UI_MENU_FG_FLOW` ("Optical flow sensitivity") in English and Russian.
-- **Ongoing Reverse-Engineering Research:**
-  - Actively analyzing `al::getVirtualDisplayWidth`/`Height` and `agl` texture heap allocators in Bananza's retail Switch 2 code to unlock arbitrary native dynamic resolutions (from 720p up to true 4K/8K) in upcoming releases.
+■ Major Updates
 
----
+- Fixed dump setup so NUP-extracted trees with `updates\<version>\exefs` are merged over the base ExeFS/RomFS before verify and build (covers missing `subsdk0` and similar overlay gaps).
+- Added **Browse .NUP…** in MTFLauncher: extracts your `.nup` with base + newest update overlay (`tools/extract_nup.py --overlay-update`) and fills ExeFS/RomFS automatically.
 
-## [Alpha 1d] - 2026-11-08
+■ New & Improvements
 
-### 🍌 Upscaler Architecture Overhaul & Memory/Pipeline Performance (Alpha 1d)
-- **Super Motion Frame Generation Gate (`runtime/gfx_present.c`):**
-  - Decoupled `DKB_FG_MODE` (`dlss_fg`, `fsr3_fg`, `xefg`, `msm_fg`) from legacy `frame_gen = 0` configuration blocks so Frame Generation engages reliably in all gameplay scenarios.
-  - Active generator and multiplier badges now display accurately in the in-game performance overlay.
-- **Upstream Memory & Driver Stall Optimizations (`runtime/vk_memory.c`, `runtime/vk_pipeline.c`):**
-  - Ported `TOTK_POOL_LAZY=1` and `TOTK_HOST_PROPS_CACHE=1` from upstream, deferring guest memory imports to first GPU use and slashing driver allocate stalls.
-  - Defaulted `TOTK_POOL_FINI_WAIT=fence` to eliminate CPU queue idle wait bottlenecks.
-  - Added per-stage sampler capacity validation (`push_fits`) and geometry stage support guards (`vk_geometry_supported`).
-- **Ampere Shader Recompiler Lowering (`shader_recompiler`):**
-  - Lowered 12 Ampere compute and texture fetching stages for native Ampere instruction compatibility.
-- **Audio Voice Fix (`runtime/audren.c`):**
-  - Applied unused voice slot recording fix preventing voice 0 wiping during stereo playback.
-- **DLSS Pipeline Decoupling & Depth Sanitization (`runtime/nvn_api_dlss.c`, `runtime/vk_dlaa.c`):**
-  - Decoupled depth buffer copying from camera motion vector generation so depth memory is guaranteed clean and valid.
-  - Removed inverted depth flags and added automatic 1:1 DLAA mode resolution scaling.
-  - Restored camera reprojection VP locking across uniform banks `c4` and `c8`.
-- **Anti-Aliasing & Ambient Occlusion Stack (`runtime/vk_smaa.c`, `runtime/vk_ao.c`):**
-  - Integrated Subpixel Morphological Anti-Aliasing (SMAA 1x) with automatic bypass during native DLAA/DLSS.
-  - Added SSAO / HBAO ambient occlusion pipelines with in-game overlay and launcher controls.
+○ Setup & Dump Detection
 
----
+- Auto-detects nested `[NUP]` / `*-extracted` dump folders, not only a flat `exefs` + `romfs` pair.
+- Clearer SHA-256 errors when `main` (or other ExeFS files) are not Mario Tennis Fever **1.1.1**, including guidance when an update-only path was selected.
 
-## [Alpha 1c] - 2026-11-07
+○ Defaults & Shipping
 
-### 🍌 Upstream Engine Integration & Cutscene Stability (Alpha 1c)
-- **SPIR-V Fused-Multiply-Zero (FMZ) Hardware Emulation (`runtime/vk_pipeline.c`, `runtime/cfg.c`):**
-  - Implemented automatic SPIR-V instruction rewrites for 32-bit float `OpFMul` and GLSL.std.450 `Fma` so `0 * x = 0` holds strictly even when `x` is `±Infinity` or `NaN` (NVIDIA hardware FMZ behavior).
-  - Enabled by default for all vertex stages (`DKB_FMZ=vertex`), resolving the end-of-tutorial cutscene device loss mathematically on NVIDIA GPUs without dropping visual meshes.
-  - Added bisection control `TOTK_FMZ_SEL=<mask:val>` and stage selector `TOTK_FMZ=0/vertex/all`.
-- **Live GPU Checkpoints & Fault Diagnostics (`runtime/vk_device.c`, `runtime/vk_crumbs.c`, `runtime/vk_pipeline.c`):**
-  - Integrated `VK_NV_device_diagnostic_checkpoints` under `DKB_GPU_CHECKPOINTS=1`.
-  - Added automatic driver binary fault dump generation (`logs/dkb-fault-<time>.bin`) when `VK_ERROR_DEVICE_LOST` is encountered for zero-guesswork debugging.
-  - Added `DKB_SKIP_VS` / `DKB_SKIP_FS` stage origin filters, SPIR-V bytecode dumping (`DKB_DUMP_SPV=1`), and hot-override support (`DKB_SPV_OVERRIDE`).
-- **Vulkan Pipeline & Command Recorder Optimizations (`runtime/vk_rec.c`, `runtime/vk_pipeline.c`):**
-  - Cache-line aligned (`alignas(64)`) command ring buffer `head` and `tail` pointers to eliminate false sharing.
-  - Added `TOTK_REC_BATCH` recording batching for reduced CPU overhead.
-  - Declared `StorageImageReadWithoutFormat` capability for unknown-format storage images.
-- **Portuguese Language Normalization (`runtime/locale.c`):**
-  - Mapped base Portuguese `pt` locale code to `pt-BR` for Bananza.
-- **Proprietary Core Features Preserved:**
-  - Retained AMD RX 9070 XT 1 MiB zero dummy buffer & full range SSBO binding (`ZERO_BYTES 1048576u`) in `vk_exec_draw.c`.
-  - Retained 1500ms fence wait (`ONESHOT_WAIT_MS 1500u`) preventing Windows 2-second TDR driver resets.
-  - Retained AMD recorder default 0 for stutter-free command dispatch.
-  - Retained NVIDIA DLSS 4.5, DLAA, Reflex, Intel XeSS 1.3, Frame Generation, DualSense haptics/adaptive triggers, F10 HUD, and 1-Click Launcher Auto-Updater.
+- Reset `mtf.ini.example` to hardware-agnostic safe defaults (`1920x1080` windowed, Original internal resolution, FSR, Frame Generation Off, 60 FPS). Personal high settings are not shipped.
+- Personal `mtf.ini` / other user inis stay local and are ignored by git; releases never package them.
 
----
+■ Bug Fixes
 
-## [Alpha 1b] - 2026-11-07
+- Fixed setup failing with **Missing ExeFS file: …\updates\<ver>\exefs\subsdk0** on otherwise valid NUP extracts.
+- Fixed cryptic short SHA mismatch dialogs that did not explain the 1.1.1 requirement or NUP overlay path.
 
-### 🔥 Community Tester Hotfixes (Alpha 1b)
-- **Cross-Vendor Cutscene Fault Protection (`runtime/vk_exec_draw.c`):**
-  - Enabled `light_quad_fault_skip` across all GPU vendors (AMD RDNA 4 / RX 9070 XT / Radeon 890M, NVIDIA RTX, and Intel Arc) instead of restricting to NVIDIA (`vendorID == 0x10de`), fixing `VK_ERROR_DEVICE_LOST` during the opening cutscene on AMD Radeon GPUs.
-- **Native 30 / 60 FPS Timing Cap (`runtime/frame_rate.c`, `runtime/cfg.c`, `runtime/ui/menu.cpp`, `launcher/DKBLauncher.py`):**
-  - Locked selectable and parsed Frame Rate Limits to **30 FPS** and **60 FPS** (clamping any legacy `120` or `display` values in `dkb.ini` to `60`). Prevents game speed-up above 60 FPS and fixes the `"Golden Bananas?!"` intro transition freeze.
-- **Installer & Launcher RomFS Packing + Pre-Flight Validation (`installer/modern_gui.py`, `launcher/DKBLauncher.py`):**
-  - Fixed loose `romfs/` to `romfs/romfs.bin` packing in `modern_gui.py` and added 1-click loose `romfs/` auto-packing in `DKBLauncher.exe`.
-  - Added smart dump directory resolution and strict verification for `exefs/main`, `exefs/sdk`, and `romfs/romfs.bin`.
+■ Known Issues
 
----
+- Far-distance Lakitu shadows during wide camera shots can still cull early at range.
+- Minor graphical and gameplay issues remain in some modes.
 
-## [Alpha 1] - 2026-11-07
+■ Install & Update
 
-### 🌟 Initial Alpha 1 Release Highlights
-- **Modern Dark Jungle & Banana Gold Setup Wizard (`DKB-Setup.exe` / `Donkey-Kong-Bananza-Setup.exe`):**
-  - Standalone zero-dependency PyInstaller bundle (`customtkinter` + `darkdetect` embedded) with high-res multi-mipmap `dkb.ico` icon.
-  - Native unpacking support for `.nup` containers, unpacked `exefs/` + `romfs/` (or `base/exefs` + `base/romfs`) dump folders, and `.nsp` / `.xci` containers.
-  - Automatic `romfs.bin` indexed image builder from loose RomFS files for instant startup and streaming.
-  - 1-click deployment of NVIDIA DLSS 4.5, DLSS-NR, Streamline, Reflex, and Intel XeSS 1.3+ runtime libraries.
-  - Built-in Controller UI selector (PS5 DualSense Monochrome/Color, Xbox Series Monochrome/Color, Nintendo Switch) and Desktop shortcut creator.
+- **New install:** Run `SteelTemple-MTF-ShadowRacket-Alpha-0.1.1-Full-Setup-Wizard.exe`, open **MTFLauncher**, pick your Mario Tennis Fever 1.1.1 dump folder, NUP-extracted tree, or `.nup`, click **Verify & Build mtf.exe**, and press **Play**.
+- **Portable:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.1-Portable-StandAlone.zip` anywhere and launch `MTFLauncher.exe`.
+- **Update:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.1-Update.zip` over an existing folder or run the Setup Wizard over it. Your dump, saves, and personal `mtf.ini` stay on your PC.
 
-- **Standalone PC Launcher (`DKBLauncher.exe` - Alpha 1):**
-  - Branded as **Alpha 1** (`ALPHA 1 · DKB`) with full two-way synchronization against `dkb.ini` and the in-game F1 overlay menu.
-  - Added Display & Graphics controls for Upscaler (`Off`, `DLSS`, `FSR`, `XeSS`, `DLAA`), Upscaler Quality Preset, DLSS Preset (`Default`, `Preset K`, `Preset L`, `Preset M`), Frame Generation, NVIDIA Reflex (`Off`, `On`, `On + Boost`), AMD Anti-Lag 2, Render Scale, Shadow & Anisotropic Filtering, FOV (`70`–`120`), and Color Grading (`Default`, `Vivid`, `Warm`, `Cool`, `Cinema`).
-  - Added Vulkan Shader Pre-Warm utility, Save Backup Vault with safety snapshots, and 1-click Mod Manager.
+Your dump, saves, and personal settings stay on your PC.
 
-- **Vulkan Renderer & Cutscene Stability Fixes:**
-  - **Sky, Cave Walls & Distant World Restoration (`runtime/vk_exec_draw.c`):** Fixed `light_quad_fault_skip` so that only true per-instance light quads (`count <= 6`, `>= 8` active vertex streams, all active streams having `divisor != 0`) or known faulting cutscene vertex stage origins (`cae0ef8e9fe9147f`, `a05d707357ffc917`, `c081588c78ee16f3`, `89300537d4fff15e`, `fb6e80e4f0bd1ac5`, `140a1eac75f7b5c0`, `163bd4735277403a`) are skipped on NVIDIA GPUs. Legitimate 3D world shaders with vertex input masks `0x03ff`–`0x7fff` (skybox, cave walls, distant terrain) use per-vertex streams (`divisor == 0`) and `count > 6`, so zero 3D meshes are ever skipped.
-  - **Indirect Reset & Texture Write-Back Integrity (`runtime/vk_exec_draw.c`, `runtime/vk_texture.c`, `runtime/vk_backend.c`):** Restored `vk_exec_read_buffer` in `vk_exec_reset_indirect` and synchronous fence write-back limits so GPU-generated LUTs and destructible terrain indirect records never read stale guest memory.
-  - **Upstream Bananza Engine Sync:**
-    - Enabled native passthrough geometry shader replay by default (`NATIVE_GS=1`) so destructible terrain renders properly.
-    - Integrated Ampere lowering support for RGB-mask `TXD` instructions (`lower_to_maxwell.h`) and shader translator patch `0019` (allowing code after unpredicated `CAL` instructions to run, restoring the opening tutorial wall).
-    - Allowed passthrough geometry shaders to read unforwarded inputs (`runtime/gfx_shader.c`).
-    - Added indexed pending GPU write tracking during shadow memory sync (`runtime/vk_memory.c`).
-    - Rounded alpha-test pipeline key references to nearest `1/255` step (`runtime/vk_pipeline.c`) to eliminate per-frame pipeline rebuild stutter during fades.
-    - Added mutable sRGB storage-image view support (`VK_IMAGE_CREATE_EXTENDED_USAGE_BIT` in `runtime/vk_texture.c` and format-matched storage views in `runtime/vk_exec_draw.c`).
+## MTF-ShadowRacket Alpha 0.1.0
+
+MTF-ShadowRacket Alpha 0.1.0
+
+The first public release of MTF-ShadowRacket brings Mario Tennis Fever natively to Windows PC with the Championship Turf look across the setup wizard, launcher, and F1 settings menu, working internal resolution scaling up to 1440p, and Story Mode cutscene and shadow fixes.
+
+■ Major Updates
+
+- Initial Alpha release (`Alpha 0.1.0`), translating Mario Tennis Fever's ARM64 code into a native Windows executable (`mtf.exe`) over Vulkan 1.3.
+- Added the standalone Windows Setup Wizard (`SteelTemple-MTF-ShadowRacket-Alpha-0.1.0-Full-Setup-Wizard.exe`) and `MTFLauncher` in the Mario Tennis Fever Championship Turf theme with bundled LLVM, Ninja, and Python 3.14 so users can verify and build their dump with no external developer tools installed.
+
+■ New & Improvements
+
+○ Graphics & Resolution
+
+- Added working internal resolution selection (`Original ~960p`, `720p`, `900p`, `1080p`, and `1440p`) with full-frame swapchain crop clamping.
+- Added AMD FSR 1.0 edge sharpening, Bilinear scaling, Frame Generation modes (`off`, `msm_fg`, `fsr3_fg`, `xefg`), and colour presets (`default`, `vivid`, `clarity`).
+- Added out-of-the-box neutral defaults (`1920x1080` windowed, `Original` internal resolution, `FSR`, `Frame Generation Off`, `60 FPS`) so systems with different GPUs start smoothly without manual configuration.
+
+○ Settings Menu & Launcher
+
+- Added the in-game Settings menu (**F1**, **Esc**, or **Back + Y** on controller) with Tennis Court branding and Display, Graphics, Sound, Controls, System, and Advanced categories.
+- Added `MTFLauncher` featuring one-step ExeFS SHA-256 verification, RomFS packing, local `mtf.exe` compilation, Display/Graphics/Input settings, Mod & Save folder shortcuts, save backups, and a one-click Reset to Default Profile option.
+
+○ Setup Wizard
+
+- Added the single-file native Setup Wizard with Desktop and Start Menu shortcuts, Windows Installed Apps integration (`uninstall.exe`, no administrator rights needed), and safe updates that keep existing builds, saves, `mtf.ini`, mods, and dump files intact.
+
+■ Bug Fixes
+
+- Fixed Story Mode cutscenes hitching and sporadic flickering black squares caused by pipeline stalls and per-draw disk shader lookups.
+- Fixed internal resolution scaling leaving black border crops or overflowing guest render pools above `1440p`.
+- Fixed repeated GPU texture deswizzle lookups during texture uploads.
+
+■ Known Issues
+
+- Far-distance Lakitu (turtle on the cloud) shadows during wide camera shots can cull early at range and remain tracked for upcoming patch updates.
+- Minor graphical and gameplay issues remain in some modes and will be addressed in subsequent patches.
+
+■ Install & Update
+
+- **New install:** Run `SteelTemple-MTF-ShadowRacket-Alpha-0.1.0-Full-Setup-Wizard.exe`, open **MTFLauncher**, pick your Mario Tennis Fever 1.1.1 dump (`exefs` and `romfs`), click **Verify & Build mtf.exe**, and press **Play**.
+- **Portable:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.0-Portable-StandAlone.zip` anywhere and launch `MTFLauncher.exe`.
+- **Update:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.0-Update.zip` over an existing folder or run the Setup Wizard over it.
+
+Your dump, saves, and personal settings stay on your PC.
