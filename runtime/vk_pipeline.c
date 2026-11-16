@@ -1240,27 +1240,27 @@ static uint32_t *spirv_fixup(const uint32_t *w, uint64_t n, uint64_t *out_n) {
 // Orchid / Maxwell 0x11F0 (layer relative to viewport): when a geometry shader writes ViewportIndex but not Layer,
 // hardware draws each multicast viewport into layer = viewport (MTF shadow cascades). Vulkan has no relative bit —
 // inject Layer = the same value stored to ViewportIndex so cascades land in distinct array layers instead of layer 0.
-enum { SPV_OP_STORE = 62, SPV_BUILTIN_VIEWPORT_INDEX = 9, SPV_BUILTIN_LAYER = 10, SPV_MODEL_GEOMETRY = 3 };
+enum { SPV_OP_STORE = 62, SPV_BUILTIN_LAYER = 9, SPV_BUILTIN_VIEWPORT_INDEX = 10, SPV_MODEL_GEOMETRY = 3 };
 
 static uint32_t *spirv_layer_from_viewport(const uint32_t *w, uint64_t n, uint64_t *out_n) {
     if (n < 5) return NULL;
     uint32_t bound = w[3];
     uint32_t vp_var = 0, layer_var = 0, vp_ptr_type = 0;
-    int is_geometry = 0, store_count = 0;
+    int is_geometry = 0, store_count = 0, ep_count = 0;
     for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
         if (!l || i + l > n) return NULL;
         const uint32_t *a = w + i + 1;
-        if (op == SPV_OP_ENTRY_POINT && l >= 3 && a[0] == SPV_MODEL_GEOMETRY) is_geometry = 1;
+        if (op == SPV_OP_ENTRY_POINT && l >= 3 && a[0] == SPV_MODEL_GEOMETRY) is_geometry = 1, ep_count++;
         else if (op == SPV_OP_DECORATE && l >= 4 && a[1] == SPV_DEC_BUILTIN) {
             if (a[2] == SPV_BUILTIN_VIEWPORT_INDEX) vp_var = a[0];
             if (a[2] == SPV_BUILTIN_LAYER) layer_var = a[0];
-        } else if (op == SPV_OP_VARIABLE && l >= 4 && a[1] == vp_var && a[2] == SPV_SC_OUTPUT)
+        } else if (op == SPV_OP_VARIABLE && l >= 4 && vp_var && a[1] == vp_var && a[2] == SPV_SC_OUTPUT)
             vp_ptr_type = a[0];
-        else if (op == SPV_OP_STORE && l >= 3 && a[0] == vp_var) store_count++;
+        else if (op == SPV_OP_STORE && l >= 3 && vp_var && a[0] == vp_var) store_count++;
         i += l;
     }
-    if (!is_geometry || !vp_var || layer_var || !vp_ptr_type || !store_count) return NULL;
+    if (!is_geometry || ep_count != 1 || !vp_var || layer_var || !vp_ptr_type || !store_count) return NULL;
 
     // Extra words: Decorate Layer + Variable + EntryPoint interface slot + one Store per ViewportIndex store.
     uint64_t extra = 4u + 4u + 1u + (uint64_t)store_count * 3u;
@@ -1272,30 +1272,35 @@ static uint32_t *spirv_layer_from_viewport(const uint32_t *w, uint64_t n, uint64
     memcpy(o, w, 5 * 4);
     o[3] = new_bound;
 
-    int inserted_decl = 0;
-    int n_layer_stores = 0;
+    int inserted_dec = 0, inserted_var = 0, n_layer_stores = 0;
     for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, l = w[i] >> 16;
         const uint32_t *a = w + i + 1;
-
-        // Before first Variable: BuiltIn Layer decorate + Layer output variable (same pointer type as ViewportIndex).
-        if (!inserted_decl && op == SPV_OP_VARIABLE) {
-            o[on++] = 4u << 16 | SPV_OP_DECORATE;
-            o[on++] = layer_var;
-            o[on++] = SPV_DEC_BUILTIN;
-            o[on++] = SPV_BUILTIN_LAYER;
-            o[on++] = 4u << 16 | SPV_OP_VARIABLE;
-            o[on++] = vp_ptr_type;
-            o[on++] = layer_var;
-            o[on++] = SPV_SC_OUTPUT;
-            inserted_decl = 1;
-        }
 
         if (op == SPV_OP_ENTRY_POINT && l >= 3 && a[0] == SPV_MODEL_GEOMETRY) {
             // Widen interface list with layer_var.
             o[on++] = (l + 1) << 16 | SPV_OP_ENTRY_POINT;
             for (uint32_t k = 0; k < l - 1; k++) o[on++] = a[k];
             o[on++] = layer_var;
+        } else if (op == SPV_OP_DECORATE && l >= 4 && a[0] == vp_var && a[1] == SPV_DEC_BUILTIN &&
+                   a[2] == SPV_BUILTIN_VIEWPORT_INDEX && !inserted_dec) {
+            // Emit BuiltIn Layer inside the annotations section immediately after BuiltIn ViewportIndex.
+            memcpy(o + on, w + i, l * 4);
+            on += l;
+            o[on++] = 4u << 16 | SPV_OP_DECORATE;
+            o[on++] = layer_var;
+            o[on++] = SPV_DEC_BUILTIN;
+            o[on++] = SPV_BUILTIN_LAYER;
+            inserted_dec = 1;
+        } else if (op == SPV_OP_VARIABLE && l >= 4 && a[1] == vp_var && a[2] == SPV_SC_OUTPUT && !inserted_var) {
+            // Emit Output Layer variable immediately after Output ViewportIndex (after vp_ptr_type is defined).
+            memcpy(o + on, w + i, l * 4);
+            on += l;
+            o[on++] = 4u << 16 | SPV_OP_VARIABLE;
+            o[on++] = vp_ptr_type;
+            o[on++] = layer_var;
+            o[on++] = SPV_SC_OUTPUT;
+            inserted_var = 1;
         } else if (op == SPV_OP_STORE && l >= 3 && a[0] == vp_var) {
             memcpy(o + on, w + i, l * 4);
             on += l;
@@ -1309,7 +1314,7 @@ static uint32_t *spirv_layer_from_viewport(const uint32_t *w, uint64_t n, uint64
         }
         i += l;
     }
-    if (!inserted_decl || n_layer_stores != store_count) {
+    if (!inserted_dec || !inserted_var || n_layer_stores != store_count || on != n + extra) {
         free(o);
         return NULL;
     }
