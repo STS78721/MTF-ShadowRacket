@@ -1,66 +1,139 @@
-# Universal NS2 to PC
+﻿<div align="center">
 
-[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+<img src="runtime/mtf.png" width="128" alt="MTF-ShadowRacket icon">
 
-**Universal NS2 to PC** is a unified static recompilation engine for Nintendo Switch 2 titles (ARM64 + NVN 2 + Ampere SM86) into native x86-64 PC applications with a Vulkan 1.3 renderer. Instead of interpreting instructions at runtime, each game's `rtld`, `main`, `subsdk*`, and `sdk` binaries are lifted ahead-of-time to C, linked against a multi-game Horizon OS + NVN 2 host runtime, and configured with a modern Dear ImGui in-game overlay hooked live into resolution scaling, Docked/Handheld console state, upscalers, frame generation, and safe shader compile paths.
+# 🎾 MTF-ShadowRacket
+
+### Mario Tennis Fever, running natively on Windows PC
+
+*A static recompilation of the Nintendo Switch 2 game, not an emulator.*
+
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?style=for-the-badge&logo=windows&logoColor=white)](#-requirements)
+[![Vulkan](https://img.shields.io/badge/Vulkan-1.3-AC162C?style=for-the-badge&logo=vulkan&logoColor=white)](#-under-the-hood)
+[![Game version](https://img.shields.io/badge/game-1.1.1-76B900?style=for-the-badge)](#-quick-start)
+[![Release](https://img.shields.io/badge/release-Alpha%200.1.0-CCF22A?style=for-the-badge&labelColor=0C1A11)](https://gitlab.com/steeltemplesaint-recomps/MTF-ShadowRacket/-/releases/Alpha-0.1.0)
+[![License](https://img.shields.io/badge/license-GPL--3.0%2B-blue?style=for-the-badge)](#-credits--licence)
+
+**[Quick start](#-quick-start)** · **[Features](#-highlights)** · **[Status](#-status)** · **[How it works](#-under-the-hood)** · **[Changelog](CHANGELOG.md)** · **[Credits](#-credits--licence)**
+
+</div>
+
+---
 
 > [!IMPORTANT]
-> **No game files or keys are included, and none ever will be.** You need your own copy dumped from your own console. Every executable is compiled locally from your own dump.
+> **No game files are included.** You need your own legally dumped copy of **Mario Tennis Fever (1.1.1)**: `exefs` and `romfs`. This repository contains only the recompiler, the runtime, the launcher, and the setup tools.
 
-## What makes Universal NS2 to PC different
+> [!NOTE]
+> **Current release: `Alpha 0.1.0`.** MTF-ShadowRacket ships on safe zero-config client defaults (`1920x1080` windowed, Original internal resolution, AMD FSR, Frame Generation Off, 60 FPS) so every system boots cleanly — adjust resolution, upscaling, and visual profiles anytime in `MTFLauncher` or in-game (`F1`). Known minor issues remain and will be addressed in upcoming patch updates.
 
-- **Single Shared Engine (`runtime/game_profile.c`):** No per-game repo forks. Title IDs (`rt_application_id`), short names (`<short>.exe`, `<short>.ini`, `logs/<short>.log`), and per-title quirk flags live in one central profile table.
-- **Smart Pre-Flight Profiler (`tools/universal_ns2_to_pc.py scan`):** Before lifting or compiling C, scans `exefs/` and `romfs/` for ELF relocations (`DT_RELR`, `TLSDESC`), exact `sdk -> main/subsdk*` `nn::*` imports, ARM64 `recomp/lifter.py` decode coverage, NVN 2 proc coverage, all 9 BNSH shader slots + pipeline stage pairs, Ampere `SM86` opcodes vs `lower_to_maxwell.h`, >5K-insn stall shaders, Switch 2 `Ounc` `BNTX` textures / 256M-texel sparse hazards, and monolithic `CRA.` packs.
-- **One-Command Initialize & Build:** `init` generates `tools/data/expected-<ver>.json` and lifts ARM64->C (`recomp/gen.py`); `build` compiles `<short>.exe` with MSYS2 UCRT64 Clang + Ninja.
-- **Default Midnight Glass Overlay (`F1` / `Back+Y`):** Built into every binary by default with live hooks for `NS2_OPERATION_MODE` (`docked` / `handheld` + OS events `0x1e`/`0x1f` + display resolution change notification), live `NS2_OUTPUT_RES` / `NS2_RENDER_SCALE` / FSR / FXAA / SMAA / RCAS / SMRS upscaling, `NS2_RES_HOOK` toggle, `NS2_VK_NOOPT` safe shader compile flag, `FPS_LIMIT` (`30..240` + `display`), and live pipeline telemetry.
+## ✨ Highlights
 
-## Workflow (Scan -> Init -> Build -> Test)
+<table>
+<tr>
+<td width="50%" valign="top">
 
-```powershell
-# 1. Build the NativeAOT SPIR-V translator once
-python tools\build_xlate.py
+### 🚀 Native code, not emulation
+Every ARM64 instruction of `rtld`, `main`, `subsdk0`, and `sdk` is translated **ahead of time** into C and compiled natively on your PC into `mtf.exe`. No CPU interpreter runs while you play.
 
-# 2. Pre-flight inspect any NS2 game dump before lifting C
-python tools\universal_ns2_to_pc.py scan --exefs "C:\Games\MyGame\exefs" --romfs "C:\Games\MyGame\romfs"
+### 🎾 Resolution scaling & FSR
+Switch cleanly between **Original (~960p)**, **720p**, **900p**, **1080p**, and **1440p** internal frame resolutions, paired with AMD FSR 1.0, Bilinear scaling, Frame Generation options, and OLED/Clarity colour presets.
 
-# 3. Generate expected metadata and lift ARM64 -> C
-python tools\universal_ns2_to_pc.py init --ver mygame100 --short mygame --name "My NS2 Game" --exefs "C:\Games\MyGame\exefs" --romfs "C:\Games\MyGame\romfs"
+### 🎨 Smooth shaders & Story Mode fixes
+In-memory prepared shader indexing, bounded pipeline wait budgets, and cached ASTC GPU deswizzle eliminate cutscene hitches and sporadic black-square shadows during Story Mode progression.
 
-# 4. Compile native PC binary
-python tools\universal_ns2_to_pc.py build --ver mygame100 --exefs "C:\Games\MyGame\exefs" --romfs "C:\Games\MyGame\romfs"
+</td>
+<td width="50%" valign="top">
 
-# 5. Run baseline smoke checks before debugging F0-F5
-build\mygame100\mygame.exe --selftest
-build\mygame100\mygame.exe --probe-loader
-build\mygame100\mygame.exe --probe-gfx-abi
-build\mygame100\mygame.exe --probe-window
-$env:TOTK_GPU="null"; build\mygame100\mygame.exe --boot --seconds 5
+### 🎮 Switch-2-style settings menu
+Press **F1** or **Esc** (or **Back + Y** on a controller) for a native settings overlay in the **Tennis Court** Championship Turf theme (plus Dark and Light themes) with live telemetry and config saving to `mtf.ini`.
+
+### 🖥️ Dedicated Setup Wizard & MTFLauncher
+Install cleanly with **SteelTemple MTF-ShadowRacket Setup** (`Full-Setup-Wizard.exe`) or the portable archive: bundled LLVM-MinGW, Ninja, and Python build `mtf.exe` locally from your dump with no external tools required.
+
+### 🕹️ Controllers & saves that stay yours
+Works out of the box with Xbox, DualSense, Switch / Switch 2 Pro controllers, and keyboard. Includes mod folder shortcuts and timestamped save backup snapshots inside `MTFLauncher`.
+
+</td>
+</tr>
+</table>
+
+## 📊 Status
+
+| Area | State |
+|---|---|
+| Boot, intro movies, menus | ✅ Working |
+| Exhibition matches & courts | ✅ Playable (60 fps target) |
+| Internal resolution scaling (`original` – `1440p`) | ✅ Working |
+| Story Mode & cutscenes | ⚠️ Playable with known minor visual/shadow issues |
+| Audio & controller input | ✅ Working |
+| Online play | ❌ Not supported, by design |
+
+## 🚀 Quick start
+
+**1. Install MTF-ShadowRacket**
+
+Download the latest **`Alpha 0.1.0`** release from the **[Releases page](https://gitlab.com/steeltemplesaint-recomps/MTF-ShadowRacket/-/releases/Alpha-0.1.0)**:
+- Run **`SteelTemple-MTF-ShadowRacket-Alpha-0.1.0-Full-Setup-Wizard.exe`** (no administrator rights needed), or extract **`Portable-StandAlone.zip`**.
+
+**2. Set up from your Mario Tennis Fever 1.1.1 dump**
+
+Open **MTFLauncher** → **SETUP FROM DUMP**, select your `exefs` and `romfs` folders (or parent dump folder), and click **VERIFY & BUILD MTF.EXE**. It checks SHA-256 hashes, packs RomFS, lifts ARM64 to C, and builds `mtf.exe` automatically.
+
+**3. Play**: click **PLAY MARIO TENNIS FEVER** (or run `mtf.exe`).
+
+<details>
+<summary>Building from source (developers)</summary>
+
+```bat
+python tools\check_content.py
+.venv\Scripts\python.exe recomp\gen.py --exefs "<dump>\exefs" --out generated\mtf111 --patches recomp\patches-mtf111.txt
+.venv\Scripts\python.exe tools\mtf_pack_romfs.py --dir "<dump>\romfs" --out build\extracted\mtf111\romfs
+.venv\Scripts\python.exe tools\build_game.py --version mtf111 --gen generated\mtf111 --exefs "<dump>\exefs" --romfs build\extracted\mtf111\romfs
+.venv\Scripts\python.exe tools\build_mtf_release.py
 ```
 
-Or check everything via the [AI & Developer Playbook](docs/UNIVERSAL_NS2_TO_PC_PLAYBOOK.md).
+</details>
 
-## Content Guard & Layout
+## 🖥️ Requirements
 
-Everything extracted or generated goes under `build/` or `generated/`, which git ignores. Run `python tools/check_content.py` (or `--staged`) before committing to ensure zero game assets, keys, or build artifacts enter git.
+| | Minimum | Recommended |
+|---|---|---|
+| OS | Windows 10 64-bit | Windows 11 |
+| CPU | x86-64 with AVX2 | 8 cores or more |
+| GPU | Vulkan 1.3, 6 GB VRAM | NVIDIA RTX 30/40/50 or AMD RX 6000/7000, 8+ GB VRAM |
+| RAM | 16 GB | 32 GB |
+| Disk | ~15 GB free during setup | NVMe SSD |
 
-## Credits, Acknowledgments & Ecosystem Foundations
+## ⚙️ Settings
 
-Universal NS2 to PC builds directly on pioneering open-source static recompilation and Switch 2 emulation work:
+Press **F1** / **Esc** in game or configure before launch inside **MTFLauncher**. Settings save cleanly to `mtf.ini` next to `mtf.exe`, and any option can also be overridden with `NS2_` / `TOTK_` environment variables.
 
-### Static Recompilation Foundations
-- **[TotK Recomp](https://github.com/valentderah/totk-pc-recomp)** by **valentderah**: Core ahead-of-time ARM64-to-C lifter, Horizon OS runtime, Unicorn differential test harness, and Vulkan renderer.
-- **[DKB Recomp](https://github.com/sagaopc/dkb-pc-recomp)** / **Lucas-blip-png** / **sostenesfreitas**: First Switch 2 NVN 2 static recompilation port, `nn::codec` decoder, and Ampere lowering integration.
-- **[MKW Recomp](https://github.com/STS78721/MKW-THWOMP)** & **[MTF Recomp](https://github.com/STS78721/MTF-ShadowRacket)**: Multi-module Switch 2 boots, 6-core Horizon synchronization, and NVN 2 texture/pipeline fixes.
-- **[Hookshot](https://github.com/NotRexed)** by **NotRexed**: Rapid Switch 2 bring-up methodology (`nx2/` shader census, NVN proc auditing, hot-function splits, import classification, and `lower_test`).
-- **[MacNativeGames](https://github.com/ly05010419/MacNativeGames)** by **ly05010419**: Horizon runtime, NPDM/linker improvements, and audio/pipeline architecture.
-- **[LAS Recomp](https://github.com/peiikai/LASRecomp)** & **[SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp)**: AArch64 SIMD/FP and Vulkan rendering breakthroughs.
+## 🔧 Under the hood
 
-### Switch 2 GPU, Shader Translation & Emulator Research
-- **[Eglantine](https://git.eden-emu.dev/Franseven/PokeDinner-a-Eglantine-Fork)** / **[notsapinho/Eglantine](https://github.com/notsapinho/Eglantine)**: Ampere-to-Maxwell SM86 lowering, SSBO read-only / bindless fixes, vertex format `B10G11R11F` & compute shared memory lowering, and `Ounc` texture insights.
-- **[Fritchii](https://github.com/Frizti/Fritchii)** (`NX2_NOTES.md`): Switch 2 `nvdrv` / `nvnflinger` display format, SM86 `TEX`/`FSETP`/`SHFL` fixes, and NVN2 service layout notes.
-- **[Lichii](https://github.com/zortos293/Lichii)** & **[Lichii-fg](https://github.com/cirnoice9/Lichii-fg)**: NVN2 Vulkan `robustBufferAccess2`, `vk::PipelineCreateFlagBits::eDisableOptimization`, sparse/buffer fixes, and frame generation pacing research.
-- **[Mesa NAK](https://gitlab.freedesktop.org/mesa/mesa)**, **[Ryujinx](https://github.com/Ryujinx/Ryujinx)**, **[deko3d](https://github.com/devkitPro/deko3d)**, **[hactool](https://github.com/SciresM/hactool)**, **Atmosphère**, **Switchbrew**, **SDL3**, **VMA**, **Dear ImGui**, **libvpx**, **libopus**, and **zstd**.
+```mermaid
+flowchart LR
+    A[Your dump<br/>exefs + romfs] --> B[recomp/<br/>ARM64 → C lifter]
+    B --> C[Generated C]
+    C --> D[LLVM Clang + Ninja<br/>on your PC]
+    E[runtime/<br/>NVN 2 on Vulkan,<br/>Horizon OS, F1 menu] --> F[mtf.exe 🎾]
+    D --> F
+    A --> G[mtf_pack_romfs.py<br/>RomFS image] --> F
+```
 
-## License
+- **CPU:** Mario Tennis Fever's ARM64 modules are lifted statically to C ([`recomp/`](recomp/)); [`runtime/`](runtime/) supplies the Horizon OS kernel, memory management, audio, input, and Tennis Court settings UI.
+- **GPU:** Switch 2 NVN 2 commands translate onto **Vulkan 1.3** with Graphics Pipeline Libraries, Ampere (`SM86`) shader lowering, AMD FSR 1.0, and frame-generation pacing.
+- **Release Versioning:** [`VERSION`](VERSION) drives the version label across the Setup Wizard, `MTFLauncher`, Windows Installed Apps, and the in-game F1 menu (`Alpha 0.1.0`), alongside [`CHANGELOG.md`](CHANGELOG.md).
 
-Universal NS2 to PC as a whole is under the [GNU GPL v3 or later](LICENSE) (because it carries GPL Ampere shader lowering under `runtime/third_party/eglantine/`). Files inherited from TotK Recomp keep their [MIT License](LICENSE-MIT); third-party libraries keep their respective licenses ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). Independent non-commercial research project, not affiliated with Nintendo.
+## 🙏 Credits & licence
+
+Built on **[MKW-THWOMP](https://gitlab.com/steeltemplesaint-recomps/MKW-THWOMP)**, **Universal NS2 to PC**, **TotK Recomp**, **Eglantine** (Ampere SM86 shader lowering), **Ryujinx**, **MacNativeGames**, **LAS Recomp**, **SDL3**, **Dear ImGui**, **Vulkan Memory Allocator (VMA)**, **libopus**, **libvpx**, **dav1d**, **zstd**, and **FidelityFX FSR**.
+
+Licensed under the **GNU GPL v3 or later** (see [`LICENSE`](LICENSE)); permissive and third-party notices are preserved in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+---
+
+<div align="center">
+
+<sub>Mario Tennis Fever is a trademark of Nintendo. This is an unofficial non-commercial fan research project, not affiliated with or endorsed by Nintendo. Please support the official release.</sub>
+
+</div>
