@@ -2589,7 +2589,21 @@ static void record_fixed(VkExec *ex) {
         ex->recorded++;
     }
     if (ex->dirty & VK_EXEC_DIRTY_DEPTH_BIAS) {
-        vkCmdSetDepthBias(cb, ex->poly_offset.units, ex->poly_offset.clamp, ex->poly_offset.factor);
+        // NVN SetPolygonOffsetClamp already takes GL/API units (maxwell.md 5.5). When DEPTH24 is a D32F stand-in,
+        // Orchid/yuzu rescale constant units so the bias still lands on D24-sized steps (maxwell.md 1.7).
+        float units = ex->poly_offset.units;
+        int nvn_d24 = ex->pipe.depth_fmt == NVN_FORMAT_DEPTH24 || ex->pipe.depth_fmt == NVN_FORMAT_DEPTH24_STENCIL8;
+        int d32_standin = ex->pass_depth == VK_FORMAT_D32_SFLOAT || ex->pass_depth == VK_FORMAT_D32_SFLOAT_S8_UINT;
+        if (nvn_d24 && d32_standin) {
+            static const double rescale = (double)(1ull << (32 - 24)) / 0x1.ep+127;
+            units = (float)((double)units * rescale);
+            static int logged;
+            if (!logged) {
+                logged = 1;
+                rt_log("vk: depth bias units rescaled for D24-as-D32F (Orchid/Maxwell match)");
+            }
+        }
+        vkCmdSetDepthBias(cb, units, ex->poly_offset.clamp, ex->poly_offset.factor);
         ex->recorded++;
     }
     if (ex->dirty & VK_EXEC_DIRTY_BLEND_CONST) {

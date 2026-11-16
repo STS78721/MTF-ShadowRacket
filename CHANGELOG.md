@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased (Lakitu / far-shadow Orchid match)
+
+■ Bug Fixes
+- Matched Orchid depth-bias path: `VK_EXT_depth_bias_control` FORCE_UNORM representation, plus D24→D32F unit rescale when DEPTH24 is a stand-in (maxwell.md 1.7).
+- Occlusion samples-passed queries default to non-precise like Orchid (opt in with `OQ_PRECISE=1`); seed guest counter as visible until the real sum lands; on MTF, empty reports that had query slots are floored to visible so far proxies (Lakitu) are not CPU-culled.
+- Shadow `clamp_border` fallback with compare enabled follows Orchid’s brightness heuristic (prefer far/white) instead of transparent black.
+
+■ Known Issues
+- Far-distance Lakitu shadows still need GPU play verification on the side build before shipping.
+
 ## MTF-ShadowRacket Alpha 0.1.0
 
 MTF-ShadowRacket Alpha 0.1.0

@@ -40,6 +40,7 @@
 
 #include "host.h"
 #include "cfg.h"
+#include "game_profile.h"
 #include "nvn_api.h"
 #include "nvn_tex.h"
 #include "tex.h"
@@ -172,7 +173,12 @@ static int oq_ready(void) {
         return 0;
     }
     vkResetQueryPool(v->device, oq_pool, 0, OQ_N);
-    oq_flags = f2.features.occlusionQueryPrecise ? VK_QUERY_CONTROL_PRECISE_BIT : 0;
+    // Orchid defaults to non-precise occlusion unless GPU level is High. Precise counts of tiny far proxies
+    // (Lakitu) can under-report on some drivers; a non-zero any-sample result keeps the caster alive.
+    const char *precise = cfg_get("OQ_PRECISE");
+    int want_precise = precise && (!strcmp(precise, "1") || !strcmp(precise, "on"));
+    oq_flags = (want_precise && f2.features.occlusionQueryPrecise) ? VK_QUERY_CONTROL_PRECISE_BIT : 0;
+    rt_log("vk: occlusion queries %s", oq_flags ? "precise (OQ_PRECISE)" : "non-precise (Orchid default)");
     oq_state = 1;
     return 1;
 }
@@ -244,7 +250,17 @@ static void oq_cb(void *arg) {
     else {
         oq_count += sum;
         if (s->lost && !oq_count) oq_count = 1;
-        if (s->addr) write_counter(s->addr, oq_count);
+        if (s->addr) {
+            // MTF: tiny far proxies (Lakitu) often cover 0 precise/non-precise samples under wide camera; a 0 here
+            // culls the caster before shadow maps run. Orchid keeps those shadows; floor empty reports to visible.
+            const RtGameProfile *gp = game_profile();
+            int mtf = gp && gp->short_name && !strcmp(gp->short_name, "mtf");
+            if (mtf && !oq_count && s->n) {
+                oq_count = 1;
+                LOG_ONCE("vk: MTF samples-passed empty report floored to visible (Orchid far-proxy match)");
+            }
+            write_counter(s->addr, oq_count);
+        }
     }
     free(s);
 }
@@ -269,6 +285,9 @@ static void reset_counter(VkExec *ex, const p_reset_counter *p) {
 // A samples-passed report: the segment goes with it (addr 0: no CPU-visible memory) and counting stops until the next
 // reset, unless reports came without resets before.
 static void oq_report(VkExec *ex, uint64_t addr) {
+    // Guest CPU cull paths can read the counter before the completion thread lands the real sum. Seed "visible" so a
+    // late read cannot see a stale 0 and drop far casters (Lakitu); the fence callback overwrites with the true count.
+    if (addr) write_counter(addr, 1);
     oq_segment(ex, addr, 0);
     if (oq_reported && !oq_keep) {
         oq_keep = 1;

@@ -46,7 +46,9 @@ typedef struct VkCtx {
         gpu_is_intel,
         gpu_is_intel_arc,
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
-        has_image_compression_control;      // VK_EXT_image_compression_control: depth/colour images can refuse the metadata tail
+        has_image_compression_control,      // VK_EXT_image_compression_control: depth/colour images can refuse the metadata tail
+        has_depth_bias_control;             // VK_EXT_depth_bias_control + FORCE_UNORM (Orchid/Maxwell format-dependent r)
+    PFN_vkCmdSetDepthBias2EXT cmd_set_depth_bias2;  // set when has_depth_bias_control
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
