@@ -6,8 +6,10 @@ a base and an update package) and checks listing, extraction, the SHA-256 checks
 Run: python tests/nup_extract_check.py
 """
 import contextlib
+import errno
 import hashlib
 import io
+import os
 import shutil
 import struct
 import subprocess
@@ -202,6 +204,54 @@ class ExtractNupTest(unittest.TestCase):
         self.assertEqual((out_dir / 'romfs' / 'a.bin').read_bytes(), b'updated')
         self.assertFalse((out_dir / 'exefs' / 'main.npdm').exists())
 
+    def test_atomic_replace_retries_access_denied(self):
+        # Simulate Windows Defender briefly locking dest (WinError 5) then succeeding.
+        dest = self.dir / 'locked.bin'
+        src = self.dir / 'src.bin'
+        src.write_bytes(b'payload')
+        dest.write_bytes(b'old')
+        calls = {'n': 0}
+        orig = os.replace
+
+        def flaky_replace_win(a, b):
+            calls['n'] += 1
+            if calls['n'] < 3:
+                exc = OSError(errno.EACCES, 'Access is denied')
+                exc.winerror = 5
+                raise exc
+            return orig(a, b)
+
+        with mock.patch('extract_nup.os.replace', flaky_replace_win):
+            nup.atomic_replace(src, dest, attempts=5)
+        self.assertEqual(dest.read_bytes(), b'payload')
+        self.assertFalse(src.exists())
+        self.assertGreaterEqual(calls['n'], 3)
+
+    def test_atomic_replace_copy_fallback(self):
+        dest = self.dir / 'locked2.bin'
+        src = self.dir / 'src2.bin'
+        src.write_bytes(b'payload2')
+        dest.write_bytes(b'old2')
+
+        def always_denied(a, b):
+            exc = OSError(errno.EACCES, 'Access is denied')
+            exc.winerror = 5
+            raise exc
+
+        with mock.patch('extract_nup.os.replace', always_denied):
+            nup.atomic_replace(src, dest, attempts=3)
+        self.assertEqual(dest.read_bytes(), b'payload2')
+        self.assertFalse(src.exists())
+
+    def test_extract_overwrites_existing_dest(self):
+        path = self.write(build([(0, 0x0100AAAA, 0, BASE_TREES)]))
+        out_dir = self.dir / 'out'
+        (out_dir / 'exefs').mkdir(parents=True)
+        (out_dir / 'exefs' / 'main.npdm').write_bytes(b'stale-locked-target')
+        code, _, err = run(path, '--out', out_dir, '--quiet')
+        self.assertEqual(code, 0, err)
+        self.assertEqual((out_dir / 'exefs' / 'main.npdm').read_bytes(), NPDM)
+
     def test_overlay_matches_update_title_base(self):
         # Wrong-title base first must not be used; matching-title base supplies main.npdm.
         other = {'exefs': {'main': b'wrong-title-main'}, 'romfs': {'x.bin': b'x'}}
@@ -322,7 +372,7 @@ class ExtractNupTest(unittest.TestCase):
             (out_dir / name).write_bytes(value)
         with contextlib.closing(nup.Nup(path)) as parsed:
             with mock.patch.object(nup.os, 'replace', side_effect=OSError('synthetic publish failure')):
-                with self.assertRaisesRegex(OSError, 'synthetic publish failure'):
+                with self.assertRaisesRegex(nup.NupError, 'synthetic publish failure'):
                     nup.extract_tree(parsed, None, parsed.packages[0], 'exefs', out_dir, True, True)
         self.assertEqual({p.name: p.read_bytes() for p in out_dir.iterdir()}, expected)
 

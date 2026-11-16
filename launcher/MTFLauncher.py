@@ -37,7 +37,7 @@ from mtf_dump import (
 
 APP_TITLE = "MTF ShadowRacket"
 APP_SUBTITLE = "Mario Tennis Fever  ·  Native Windows PC Recompilation"
-DEFAULT_VERSION = "Alpha 0.1.2"
+DEFAULT_VERSION = "Alpha 0.1.3"
 GITLAB_URL = "https://gitlab.com/steeltemplesaint-recomps/MTF-ShadowRacket"
 RELEASES_URL = GITLAB_URL + "/-/releases"
 RELEASES_API_URL = (

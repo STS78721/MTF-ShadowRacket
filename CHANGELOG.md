@@ -1,5 +1,31 @@
 # Changelog
 
+## MTF-ShadowRacket Alpha 0.1.3
+
+MTF-ShadowRacket Alpha 0.1.3
+
+This hotfix keeps Browse .NUP… and update-only Mario Tennis Fever 1.1.1 extracts reliable on Windows: finalizing extracted files no longer fails when antivirus briefly locks a new file under Downloads, so complete update trees (including modules such as `subsdk0`) finish writing. Update-only and base+update overlay behavior is unchanged. MTFLauncher still checks GitLab Releases and can install the latest Update.zip automatically. Personal dumps, saves, and mtf.ini stay on the PC.
+
+■ Major Updates
+
+- Hardened `tools/extract_nup.py` file finalize: retries when Windows briefly denies replace (common under Downloads), then falls back to copy so every ExeFS/RomFS entry is written.
+- Update-only NUP / ExeFS paths remain first-class: complete update trees verify and build without a separate base folder; matching-title base+update overlay still applies when both packages are present.
+
+■ Bug Fixes
+
+- Fixed Browse .NUP… / NUP extract aborting with PermissionError (WinError 5) while renaming temporary extract files onto their final names (for example `main.npdm`), which could leave incomplete trees missing modules such as `subsdk0`.
+
+■ Known Issues
+
+- Far-distance Lakitu shadows during wide camera shots can still cull early at range.
+- Minor graphical and gameplay issues remain in some modes.
+
+■ Install & Update
+
+- **New install:** Run `SteelTemple-MTF-ShadowRacket-Alpha-0.1.3-Full-Setup-Wizard.exe`, open **MTFLauncher**, pick your Mario Tennis Fever 1.1.1 dump folder, NUP-extracted tree, or `.nup`, click **Verify & Build mtf.exe**, and press **Play**.
+- **Portable:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.3-Portable-StandAlone.zip` anywhere and launch `MTFLauncher.exe`.
+- **Update:** Apply `SteelTemple-MTF-ShadowRacket-Alpha-0.1.3-Update.zip` over an existing Alpha 0.1.1 (or later) folder, or run the Setup Wizard over it. From Alpha 0.1.2 onward, MTFLauncher can pull Update.zip from GitLab Releases automatically — open the launcher (or use Check for Updates) to pick up 0.1.3. Dumps, saves, and personal `mtf.ini` stay on the PC.
+
 ## MTF-ShadowRacket Alpha 0.1.2
 
 MTF-ShadowRacket Alpha 0.1.2

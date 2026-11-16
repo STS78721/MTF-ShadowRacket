@@ -23,6 +23,7 @@ The layout is Eglantine's core/file_sys/nup_container.cpp (GPL-3.0-or-later); th
 same format, with the same checks.
 """
 import argparse
+import errno
 import hashlib
 import os
 import shutil
@@ -241,6 +242,43 @@ def _read_exact(src, n):
     return data
 
 
+def atomic_replace(src, dest, attempts=10):
+    """Move src onto dest. Retries Windows WinError 5/32 (AV / indexer briefly locking the .part
+    or destination under Downloads), then falls back to copy + unlink.
+    """
+    src, dest = Path(src), Path(dest)
+    delay = 0.05
+    last = None
+    for _ in range(attempts):
+        try:
+            os.replace(src, dest)
+            return
+        except OSError as exc:
+            last = exc
+            winerr = getattr(exc, 'winerror', None)
+            if winerr not in (5, 32) and exc.errno not in (errno.EACCES, errno.EPERM, errno.EBUSY):
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2.0, 1.0)
+    # Fallback when replace stays denied: copy over dest, then drop the temp.
+    try:
+        if dest.exists():
+            for _ in range(5):
+                try:
+                    dest.unlink()
+                    break
+                except OSError:
+                    time.sleep(0.1)
+        shutil.copyfile(src, dest)
+        try:
+            src.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+    except OSError as exc:
+        raise last if last is not None else exc
+
+
 def extract_file(nup, zstd, idx, dest, verify):
     name, size, ext_off, ext_size, sha, codec = nup.files[idx]
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -270,11 +308,22 @@ def extract_file(nup, zstd, idx, dest, verify):
                         h.update(chunk)
                         out.write(chunk)
                         written += len(chunk)
+            # Flush/close before replace so Windows AV can finish scanning without holding the handle.
+            out.flush()
+            os.fsync(out.fileno())
         if written != size:
             raise NupError(f'{name}: expected {size} bytes, got {written}')
         if verify and h.digest() != sha:
             raise NupError(f'{name}: SHA-256 differs from the container record (corrupt container)')
-        os.replace(tmp, dest)
+        try:
+            atomic_replace(tmp, dest)
+        except OSError as exc:
+            raise NupError(
+                f'{name}: could not finalize extracted file ({exc}). '
+                f'Close other programs using that folder and retry; Windows Defender often locks '
+                f'new files under Downloads briefly.'
+            ) from exc
+        tmp = None  # consumed by replace/copy
         return written
     finally:
         if tmp is not None:
