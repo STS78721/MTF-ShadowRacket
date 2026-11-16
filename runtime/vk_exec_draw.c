@@ -2579,7 +2579,20 @@ static void record_fixed(VkExec *ex) {
         while (y + h > bmax && h > 1.0f) h -= 1.0f;
         while ((y + h) - h < bmin && y < bmax - 1.0f) y += 1.0f;
         if (!(h >= 1.0f)) h = 1.0f;
-        VkViewport v = {x, y + h, w, -h, ex->depth_range[0], ex->depth_range[1]};   // the y flip: negative height
+        // NVN→Vulkan always uses a negative-height viewport here (TotK/MTF), even after SetWindowOriginMode(UPPER_LEFT):
+        // dropping that flip inverted the practice court. Orchid's Maxwell path flips on lower-left XOR NEGATIVE_Y;
+        // for the NVN API we keep the baseline flip and only toggle it when viewport 0 swizzle Y is NEGATIVE_Y
+        // (SetViewportSwizzles — MTF sets these after user-select). Same rule for colour and shadow passes.
+        int flip = !nvn_viewport_y_negate();
+        VkViewport v = flip ? (VkViewport){x, y + h, w, -h, ex->depth_range[0], ex->depth_range[1]}
+                            : (VkViewport){x, y, w, h, ex->depth_range[0], ex->depth_range[1]};
+        static int logged_flip;
+        if (!logged_flip) {
+            logged_flip = 1;
+            rt_log("vk: viewport Y flip %s (origin %s, swizzle Y %s)", flip ? "on" : "off",
+                   nvn_window_origin_upper() ? "upper-left" : "lower-left",
+                   nvn_viewport_y_negate() ? "NEGATIVE_Y" : "+Y");
+        }
         vkCmdSetViewportWithCount(cb, 1, &v);
         ex->recorded++;
     }

@@ -48,6 +48,11 @@ uint64_t nvn_fence_last(void) { return __atomic_load_n(&last_fence, __ATOMIC_ACQ
 
 static int depth_minus_w;
 int nvn_depth_minus_w(void) { return __atomic_load_n(&depth_minus_w, __ATOMIC_RELAXED); }
+static int window_origin_upper;   // NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT after SetWindowOriginMode
+int nvn_window_origin_upper(void) { return __atomic_load_n(&window_origin_upper, __ATOMIC_RELAXED); }
+static int viewport_y_negate;     // viewport 0 swizzle Y is NEGATIVE_Y (SetViewportSwizzles)
+int nvn_viewport_y_negate(void) { return __atomic_load_n(&viewport_y_negate, __ATOMIC_RELAXED); }
+void nvn_set_viewport_y_negate(int v) { __atomic_store_n(&viewport_y_negate, v ? 1 : 0, __ATOMIC_RELAXED); }
 
 void nvn_guest_written(uint64_t addr, uint64_t size) {
     if (size) gfx_backend()->guest_written(addr, size);
@@ -253,6 +258,7 @@ NVN_API(nvnDeviceInstallDebugCallback) {
 NVN_API(nvnDeviceSetWindowOriginMode) {
     uint32_t m = (uint32_t)arg_x(c, 1);
     ((dev_t_ *)arg_p(c, 0))->origin = m;
+    __atomic_store_n(&window_origin_upper, m != 0, __ATOMIC_RELAXED);
     NVN_LOG("window origin %s", m ? "upper left (as D3D and Vulkan)" : "lower left (GL)");
 }
 // void nvnDeviceSetDepthMode(NVNdevice *d, NVNdepthMode mode)

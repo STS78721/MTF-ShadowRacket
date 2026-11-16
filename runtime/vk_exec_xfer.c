@@ -280,13 +280,13 @@ static void oq_cb(void *arg) {
         if (s->lost && !oq_count) oq_count = 1;
         if (s->addr) {
             // MTF far/high proxies (Lakitu cloud, opposite-baseline players) often cover 0 samples even with
-            // non-precise OQ; a 0 here CPU-culls their casters so contact/cast shadows pop in only when near.
-            // Floor empty reports to visible. Do not provisional-seed on report (that washed the court with
-            // FORCE_UNORM); sync-on-invalidate still lands the real count when samples exist.
+            // non-precise OQ; a 0 here CPU-culls their casters so contact/cast shadows pop in only when near
+            // (mtf-shadow-pops-near / mtf-lakitu-shadow-MISSING). Floor empty reports to a small non-zero count.
+            // Do not provisional-seed on report (that washed the court); sync-on-invalidate lands real counts.
             const RtGameProfile *gp = game_profile();
             int mtf = gp && gp->short_name && !strcmp(gp->short_name, "mtf");
             if (mtf && !oq_count && s->n) {
-                oq_count = 1;
+                oq_count = 64;  // above trivial 1 in case guest thresholds tiny counts
                 LOG_ONCE("vk: MTF samples-passed empty report floored to visible (far-proxy shadow cull)");
             } else if (!oq_count && s->n) {
                 LOG_ONCE("vk: samples-passed report wrote 0 after %u query slot(s); guest may cull far proxies",
@@ -318,10 +318,14 @@ static void reset_counter(VkExec *ex, const p_reset_counter *p) {
 // A samples-passed report: the segment goes with it (addr 0: no CPU-visible memory) and counting stops until the next
 // reset, unless reports came without resets before.
 static void oq_report(VkExec *ex, uint64_t addr) {
-    // Do not seed the guest counter as visible here. A provisional 1 made every pending report look lit until the
-    // real sum landed (court washout). Pending reports stay marked unknown in `pending[]` so conditional rendering
-    // keeps drawing; the fence callback overwrites guest memory with the true count. Until then the previous frame's
-    // value remains (Orchid-style: no fake visibility).
+    // MTF: guest CPU cull can sample the counter before InvalidateMappedRange syncs the fence callback. Seed a
+    // small non-zero so a late unsynced read cannot see a stale 0 and drop far casters (Lakitu / far players).
+    // Callback still overwrites with the true count (or the empty-report floor). Academy washout gate must stay
+    // L≈shipping after this; prior washout was conflated with FORCE_UNORM + seed.
+    if (addr) {
+        const RtGameProfile *gp = game_profile();
+        if (gp && gp->short_name && !strcmp(gp->short_name, "mtf")) write_counter(addr, 64);
+    }
     oq_segment(ex, addr, 0);
     if (oq_reported && !oq_keep) {
         oq_keep = 1;

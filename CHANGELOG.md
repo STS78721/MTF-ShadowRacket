@@ -3,11 +3,13 @@
 ## Unreleased (Lakitu / far-shadow Orchid match)
 
 ■ Bug Fixes
+- `SetViewportSwizzles` tracks viewport-0 `NEGATIVE_Y` and toggles the NVN→Vulkan Y flip (Orchid fallback without `VK_NV_viewport_swizzle`). Baseline flip stays on for MTF even with upper-left origin (required for upright court).
 - `InvalidateMappedRange` on pools/buffers waits for pending samples-passed reports (Orchid query-cache flush) so the guest reads real occlusion counts instead of a stale 0 that can cull far casters like Lakitu.
 - Occlusion queries default to **non-precise** (Orchid unless GPU High); precise under-counts tiny far proxies so the guest drops their shadows (Lakitu, far players). Opt in with `OQ_PRECISE=1`.
-- MTF empty samples-passed reports floor to visible (1) so far/high casters are not CPU-culled when OQ still returns 0; matches distance-pop evidence (`mtf-shadow-pops-near`, `mtf-lakitu-shadow-MISSING`).
+- MTF empty samples-passed reports floor to a small non-zero count so far/high casters are not CPU-culled when OQ still returns 0; matches distance-pop evidence (`mtf-shadow-pops-near`, `mtf-lakitu-shadow-MISSING`).
 - Shadow `clamp_border` without custom-border support uses Orchid's brightness heuristic (prefer opaque white/far) so out-of-cascade UVs are not depth-0 black.
-- Still avoided washout levers: no FORCE_UNORM depth-bias, no provisional visible seed on report.
+- Orchid `SetDepthBias2` **FORCE_UNORM** depth-bias representation re-enabled (no D24→D32F rescale).
+- MTF samples-passed reports provisionally seed a small non-zero count until the fence callback lands (covers unsynced guest reads that still cull far proxies).
 
 ■ Known Issues
 - Packed Stadium Court vs `orchid-expected/03`–`04` still needs a Free-Play input path; Practice outdoor is the current verify gate.
