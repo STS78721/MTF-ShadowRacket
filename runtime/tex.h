@@ -61,8 +61,9 @@ typedef struct TexVkFormat {
 } TexVkFormat;
 
 // 1 when nvn_format (an NVNformat value) has a Vulkan mapping, 0 otherwise (out->reason says why). The mapping is
-// fixed per device: ASTC decodes to RGBA8 unless vk_astc_native (TOTK_ASTC) takes the format as it is, D24S8 is
-// D32S8, DEPTH24 is D32. Whether the GPU reports the features is a separate question (tex_vk_format_supported).
+// fixed per device: ASTC decodes to RGBA8 unless vk_astc_native (TOTK_ASTC) takes the format as it is. DEPTH24 and
+// D24S8 stay 24-bit when the device can attach them, and are D32 otherwise. Whether the GPU reports the features is a
+// separate question (tex_vk_format_supported).
 int tex_vk_format(int nvn_format, TexVkFormat *out);
 // 1 when vk_ctx()->phys reports every bit of f->need for f->vk in optimal tiling. Needs vk_init().
 int tex_vk_format_supported(const TexVkFormat *f);

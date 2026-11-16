@@ -45,7 +45,8 @@ typedef struct VkCtx {
         gpu_is_rx9000,
         gpu_is_intel,
         gpu_is_intel_arc,
-        has_astc_ldr;                       // textureCompressionASTC_LDR (enabled when reported)
+        has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
+        has_image_compression_control;      // VK_EXT_image_compression_control: depth/colour images can refuse the metadata tail
     // Feedback loops (maxwell.md 1.9, vk_exec_draw.c feedback_prepare): a draw samples a target of its open pass that
     // an earlier draw of the pass wrote. TOTK_FEEDBACK=0: VK_FEEDBACK_OFF (sampled in GENERAL without a barrier, the
     // old behaviour); VK_FEEDBACK_LAYOUT with VK_EXT_attachment_feedback_loop_layout and dynamicRenderingLocalRead
@@ -389,6 +390,8 @@ typedef struct {
     uint8_t fb_learned;            // a draw sampled it while it was a written attachment of the open pass: its passes
                                    // attach it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (vk_exec.c vk_exec_pass_begin)
     uint8_t dsmode;                // NVNtextureDepthStencilMode recorded from builder defaults/SetDepthStencilMode
+    uint64_t depth_cleared_frame;  // presented frame + 1 this private depth image was last cleared
+    uint64_t depth_cleared_mask;   // bitmask of layers cleared during depth_cleared_frame
 } VkTexImage;
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).
@@ -403,6 +406,10 @@ VkSampler vk_sampler_by_id_locked(const dpool_ref *pool, int id);
 // on the Switch although the game binds a linear sampler, and MacNativeGames samples it the same way. VK_NULL_HANDLE
 // for an empty slot.
 VkSampler vk_sampler_point_by_id_locked(const dpool_ref *pool, int id);
+// A shadow sample (resource type 0x400). The slot's sampler when it already compares. When compare is off, the
+// same sampler with compare enabled and its func kept (a compare that is off returns 0, the whole court in
+// shadow). mode and func receive the game's values, or -1 when the slot is empty. The texture lock is held.
+VkSampler vk_sampler_shadow_by_id_locked(const dpool_ref *pool, int id, int *mode, int *func);
 uint32_t vk_texture_slots_gen(void);
 // What vk_texture_by_id(id) returns can change only when this does: the slot is registered again, or a texture entry at
 // its storage address is created, dropped, released or taken back into use. Unlocked; read it before the lookup it
@@ -524,6 +531,9 @@ typedef struct VkPipeState {
                                            // the pipeline-key records: a prebuilt alpha-test pipeline has reference 0 and
                                            // goes unused, and the draw builds its own
     uint32_t vattr_hi[16];                 // OP_BIND_VATTR locations 16..31 (after legacy prefix so pipeline-keys.bin stays valid)
+    const GfxShader *tcs, *tes;
+    uint32_t patch_size;
+    uint8_t gs_passthrough, gs_prepared;
 } VkPipeState;
 static inline uint32_t vk_pipe_vattr_word(const VkPipeState *s, int i) {
     return (unsigned)i < 16u ? s->vattr[i] : (unsigned)i < 32u ? s->vattr_hi[i - 16] : 0u;

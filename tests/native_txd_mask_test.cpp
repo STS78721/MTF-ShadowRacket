@@ -230,8 +230,8 @@ static void check_tanh_and_capture() {
     bits(frnd_cbuf, 84, 2, 2);
     CHECK(bool(LowerToMaxwell(std::array{isbewr, frnd_cbuf, make_exit()}, false)));
 
-    // 0xb60 TEX Array2D + LB + DC (5 operands packed 4+1 across Ra=R20..R23, Rb=R32)
-    // and with AOFFI added (6 operands packed 4+2 across Ra=R20..R23, Rb=R32..R33).
+    // 0xb60 TEX Array2D + LB + DC (bit 60 clear: 3 coordinates in Ra=R20..R22, 2 meta in Rb=R32..R33)
+    // and with AOFFI added (3 coordinates in Ra=R20..R22, 3 meta in Rb=R32..R34).
     for (bool with_aoffi : {false, true}) {
         Instruction tex_shadow{};
         tex_shadow.words = {0x14167b60U, 0xa0801020U, 0x051e41ffU | (with_aoffi ? 0x1000U : 0U), 0x00014200U};
@@ -246,10 +246,42 @@ static void check_tanh_and_capture() {
             }
             CHECK(copy_src[250] == 20 && copy_src[251] == 21 && copy_src[252] == 22);
             if (!with_aoffi) {
-                CHECK(copy_src[246] == 23 && copy_src[247] == 32 && copy_src[248] == 0);
+                CHECK(copy_src[246] == 32 && copy_src[247] == 33 && copy_src[248] == 0);
             } else {
-                CHECK(copy_src[246] == 23 && copy_src[247] == 32 && copy_src[248] == 33);
+                CHECK(copy_src[246] == 32 && copy_src[247] == 33 && copy_src[248] == 34);
             }
+        }
+    }
+
+    // 0xf60 uniform-handle TEX Array2D + LB + DC (count == 5 > 4: 3 coords in Ra=R20..R22, 2 meta in Rb=R32..R33).
+    for (unsigned scr_bit : {0u, 1u}) {
+        Instruction tex_u{};
+        bits(tex_u, 0, 12, 0xf60);
+        bits(tex_u, 12, 4, 7);
+        bits(tex_u, 16, 8, 10);
+        bits(tex_u, 24, 8, 20);
+        bits(tex_u, 32, 8, 32);
+        bits(tex_u, 40, 6, 4);
+        bits(tex_u, 60, 1, scr_bit);
+        bits(tex_u, 61, 3, 5);
+        bits(tex_u, 64, 8, 255);
+        bits(tex_u, 72, 4, 1);
+        bits(tex_u, 78, 1, 1);
+        bits(tex_u, 81, 3, 7);
+        bits(tex_u, 84, 3, 1);
+        bits(tex_u, 87, 3, 2);
+        bits(tex_u, 91, 1, 1);
+        const auto u_low = LowerToMaxwell(std::array{tex_u, make_exit()}, false);
+        CHECK(bool(u_low));
+        if (u_low) {
+            std::array<unsigned, 256> copy_src{};
+            for (u64 w : u_low.instructions) {
+                if ((w >> 48) == 0x5c98) {
+                    copy_src[w & 0xff] = unsigned((w >> 20) & 0xff);
+                }
+            }
+            CHECK(copy_src[250] == 20 && copy_src[251] == 21 && copy_src[252] == 22);
+            CHECK(copy_src[247] == 32 && copy_src[248] == 33);
         }
     }
 }

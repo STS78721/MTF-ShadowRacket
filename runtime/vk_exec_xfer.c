@@ -774,6 +774,8 @@ static void clear_tex(VkExec *ex, const p_clear_tex *p) {
         vk_exec_pass_end(ex);
         vk_exec_barrier(ex);
         vkCmdClearDepthStencilImage(ex->cb, img->image, VK_IMAGE_LAYOUT_GENERAL, &dv, 1, &rng);
+        if (img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)
+            vk_exec_mark_depth_cleared(img, rng.baseArrayLayer, rng.layerCount);
     }
     ex->recorded++;
     vk_texture_gpu_written(t);

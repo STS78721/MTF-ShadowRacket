@@ -1,3 +1,2 @@
-/* The icon of TotK-Setup.exe: runtime/totk.ico, the icon of totk.exe. tools/make_release.py compiles this file with
-   llvm-windres -I runtime and links it with launcher.c. */
-1 ICON "totk.ico"
+/* The icon of the MTF setup helper executable: runtime/mtf.ico. Compiled with windres/llvm-windres -I runtime. */
+1 ICON "mtf.ico"

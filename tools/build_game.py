@@ -66,6 +66,10 @@ import time
 import urllib.request
 from pathlib import Path
 
+_TOOLS_DIR = str(Path(__file__).resolve().parent)
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
 import romfs_index
 from build_shaders import stale as stale_shaders
 from check_content import GENERATED_MARKER
@@ -100,14 +104,13 @@ if WIN:
     # to Windows 7, which hides the per-monitor DPI functions gfx_window_win.c and dpi_probe_win.c call.
     RT_FLAGS.append('-D_WIN32_WINNT=0x0A00')
     # -Xlinker passes the map path as one argument; -Wl, would split it at any comma in the build dir path
-    LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216', '-Xlinker', '"--Map=$builddir/totk.map"']   # the map feeds tools/prof_report.py
+    LINK_FLAGS = ['-fuse-ld=lld', '-Wl,--stack,16777216']   # linker map is added per target in ninja_file()
     LINK_LIBS = ['-lpsapi', '-lbcrypt', '-lvulkan-1', '-luser32', '-lgdi32', '-ldwmapi', '-limm32', '-lwinmm', '-lSDL3', '-lopus', '-l:libvpx.a', '-l:libdav1d.a', '-l:libzstd.a', '-l:libstdc++.a', '-l:libwinpthread.a']   # Vulkan back end; libvpx static (movies); libzstd static (resolution.c)
     VMA_INCLUDE = UCRT.parent / 'include' / 'vma'   # vk_mem_alloc.h; MSYS2 package vulkan-memory-allocator
 else:
     # -no-pie: the lifted modules' function tables (hundreds of thousands of pointers) need no load-time relocation.
     # $ORIGIN: a libSDL3.so.0 next to totk comes before the system's (the release's portable folder).
-    LINK_FLAGS = ['-fuse-ld=lld', '-no-pie', '-Wl,-z,noexecstack', "'-Wl,-rpath,$$ORIGIN'",
-                  '"-Wl,-Map=$builddir/totk.map"']
+    LINK_FLAGS = ['-fuse-ld=lld', '-no-pie', '-Wl,-z,noexecstack', "'-Wl,-rpath,$$ORIGIN'"]
     LINK_LIBS = ['-lvulkan', '-lSDL3', '-lopus', '-lvpx', '-ldav1d', '-lzstd', '-l:libstdc++.a', '-lm', '-lpthread', '-ldl']
     VMA_INCLUDE = Path('/usr/include')   # vk_mem_alloc.h; Arch (AUR) vulkan-memory-allocator, Debian libvulkan-memory-allocator-dev
 # Without a system vk_mem_alloc.h, the header the Windows release pins (tools/make_release.py, VMA 3.4.0) is fetched once
@@ -249,12 +252,12 @@ RUNTIME = ROOT / 'runtime'   # --runtime: a copy of runtime/ lets a task build w
 
 
 def other_os(name):
-    """A runtime file for another OS: Win32 ones (*_win.*, platform/win32.c, totk.rc) off Windows, the SDL window's
+    """A runtime file for another OS: Win32 ones (*_win.*, platform/win32.c, *.rc) off Windows, the SDL window's
     (*_sdl.*) and platform/linux.c on Windows."""
     stem = name.rsplit('.', 1)[0]
     if WIN:
         return stem.endswith('_sdl') or name == 'linux.c'
-    return stem.endswith('_win') or name in ('win32.c', 'totk.rc')
+    return stem.endswith('_win') or name in ('win32.c', 'mtf.rc', 'totk.rc')
 
 
 def runtime_sources(skip=()):
@@ -302,31 +305,24 @@ def module_glue(layout, linked, hashes, paths, version, title_id=0x040074a01bf12
         number = 0
     else:
         number = int(DISPLAY_VERSIONS[version].replace('.', '')) if version in DISPLAY_VERSIONS else 0   # 1.4.3 -> 143
+    disp_ver = DISPLAY_VERSIONS.get(version, '')
     out += [f'const uint64_t rt_application_id = {title_id:#x}ull;',
             f'const int rt_game_version = {number};',
             f'const char rt_port_version[] = {c_string(port_version())};',
+            f'const char rt_game_display_version[] = {c_string(disp_ver)};',
             f'const char rt_game_short_name[] = {c_string(short_name)};',
             f'const char rt_game_display_name[] = {c_string(display_name)};', '']
     return '\n'.join(out)
 
 
 def port_version():
-    """VERSION at the root: the repository's semver, or in a release folder the release string (make_release.py
-    version). A build from a git checkout appends the short commit, as a release does, so the settings menu says which
-    commit a report came from."""
+    """Return the clean VERSION string (e.g. 'Alpha 0.1.0') as displayed across Launcher, Setup, and F1 Menu."""
     path = ROOT / 'VERSION'
-    version = path.read_text(encoding='utf-8').strip() if path.is_file() else 'unknown'
-    if '+' not in version and (ROOT / '.git').exists():
-        try:
-            commit = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', '--short=7', 'HEAD'], capture_output=True,
-                                    text=True, timeout=10).stdout.strip()
-        except OSError:
-            commit = ''
-        if commit: version += '+' + commit
-    return version
+    version = path.read_text(encoding='utf-8').strip() if path.is_file() else 'Alpha 0.1.0'
+    return version.splitlines()[0].strip() if version else 'Alpha 0.1.0'
 
 
-def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False):
+def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False, is_mtf=False):
     """build.ninja text, and the object lists per module. With prebuilt the generated objects already exist in
     out/obj and are link inputs without a compile edge. runtime_lib: a prebuilt library replaces the runtime objects
     except INSTALL_SIDE. make_lib: build only that library, from the runtime objects except INSTALL_SIDE."""
@@ -357,6 +353,15 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         ldflags.append('-Wl,--wrap,f_700011ff04')
         ldflags.append('-Wl,--wrap,f_700011ff1c')
         ldflags.append('-Wl,--wrap,f_7000075cc0')
+    is_mtf = is_mtf or 'mtf' in str(out).lower() or 'mtf' in str(gen).lower()
+    if is_mtf:
+        # Mario Tennis Fever: force internal frame lines (resolution.c __wrap_f_700205e8fc)
+        ldflags.append('-Wl,--wrap,f_700205e8fc')
+    map_stem = Path(EXE).stem if EXE else ('mtf' if is_mtf else 'totk')
+    if WIN:
+        ldflags += ['-Xlinker', f'"--Map=$builddir/{map_stem}.map"']
+    else:
+        ldflags.append(f'"-Wl,-Map=$builddir/{map_stem}.map"')
     lines = [
         '# Written by tools/build_game.py; do not edit.',
         'ninja_required_version = 1.10',
@@ -404,6 +409,9 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
             objs[mod].append(o)
     rt = []
     sources = runtime_sources(skip)
+    if WIN:
+        want_rc = 'mtf.rc' if is_mtf else 'totk.rc'
+        sources = [p for p in sources if p.suffix != '.rc' or p.name == want_rc]
     if make_lib:
         sources = [p for p in sources if p.name not in INSTALL_SIDE]
     elif runtime_lib:
@@ -412,9 +420,10 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         sources += [out / 'modules.c']
     for src in sources:
         o = runtime_object(out, src)
-        if src.suffix == '.rc':   # windres writes no depfile: the files totk.rc embeds are listed by hand
-            lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / "totk.manifest")} '
-                         f'{ninja_path(RUNTIME / "totk.ico")}')
+        if src.suffix == '.rc':   # windres writes no depfile: the embedded manifest and icon are listed by hand
+            stem = src.stem
+            lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / f"{stem}.manifest")} '
+                         f'{ninja_path(RUNTIME / f"{stem}.ico")}')
         else:
             lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}')
             if src.suffix == '.cpp':   # the Ampere lowering headers (runtime/third_party/eglantine) need C++20
@@ -424,7 +433,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     every = [o for v in objs.values() for o in v]
     exe = out / EXE
     if make_lib:
-        exe = out / LIB_NAME
+        exe = out / ('libmtfrt.a' if is_mtf else LIB_NAME)
         lines += ['', 'rule ar', f'  command = {cmd_arg(AR.as_posix())} rcs $out $in', '  description = AR $out', '', f'build {ninja_path(exe)}: ar ' + ' '.join(ninja_path(o) for o in every),
                   'build objects: phony ' + ' '.join(ninja_path(o) for o in every), f'default {ninja_path(exe)}', '']
         return '\n'.join(lines), objs, exe
@@ -772,20 +781,12 @@ def main():
                     help='extract RomFS/ExeFS shaders and warm host GPU driver cache after linking')
     args = ap.parse_args()
 
-    gen = (args.gen or (Path(r"C:\Games\MTF PC\generated\mtf111") if 'mtf' in args.version.lower() and Path(r"C:\Games\MTF PC\generated\mtf111").is_dir()
-                        else (Path(r"C:\Games\MKW PC\generated\mkw180") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\generated\mkw180").is_dir()
-                              else ROOT / 'generated' / args.version))).resolve()
-    out = (args.out or (Path(r"C:\Games\MTF PC\build\mtf111") if 'mtf' in args.version.lower() and Path(r"C:\Games\MTF PC\build\mtf111").is_dir()
-                        else (Path(r"C:\Games\MKW PC\build\mkw180") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\build\mkw180").is_dir()
-                              else ROOT / 'build' / args.version))).resolve()
+    gen = (args.gen or (ROOT / 'generated' / args.version)).resolve()
+    out = (args.out or (ROOT / 'build' / args.version)).resolve()
     extracted = ROOT / 'build' / 'extracted' / args.version
-    default_exefs = (Path(r"C:\Games\MTF PC\exefs") if 'mtf' in args.version.lower() and Path(r"C:\Games\MTF PC\exefs").is_dir()
-                     else (Path(r"C:\Games\MKW PC\exefs") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\exefs").is_dir()
-                           else (ROOT / 'exefs' if (ROOT / 'exefs').is_dir() else extracted / 'exefs')))
-    default_romfs = (Path(r"C:\Games\MTF PC\romfs_packed") if 'mtf' in args.version.lower() and Path(r"C:\Games\MTF PC\romfs_packed").is_dir()
-                     else (Path(r"C:\Games\MKW PC\romfs_packed") if 'mkw' in args.version.lower() and Path(r"C:\Games\MKW PC\romfs_packed").is_dir()
-                           else (ROOT / 'romfs_packed' if (ROOT / 'romfs_packed').is_dir()
-                                 else (ROOT / 'romfs' if (ROOT / 'romfs').is_dir() else extracted / 'romfs'))))
+    default_exefs = ROOT / 'exefs' if (ROOT / 'exefs').is_dir() else extracted / 'exefs'
+    default_romfs = (ROOT / 'romfs_packed' if (ROOT / 'romfs_packed').is_dir()
+                     else (ROOT / 'romfs' if (ROOT / 'romfs').is_dir() else extracted / 'romfs'))
     paths = {'exefs': (args.exefs or default_exefs).resolve(),
              'romfs': (args.romfs or default_romfs).resolve(),
              'profile': (args.profile or ROOT / 'build' / ('profile' if args.version == 'v121'
@@ -898,11 +899,13 @@ def main():
             unlink_shared(out, mods)
         if why:
             print(f'build_game: compiling all generated C: {why}')
+    is_mtf = ('mtf' in args.version.lower() or title_id == 0x0400D4201C6EA000
+              or 'mtf' in str(out).lower() or 'mtf' in str(gen).lower())
     runtime_lib = args.runtime_lib.resolve() if args.runtime_lib else None
     if runtime_lib and not runtime_lib.is_file():
         sys.exit(f'{runtime_lib} not found: build it with --make-runtime-lib')
     text, objs, exe = ninja_file(gen, out, mods, jobs, skip, pairs is not None, runtime_lib,
-                                 args.make_runtime_lib)
+                                 args.make_runtime_lib, is_mtf=is_mtf)
     write_if_changed(out / 'build.ninja', text)
 
     env = dict(os.environ)
@@ -927,19 +930,26 @@ def main():
     code, dt, peak_one, _ = run_measured(base + [flag_path(exe)], env)
     print(f'link: {dt:.1f} s, peak {mib(peak_one)}')
     if code:
-        print(f'build_game: link failed, {flag_path(exe)} is the old one (a running totk.exe from this dir locks it)',
+        print(f'build_game: link failed, {flag_path(exe)} is the old one (a running {EXE} from this dir locks it)',
               file=sys.stderr)
         sys.exit(code)
     if args.make_runtime_lib:
         print(f'{below_root(exe)}: {mib(exe.stat().st_size)}')
         return
-    for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to totk.exe
+    for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to the exe
         shutil.copy2(dll, exe.parent / dll.name)
-    xlate_src = ROOT / 'build' / 'xlate' / ('totk_xlate.exe' if WIN else 'totk_xlate')
-    if xlate_src.is_file():
+    xlate_ext = '.exe' if WIN else ''
+    xlate_src = next(
+        (cand for d in (ROOT / 'build' / 'xlate', ROOT / 'bin')
+         for stem in ('ns2_xlate', 'totk_xlate')
+         if (cand := d / f'{stem}{xlate_ext}').is_file()),
+        None,
+    )
+    if xlate_src:
         xlate_id = xlate_src.with_suffix('.id')
-        for stem in ('ns2_xlate', 'totk_xlate'):
-            dst_xlate = exe.parent / (f'{stem}.exe' if WIN else stem)
+        stems = ('ns2_xlate',) if is_mtf else ('ns2_xlate', 'totk_xlate')
+        for stem in stems:
+            dst_xlate = exe.parent / f'{stem}{xlate_ext}'
             shutil.copy2(xlate_src, dst_xlate)
             if xlate_id.is_file():
                 shutil.copy2(xlate_id, dst_xlate.with_suffix('.id'))

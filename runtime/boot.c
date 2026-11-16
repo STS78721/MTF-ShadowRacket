@@ -222,7 +222,13 @@ static void save_shot(const tex_t *t, const int crop[4], const char *path) {
     int bgra = fmt == NVN_FORMAT_BGRA8 || fmt == NVN_FORMAT_BGRA8_SRGB;
     if (!bgra && fmt != NVN_FORMAT_RGBA8 && fmt != NVN_FORMAT_RGBA8_SRGB)
         rt_fatal("boot: --shot supports 8-bit RGBA and BGRA targets, the presented texture has NVN format %#x", fmt);
+    // Prefer host image size (MTF supersample may be larger than guest NVN width/height).
     uint32_t w = t->d.width, h = t->d.height;
+    const VkTexImage *him = vk_texture_get(t);
+    if (him && him->width && him->height) {
+        w = him->width;
+        h = him->height;
+    }
     uint8_t *px = malloc(4ull * w * h);
     if (!px) rt_fatal("boot: out of memory for the shot");
     view_t view;

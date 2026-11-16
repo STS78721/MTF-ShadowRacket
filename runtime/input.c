@@ -499,10 +499,14 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     }
     script_apply(&b, sl, sr);
     rec_apply(b, sl, sr);
-    // Minus and Plus held together (gamepad or keys) open or close the menu and never reach the game
-    static int combo_held;
+    // Minus and Plus held together (gamepad or keys), or PS4/DualSense touchpad click, open or close the menu
+    static int combo_held, touchpad_held;
+    int tp = (state == 1 && pad && SDL_GamepadConnected(pad))
+               ? SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_TOUCHPAD) : 0;
+    int tp_edge = tp && !touchpad_held;
+    touchpad_held = tp;
     int32_t st[4] = {sl[0], sl[1], sr[0], sr[1]};
-    int toggle = input_menu_gate(&combo_held, menu_is_open(), &b, st);
+    int toggle = input_menu_gate(&combo_held, menu_is_open(), &b, st) | tp_edge;
     static int overlay_held;   // L3+R3 step the performance overlay (F10)
     int overlay = input_overlay_gate(&overlay_held, &b);
     sl[0] = st[0], sl[1] = st[1], sr[0] = st[2], sr[1] = st[3];

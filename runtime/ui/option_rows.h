@@ -1,13 +1,13 @@
-// Settings pages in two panes (ui/option_rows.cpp): option rows on the left, the selected (controller) or hovered (mouse)
-// row's description on the right. Each row shows a setting of the cfg table (cfg.h) and changes it through cfg_set: A or
+// Settings pages (ui/option_rows.cpp): option rows, and under them a help box with the selected (controller) or
+// hovered (mouse) row's description. Each row shows a setting of the cfg table (cfg.h) and changes it through cfg_set: A or
 // a click steps it (toggle, next value), left and right step it. A row marks the default value, says "after restart" when
 // the setting is read at start, and is greyed out with a note when an environment variable fixes it.
 //
 //   opt_begin("##screen", scale);
-//   opt_toggle("TOTK_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
+//   opt_toggle("NS2_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
 //   opt_end();
 //
-// key: the setting's TOTK_ name, which must have a cfg_meta row. Present path only (ImGui).
+// key: the setting's NS2_ name, which must have a cfg_meta row. Present path only (ImGui).
 #pragma once
 #include "imgui.h"
 
@@ -19,6 +19,8 @@ void opt_begin(const char *id, float scale);
 void opt_end(void);
 // The height the next pages leave free under their panes (the menu's bottom row).
 void opt_reserve_bottom(float h);
+// The width the next pages leave free right of the rows and the help box.
+void opt_reserve_right(float w);
 // The next page's first row takes the controller's cursor (opening the menu, switching tabs).
 void opt_focus_first(void);
 // The row of key (or button id) takes the cursor, scrolled into view, when it is next drawn.
@@ -34,7 +36,6 @@ void opt_text(UiTextId text, bool warn = false);
 // The return value of every row: true when it changed the setting this frame.
 // inverted: the row shows "on" while the key is 0 (a setting whose key names the opposite).
 bool opt_toggle(const char *key, UiTextId label, UiTextId desc, bool inverted = false);
-bool opt_toggle_text(const char *key, const char *label, const char *desc, bool inverted = false);
 // One name per value of the key's cfg_meta values list, in its order. When the key has no fixed default (an empty
 // def), names[0] is the automatic choice (the key unset) and names[1..] follow the values. note: a short line under
 // the value in place of the "default" mark (NULL: none).
@@ -52,7 +53,7 @@ bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId de
                 const char *fmt = "%g");
 
 // Binding rows (remapping on the Controls tab): a label and three cells, each selectable on its own (left / right move between them).
-// opt_bind_header: the column titles above them. opt_bind_row: key is the setting's name without TOTK_ (BIND_A; the
+// opt_bind_header: the column titles above them. opt_bind_row: key is the setting's name without NS2_ (BIND_A; the
 // description names it when the environment sets it); a disabled cell shows its text greyed and takes no cursor; note
 // (NULL none) follows the description. Returns the cell A / Enter / a click activated (0..2), 10 + the cell Delete,
 // Backspace or X cleared, or -1. opt_focus_key("<key>#<cell>") puts the cursor on a cell.

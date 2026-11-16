@@ -19,7 +19,8 @@ typedef struct __attribute__((aligned(16))) Cpu {
     uint64_t fpsr;           // 328
     uint64_t excl_val_hi;    // 336: upper half of a 128-bit exclusive pair (LDXP/LDAXP of two X registers)
     uint64_t excl_gen;       // 344: per-line exclusive monitor generation (catches X->Y->X ABA between LDXR and STXR)
-    uint8_t _pad[512 - 352];
+    void *sj;                // 352: per-thread setjmp buffer chain (runtime/sjlj.c)
+    uint8_t _pad[512 - 360];
     __uint128_t v[32];       // 512
 } Cpu;
 
@@ -35,6 +36,15 @@ typedef void (*GuestFn)(Cpu *);
 // ---- runtime services (runtime/*.c)
 void rt_dispatch(Cpu *c);                 // call function at c->pc
 void rt_spin_gate(Cpu *c, uint64_t head);  // a pass of a spin wait loop (kernel.c, recomp/patches.py `spin`)
+void rt_sj_owner(Cpu *c, GuestFn body, uint64_t lo, uint64_t hi);
+void rt_sj_resume(Cpu *c);
+
+// PACGA's 32-bit code (lifter.py): a fixed mix of the value and the modifier. Real pointer authentication uses a key
+// the console never reveals; the game only compares codes it computed itself, so any deterministic function works.
+static inline uint32_t rt_pacga(uint64_t v, uint64_t mod) {
+    uint64_t h = (v ^ (mod * 0x9E3779B97F4A7C15ull)) * 0xC2B2AE3D27D4EB4Full;
+    return (uint32_t)((h ^ h >> 29) >> 32);
+}
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc);
 void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) __attribute__((noreturn));
 void rt_udf(Cpu *c, uint64_t pc) __attribute__((noreturn));

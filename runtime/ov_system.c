@@ -155,7 +155,7 @@ static void ov_get_default_display_resolution(Cpu *c) {
         return;
     }
     unsigned want[2] = {0, 0};
-    res_wanted(want);
+    res_display_size(want);
     if (w) *w = (int32_t)(want[0] ? want[0] : game_profile()->docked_w);
     if (h) *h = (int32_t)(want[1] ? want[1] : game_profile()->docked_h);
 }

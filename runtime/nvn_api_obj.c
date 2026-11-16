@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "game_profile.h"
 #include "gfx.h"
 #include "host.h"
 #include "nvn_api.h"
@@ -748,6 +749,19 @@ NVN_API(nvnWindowSetPresentInterval) {
     if (o->interval != v) NVN_LOG("present interval %d -> %d", o->interval, v);
     o->interval = v;
 }
+static void mtf_clamp_crop(const tex_t *t, int crop[4]) {
+    const RtGameProfile *gp = game_profile();
+    if (!gp || !gp->short_name || strcmp(gp->short_name, "mtf") != 0 || !t) return;
+    uint32_t tw = 0, th = 0;
+    res_mtf_target(&tw, &th);
+    if (tw > 0 && th > 0 && tw <= t->d.width && th <= t->d.height) {
+        crop[0] = 0;
+        crop[1] = 0;
+        crop[2] = (int)tw;
+        crop[3] = (int)th;
+    }
+}
+
 // void nvnWindowSetCrop(NVNwindow *w, int x, int y, int w, int h)
 NVN_API(nvnWindowSetCrop) {
     win_t *o = WN(c);
@@ -761,6 +775,7 @@ NVN_API(nvnWindowSetCrop) {
             v[3] = (int)t0->d.height;
         }
     }
+    mtf_clamp_crop(t0, v);
     if (memcmp(o->crop, v, sizeof v)) NVN_LOG("WindowCrop %d,%d %dx%d", v[0], v[1], v[2], v[3]);
     memcpy(o->crop, v, sizeof v);
     res_record_game_surface(t0 ? t0->d.width : 0, t0 ? t0->d.height : 0, v[0], v[1], v[2], v[3]);
@@ -836,11 +851,16 @@ NVN_API(nvnQueuePresentTexture) {
         rt_fatal("nvn: QueuePresentTexture of image %d on window %p", idx, (void *)o);
     o->presents++;
     const tex_t *t = (const tex_t *)o->tex[idx];
+    int crop[4];
+    memcpy(crop, o->crop, sizeof crop);
+    mtf_clamp_crop(t, crop);
+    if (crop[2] > 0 && crop[3] > 0)
+        res_record_game_surface(t->d.width, t->d.height, crop[0], crop[1], crop[2], crop[3]);
     uint64_t period = present_period(o), now = kern_now_ns();
     uint64_t slot = now + pace(&o->pace, now, period);
-    gfx_backend()->present(t, o->crop, slot);
+    gfx_backend()->present(t, crop, slot);
     o->ticket[idx] = o->presents;
     o->avail[idx] = slot + period;
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
-    rt_frame_presented(t, o->crop, o->presents);
+    rt_frame_presented(t, crop, o->presents);
 }

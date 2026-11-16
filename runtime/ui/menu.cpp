@@ -33,6 +33,7 @@ static int g_font_bad;
 #pragma clang diagnostic pop
 #include "ui/binds_page.h"
 #include "ui/option_rows.h"
+#include "ui/theme.h"
 
 extern "C" {
 #include "cfg.h"
@@ -67,6 +68,7 @@ extern const int rt_game_version;
 int romfs_xbox_prompts_ready(void);
 int romfs_xbox_prompts_active(void);
 extern const char rt_port_version[];
+extern const char rt_game_display_version[] __attribute__((weak));
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -207,31 +209,41 @@ static float menu_scale(uint32_t h) {
     return ((float)h >= least ? (float)h : least) / 1080.0f;
 }
 
-// Universal NS2 Studio Theme: Midnight Obsidian Glass + Electric Switch 2 Cyan.
+static int menu_theme_kind(void) {
+    const char *v = cfg_value("NS2_MENU_THEME");
+    if (!strcmp(v, "light")) return mkw_theme::THEME_LIGHT;
+    if (!strcmp(v, "dark")) return mkw_theme::THEME_DARK;
+    return mkw_theme::THEME_TENNIS;
+}
+
+// Switch 2 System Settings style (ui/theme.h): Tennis Court (default), Light, or Dark.
 static void style_init(ImGuiStyle &s) {
-    ImGui::StyleColorsDark(&s);
-    s.WindowRounding = 16; s.FrameRounding = 8; s.GrabRounding = 8; s.TabRounding = 8; s.ChildRounding = 10;
-    s.WindowPadding = ImVec2(28, 22); s.FramePadding = ImVec2(16, 9); s.ItemSpacing = ImVec2(14, 10);
-    s.WindowBorderSize = 1.0f; s.PopupBorderSize = 1.0f; s.ScrollbarSize = 14;
+    using namespace mkw_theme;
+    int theme = menu_theme_kind();
+    apply(theme);
+    if (theme == THEME_LIGHT) ImGui::StyleColorsLight(&s);
+    else ImGui::StyleColorsDark(&s);
+    s.WindowRounding = 18; s.FrameRounding = 20; s.GrabRounding = 8; s.ChildRounding = 10; s.PopupRounding = 14;
+    s.WindowPadding = ImVec2(28, 22); s.FramePadding = ImVec2(18, 9); s.ItemSpacing = ImVec2(14, 12);
+    s.WindowBorderSize = 0; s.PopupBorderSize = 1; s.FrameBorderSize = 1; s.ScrollbarSize = 14; s.ScrollbarRounding = 7;
     ImVec4 *c = s.Colors;
-    ImVec4 cyan(0.22f, 0.74f, 0.97f, 1.0f);
-    ImVec4 cobalt(0.08f, 0.36f, 0.56f, 1.0f);
-    ImVec4 cobalt_hi(0.11f, 0.48f, 0.74f, 1.0f);
-    c[ImGuiCol_WindowBg] = ImVec4(0.045f, 0.065f, 0.105f, 0.94f);
-    c[ImGuiCol_PopupBg] = ImVec4(0.06f, 0.09f, 0.145f, 0.98f);
+    c[ImGuiCol_WindowBg] = v4(kPanel);
     c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_Border] = ImVec4(0.22f, 0.74f, 0.97f, 0.28f);
-    c[ImGuiCol_Text] = ImVec4(0.945f, 0.96f, 0.98f, 1.0f);
-    c[ImGuiCol_TextDisabled] = ImVec4(0.58f, 0.64f, 0.72f, 1.0f);
-    c[ImGuiCol_Button] = ImVec4(0.10f, 0.15f, 0.24f, 1.0f);
-    c[ImGuiCol_ButtonHovered] = cobalt;
-    c[ImGuiCol_ButtonActive] = cobalt_hi;
-    c[ImGuiCol_Tab] = ImVec4(0.08f, 0.12f, 0.19f, 1.0f);
-    c[ImGuiCol_TabHovered] = cobalt;
-    c[ImGuiCol_TabSelected] = ImVec4(0.10f, 0.27f, 0.42f, 1.0f);
-    c[ImGuiCol_TabSelectedOverline] = cyan;
-    c[ImGuiCol_NavCursor] = cyan;
-    c[ImGuiCol_Separator] = ImVec4(0.22f, 0.74f, 0.97f, 0.22f);
+    c[ImGuiCol_PopupBg] = v4(kHeader);
+    c[ImGuiCol_Border] = v4(kDivider);
+    c[ImGuiCol_Text] = v4(kText);
+    c[ImGuiCol_TextDisabled] = v4(kTextDim);
+    c[ImGuiCol_FrameBg] = v4(kRowSel);
+    c[ImGuiCol_Button] = v4(kRowSel);
+    c[ImGuiCol_ButtonHovered] = v4(kButtonHover);
+    c[ImGuiCol_ButtonActive] = v4(kButtonActive);
+    c[ImGuiCol_NavCursor] = v4(kAccent);
+    c[ImGuiCol_Separator] = v4(kDivider);
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ScrollbarGrab] = v4(kScroll);
+    c[ImGuiCol_ScrollbarGrabHovered] = v4(kTextDim);
+    c[ImGuiCol_ScrollbarGrabActive] = v4(kAccent);
+    c[ImGuiCol_ModalWindowDimBg] = ImVec4(0, 0, 0, 0.30f);
 }
 
 static void make_context(void) {
@@ -380,7 +392,7 @@ extern "C" void menu_vk_release(void) {
 // DKB_MENU_TEST_SET=<frame>:<key>=<value>[,<key>=<value>...][;<frame>:...]: cfg_set of each key (TOTK_ prefix
 // optional) at that presented frame; changes live settings with no input, menu open or not. dkb.ini is written only by
 // the pseudo-key SAVE=1 (cfg_save, as a row change does; a failed write shows the menu's save note).
-enum { TAB_SCREEN, TAB_GAME, TAB_SOUND, TAB_CONTROLS, TAB_MENU, TAB_ADVANCED, TAB_COUNT };
+enum { TAB_DISPLAY, TAB_GRAPHICS, TAB_SOUND, TAB_CONTROLS, TAB_SYSTEM, TAB_ADVANCED, TAB_COUNT };
 enum { TEST_PAGE_FRAMES = 30, TEST_SETS = 16 };
 struct TestSet { uint64_t frame; char key[64], value[64]; };
 static struct {
@@ -493,62 +505,6 @@ static void row_window_size(void) {
     opt_choice_list("NS2_WINDOW_SIZE", UI_MENU_WINDOW_SIZE, pv, pn, n, UI_MENU_WINDOW_SIZE_DESC);
 }
 
-// The game resolution (resolution.c): 16:9 sizes from its smallest, 1280x720 (for weak GPUs), up, the common 21:9 and
-// 32:9 monitor sizes and the 16:10 screens of the Steam Deck, handhelds and laptops (the camera and the HUD follow
-// another shape, resolution.c res_init; the installer lays the HUD out for each, installer/steps.py ASPECT_SIZES), and
-// the current value when it is another size.
-static void row_output_res(void) {
-    static const char *const vals[] = {"1280x720", "1600x900", "1920x1080", "2560x1440", "3200x1800", "3840x2160",
-                                       "2560x1080", "3440x1440", "3840x1600", "5120x2160", "3840x1080", "5120x1440",
-                                       "1280x800", "1680x1050", "1920x1200", "2560x1600"};
-    enum { N = sizeof vals / sizeof *vals };
-    char shown[N][32];
-    const char *names[N];
-    for (int i = 0; i < N; i++) {
-        int w = 0, h = 0;
-        sscanf(vals[i], "%dx%d", &w, &h);
-        snprintf(shown[i], sizeof shown[i], "%d × %d", w, h);   // U+00D7, the multiplication sign
-        names[i] = shown[i];
-    }
-    if (opt_choice_list("NS2_OUTPUT_RES", UI_MENU_OUTPUT_RES, vals, names, N, UI_MENU_OUTPUT_RES_DESC)) {
-        res_apply_live();
-        cfg_save();
-    }
-}
-
-static void row_render_scale(void) {
-    static const char *const vals[] = {"game", "33", "50", "58", "67", "75", "100", "125", "150", "200"};
-    enum { N = sizeof vals / sizeof *vals };
-    char shown[N][32];
-    const char *names[N];
-    names[0] = menu_text(UI_MENU_RENDER_SCALE_GAME);
-    for (int i = 1; i < N; i++) {
-        snprintf(shown[i], sizeof shown[i], "%s %%", vals[i]);
-        names[i] = shown[i];
-    }
-    if (opt_choice_list("NS2_RENDER_SCALE", UI_MENU_RENDER_SCALE, vals, names, N, UI_MENU_RENDER_SCALE_DESC)) {
-        const char *rs = cfg_value("NS2_RENDER_SCALE");
-        if (!strcmp(rs, "100") || !strcmp(rs, "125") || !strcmp(rs, "150") || !strcmp(rs, "200") || !strcmp(rs, "game")) {
-            cfg_set("NS2_OPERATION_MODE", "docked");
-            cfg_set("NS2_UPSCALER_PRESET", "native");
-        } else if (!strcmp(rs, "75") || !strcmp(rs, "67")) {
-            cfg_set("NS2_OPERATION_MODE", "docked");
-            cfg_set("NS2_UPSCALER_PRESET", "quality");
-        } else if (!strcmp(rs, "58")) {
-            cfg_set("NS2_OPERATION_MODE", "handheld");
-            cfg_set("NS2_UPSCALER_PRESET", "balanced");
-        } else if (!strcmp(rs, "50")) {
-            cfg_set("NS2_OPERATION_MODE", "handheld");
-            cfg_set("NS2_UPSCALER_PRESET", "performance");
-        } else if (!strcmp(rs, "33")) {
-            cfg_set("NS2_OPERATION_MODE", "handheld");
-            cfg_set("NS2_UPSCALER_PRESET", "ultra_performance");
-        }
-        res_apply_live();
-        cfg_save();
-    }
-}
-
 static void row_gpu(void) {
     const char *vals[MAX_GPUS + 1], *names[MAX_GPUS + 1];
     char idx[MAX_GPUS][4];
@@ -655,169 +611,70 @@ static void rows_color(void) {
     }
 }
 
-static void tab_screen(float scale) {
-    opt_begin("##screen", scale);
-    opt_toggle("NS2_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
-    row_output_res();
-    row_window_size();
-    static const UiTextId present[] = {UI_MENU_PRESENT_MAILBOX, UI_MENU_PRESENT_VSYNC, UI_MENU_PRESENT_IMMEDIATE};
-    opt_choice("NS2_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
-    row_gpu();
-    static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
-    opt_choice("NS2_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
+static void row_rumble(void) {
+    static const char *const vals[] = {"0", "70", "130", "200"};
+    const char *names[] = {menu_text(UI_MENU_OFF), menu_text(UI_MENU_RUMBLE_LOW),
+                           menu_text(UI_MENU_RUMBLE_NORMAL), menu_text(UI_MENU_RUMBLE_STRONG)};
+    int cur = 2;
+    int v = cfg_int("NS2_RUMBLE_STRENGTH");
+    if (v <= 0) cur = 0;
+    else if (v <= 90) cur = 1;
+    else if (v <= 160) cur = 2;
+    else cur = 3;
+    opt_choice_list("NS2_RUMBLE_STRENGTH", UI_MENU_RUMBLE, vals, names, 4, UI_MENU_RUMBLE_DESC, cur);
+}
 
-    opt_group_text("Universal NS2 Resolution, Console Mode & Upscaler");
+static void tab_display(float scale) {
+    opt_begin("##display", scale);
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
-    if (opt_choice("NS2_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC)) {
+    if (opt_choice("NS2_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_CONSOLE_MODE_DESC)) {
         res_apply_live();
         cfg_save();
     }
-    opt_toggle_text("NS2_RES_HOOK", "Live Game Resolution & Mode Sync",
-                    "Hooks Docked/Handheld switches and Display Output Resolution live into Switch 2 OS/NVN2 notifications so games dynamically adjust internal buffers when supported.");
-    row_render_scale();
-    static const char *const up_vals[] = {"smrs", "fsr", "bilinear", "off"};
-    static const char *const up_names[] = {
-        "Nodix Super Motion SMRS",
-        "AMD FSR 1.0 (Native)",
-        "Bilinear (Clean Scaler)",
-        "Off (Raw 1:1)"
-    };
-    opt_choice_list("NS2_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 4, UI_MENU_UPSCALER_DESC);
-    const char *up = cfg_value("NS2_UPSCALER");
-    bool is_smrs = !strcmp(up, "smrs");
-    bool is_fsr = !strcmp(up, "fsr");
-    if (is_smrs) {
-        static const struct { const char *name, *label, *scale; } p[] = {
-            {"native", "Native (Docked)", "100"},
-            {"quality", "Quality (Docked 67%)", "67"},
-            {"balanced", "Balanced (Handheld 58%)", "58"},
-            {"performance", "Performance (Handheld 50%)", "50"},
-            {"ultra_performance", "Ultra Performance (Handheld 33%)", "33"}
-        };
-        static const char *names[5], *vals[5];
-        for (int i = 0; i < 5; i++) { vals[i] = p[i].name; names[i] = p[i].label; }
-        const char *cur_op = cfg_value("NS2_OPERATION_MODE");
-        const char *p_note = (!cur_op || !strcmp(cur_op, "docked")) ? "Docked Console Profile Active" : "Handheld Console Profile Active (Lighter GPU Load)";
-        if (opt_choice_list("NS2_UPSCALER_PRESET", UI_MENU_UPSCALE_PRESET, vals, names, 5, UI_MENU_UPSCALE_PRESET_DESC, -1, p_note)) {
-            const char *preset = cfg_value("NS2_UPSCALER_PRESET");
-            if (!strcmp(preset, "native") || !strcmp(preset, "quality")) {
-                cfg_set("NS2_OPERATION_MODE", "docked");
-            } else {
-                cfg_set("NS2_OPERATION_MODE", "handheld");
-            }
-            for (int i = 0; i < 5; i++) {
-                if (!strcmp(preset, p[i].name)) {
-                    cfg_set("NS2_RENDER_SCALE", p[i].scale);
-                    break;
-                }
-            }
-            res_apply_live();
-            cfg_save();
-        }
-        opt_slider("NS2_SHARPNESS", UI_MENU_SMRS_SHARPNESS, 0, 100, UI_MENU_SMRS_SHARPNESS_DESC, 5, "%.0f %%");
-    } else if (is_fsr) {
-        opt_slider("NS2_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
-    }
-    opt_toggle("NS2_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
-
-    // Frame Generation / Super Motion (Nodix Super Motion, FSR 3.1 FG, XeSS FG)
-    opt_group_text("Frame Generation (Nodix Super Motion & MFG)");
-    static const char *const fg_gen_vals[] = {"off", "msm_fg", "fsr3_fg", "xefg"};
-    static const char *const fg_gen_names[] = {
-        "Off",
-        "Nodix Super Motion (SMFG 1.3)",
-        "AMD FSR 3.1 FG (Universal)",
-        "XeSS MFG (Intel Universal)"
-    };
-    const char *fg_note = nullptr;
-    const char *cur_fg = cfg_value("NS2_FG_MODE");
-    if (!strcmp(cur_fg, "msm_fg")) {
-        fg_note = "Nodix Super Motion DirectML / Compute Active";
-    } else if (!strcmp(cur_fg, "fsr3_fg")) {
-        fg_note = "AMD FidelityFX FSR 3.1 Frame Generation Active";
-    } else if (!strcmp(cur_fg, "xefg")) {
-        fg_note = "Intel XeSS Frame Generation Active";
-    }
-    opt_choice_list("NS2_FG_MODE", UI_MENU_FG_MODE, fg_gen_vals, fg_gen_names, 4, UI_MENU_FG_MODE_DESC, -1, fg_note);
-
-    if (strcmp(cur_fg, "off") != 0) {
-        static const char *const mode_vals[] = {"fixed", "adaptive"};
-        static const char *const mode_names[] = {"Fixed Multiplier", "Adaptive Frame Pacing"};
-        opt_choice_list("NS2_FG_TYPE", UI_MENU_PRESENT, mode_vals, mode_names, 2, UI_MENU_PRESENT_DESC);
-
-        static const char *const mult_vals[] = {"2x", "3x", "4x", "6x"};
-        static const char *const mult_names[] = {
-            "x2 (Double FPS)",
-            "x3 (Triple FPS)",
-            "x4 (Quadruple FPS)",
-            "x6 (6x Multiplier)"
-        };
-        opt_choice_list("NS2_FG_MULT", UI_MENU_FG_MULT, mult_vals, mult_names, 4, UI_MENU_FG_MULT_DESC);
-
-        opt_toggle("NS2_FG_STILL", UI_MENU_LOD_GUARD, UI_MENU_LOD_GUARD_DESC); // Still Pixels / HUD Guard
-        opt_slider("NS2_FG_FLOW", UI_MENU_FG_FLOW, 10, 100, UI_MENU_FG_FLOW_DESC, 5, "%.0f %%");
-    }
-
-    // Low Latency (Strictly mutually exclusive per GPU vendor to prevent conflicts)
-    opt_group_text("Input Latency & Responsiveness");
-    static const char *const reflex_vals[] = {"off", "on", "boost"};
-    static const char *const reflex_names[] = {"Off", "On", "On + Boost"};
-    static const char *const al_vals[] = {"off", "on"};
-    static const char *const al_names[] = {"Off", "On"};
-    static const char *const xell_vals[] = {"off", "on", "boost"};
-    static const char *const xell_names[] = {"Off", "On", "On + Boost"};
-
-    if (vk_gpu_is_nvidia()) {
-        const char *ref_note = "NVIDIA Reflex (VK_NV_low_latency2 Active)";
-        if (opt_choice_list("NS2_REFLEX", UI_MENU_REFLEX, reflex_vals, reflex_names, 3, UI_MENU_REFLEX_DESC, -1, ref_note)) {
-            // Guarantee no conflict: disable AMD/Intel low-latency
-            cfg_set("NS2_ANTILAG2", "off");
-            cfg_set("NS2_XELL", "off");
-            cfg_save();
-        }
-    } else if (vk_has_amd_antilag()) {
-        const char *al_note = "AMD Anti-Lag 2 (VK_AMD_anti_lag Active)";
-        if (opt_choice_list("NS2_ANTILAG2", UI_MENU_ANTILAG2, al_vals, al_names, 2, UI_MENU_ANTILAG2_DESC, -1, al_note)) {
-            cfg_set("NS2_REFLEX", "off");
-            cfg_set("NS2_XELL", "off");
-            cfg_save();
-        }
-    } else if (vk_gpu_is_intel()) {
-        const char *xell_note = "Intel Xe Low Latency (XeLL Active)";
-        if (opt_choice_list("NS2_XELL", UI_MENU_XELL, xell_vals, xell_names, 3, UI_MENU_XELL_DESC, -1, xell_note)) {
-            cfg_set("NS2_REFLEX", "off");
-            cfg_set("NS2_ANTILAG2", "off");
-            cfg_save();
-        }
-    } else {
-        const char *ref_note = "Universal GPU Frame Pacing";
-        if (opt_choice_list("NS2_REFLEX", UI_MENU_REFLEX, reflex_vals, reflex_names, 3, UI_MENU_REFLEX_DESC, -1, ref_note)) {
-            cfg_set("NS2_ANTILAG2", "off");
-            cfg_set("NS2_XELL", "off");
-            cfg_save();
-        }
-    }
-
-    static const UiTextId aspect[] = {UI_MENU_ASPECT_FIT, UI_MENU_ASPECT_STRETCH};
-    opt_choice("NS2_ASPECT", UI_MENU_ASPECT, aspect, 2, UI_MENU_ASPECT_DESC);
-    opt_slider("NS2_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
+    opt_toggle("NS2_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
+    row_window_size();
+    static const UiTextId present[] = {UI_MENU_PRESENT_MAILBOX, UI_MENU_PRESENT_VSYNC, UI_MENU_PRESENT_IMMEDIATE};
+    opt_choice("NS2_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
+    row_fps_limit();
+    static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
+    opt_choice("NS2_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
     rows_color();
     opt_end();
 }
 
-static void tab_game(float scale) {
-    opt_begin("##game", scale);
-    row_fps_limit();
-    opt_toggle("NS2_REALTIME", UI_MENU_REALTIME, UI_MENU_REALTIME_DESC);
-    opt_toggle("NS2_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
-    opt_toggle("NS2_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
-    row_game_lang();
-    static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
-    if (opt_choice("NS2_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC)) {
-        res_apply_live();
-        cfg_save();
+static void tab_graphics(float scale) {
+    opt_begin("##graphics", scale);
+    {
+        static const char *const vals[] = {"original", "720", "900", "1080", "1440", "2160"};
+        const char *names[] = {menu_text(UI_MENU_RESOLUTION_ORIGINAL), "720p", "900p", "1080p", "1440p", "2160p (4K)"};
+        const RtGameProfile *gp = game_profile();
+        int nres = (gp && gp->short_name && !strcmp(gp->short_name, "mtf")) ? 5 : 6;
+        opt_choice_list("NS2_RESOLUTION", UI_MENU_RESOLUTION, vals, names, nres, UI_MENU_RESOLUTION_DESC);
     }
-    opt_toggle("NS2_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
+    {
+        static const char *const vals[] = {"game", "2", "4", "8", "16"};
+        const char *names[] = {menu_text(UI_MENU_ANISO_GAME), "2x", "4x", "8x", "16x"};
+        opt_choice_list("NS2_ANISO", UI_MENU_ANISO, vals, names, 5, UI_MENU_ANISO_DESC);
+    }
+    {
+        static const char *const up_vals[] = {"fsr", "bilinear", "off"};
+        static const char *const up_names[] = {"AMD FSR 1.0", "Bilinear", "Off"};
+        opt_choice_list("NS2_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 3, UI_MENU_UPSCALER_DESC);
+        if (!strcmp(cfg_value("NS2_UPSCALER"), "fsr"))
+            opt_slider("NS2_SHARPNESS", UI_MENU_SHARPNESS, 0, 100, UI_MENU_SHARPNESS_DESC, 5, "%.0f %%");
+    }
+    {
+        static const char *const fg_vals[] = {"off", "msm_fg", "fsr3_fg", "xefg"};
+        static const char *const fg_names[] = {"Off", "Nodix SMFG", "AMD FSR 3 FG", "Intel XeFG"};
+        opt_choice_list("NS2_FG_MODE", UI_MENU_FG_MODE, fg_vals, fg_names, 4, UI_MENU_FG_MODE_DESC);
+        if (strcmp(cfg_value("NS2_FG_MODE"), "off") != 0) {
+            static const char *const mult_vals[] = {"2x", "3x", "4x"};
+            opt_choice_list("NS2_FG_MULT", UI_MENU_FG_MULT, mult_vals, mult_vals, 3, UI_MENU_FG_MULT_DESC);
+            static const char *const ll_vals[] = {"auto", "boost", "on", "off"};
+            static const char *const ll_names[] = {"Automatic", "On + Boost", "On", "Off"};
+            opt_choice_list("NS2_LOW_LATENCY", UI_MENU_LOW_LATENCY, ll_vals, ll_names, 4, UI_MENU_LOW_LATENCY_DESC);
+        }
+    }
     opt_end();
 }
 
@@ -829,10 +686,6 @@ static void tab_sound(float scale) {
     opt_end();
 }
 
-// The note under the layout. Xbox prompts (the Nintendo layout with the A/B and X/Y prompts swapped, romfs.c
-// overlay_init) change the buttons at once but the prompts only at the next start: "files missing" without
-// romfs-patches-xbox, "prompts change after restart" while the prompts in use differ from the choice. Automatic with a
-// gamepad connected: "in use: Xbox". NULL otherwise.
 static const char *pad_layout_note(void) {
     bool want = !strcasecmp(cfg_value("NS2_PAD_LAYOUT"), "xbox_prompts");
     if (want && !romfs_xbox_prompts_ready()) return menu_text(UI_MENU_PAD_LAYOUT_PROMPTS_MISSING);
@@ -850,167 +703,37 @@ static void tab_controls(float scale) {
     static const UiTextId layout[] = {UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO, UI_MENU_PAD_LAYOUT_XBOX,
                                       UI_MENU_PAD_LAYOUT_XBOX_PROMPTS};
     opt_choice("NS2_PAD_LAYOUT", UI_MENU_PAD_LAYOUT, layout, 4, UI_MENU_PAD_LAYOUT_DESC, pad_layout_note());
+    row_rumble();
     opt_toggle("NS2_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
-    opt_slider("NS2_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
-    opt_slider("NS2_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
-    opt_toggle("NS2_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
-
-    opt_group(UI_MENU_GROUP_DUALSENSE);
-    opt_toggle("NS2_DUALSENSE", UI_MENU_DUALSENSE, UI_MENU_DUALSENSE_DESC);
-    opt_toggle("NS2_DUALSENSE_TRIGGERS", UI_MENU_DUALSENSE_TRIGGERS, UI_MENU_DUALSENSE_TRIGGERS_DESC);
-    opt_slider("NS2_DUALSENSE_TRIGGER_STRENGTH", UI_MENU_DUALSENSE_TRIGGER_STRENGTH, 0, 100, UI_MENU_DUALSENSE_TRIGGER_STRENGTH_DESC, 5, "%.0f %%");
-    opt_toggle("NS2_DUALSENSE_AUDIO", UI_MENU_DUALSENSE_AUDIO, UI_MENU_DUALSENSE_AUDIO_DESC);
-    opt_slider("NS2_DUALSENSE_VOL", UI_MENU_DUALSENSE_VOL, 0, 150, UI_MENU_DUALSENSE_VOL_DESC, 5, "%.0f %%");
-    opt_toggle("NS2_DUALSENSE_HAPTICS", UI_MENU_DUALSENSE_HAPTICS, UI_MENU_DUALSENSE_HAPTICS_DESC);
-
     opt_slider("NS2_STICK_DEADZONE", UI_MENU_STICK_DEADZONE, 0, 50, UI_MENU_STICK_DEADZONE_DESC, 1, "%.0f %%");
-    opt_slider("NS2_MOUSE_SENS", UI_MENU_MOUSE_SENS, 0, 10, UI_MENU_MOUSE_SENS_DESC, 0.1f, "%.1f");
     binds_rows(scale);
     opt_end();
     binds_after_page();
 }
 
-static void tab_menu(float scale) {
-    opt_begin("##menu", scale);
-    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU};
-    opt_choice("NS2_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
-    opt_end();
-}
-
-// ---- Advanced: the testing and troubleshooting keys, the bug report helpers and the reset of every setting
+// ---- System: languages, theme, and the reset of every setting (with a confirmation)
 static bool g_modal;   // the reset confirmation is open: B and Esc close it, not the menu; L / R stay on the page
 
-// A thread count with no fixed default: Automatic (unset), then the common counts.
-static void row_threads(const char *key, UiTextId label, UiTextId desc) {
-    static const char *const vals[] = {"", "1", "2", "4", "6", "8", "12", "16", "24", "32", "48", "64"};
-    enum { N = sizeof vals / sizeof *vals };
-    const char *names[N];
-    names[0] = menu_text(UI_MENU_AUTO);
-    for (int i = 1; i < N; i++) names[i] = vals[i];
-    opt_choice_list(key, label, vals, names, N, desc);
-}
-
-// A free-text key shown as Off (unset) / On (value set): On writes on_value, any set value reads as On.
-static void row_set_or_not(const char *key, UiTextId label, UiTextId desc, const char *on_value) {
-    const char *vals[] = {"", on_value}, *names[] = {menu_text(UI_MENU_OFF), menu_text(UI_MENU_ON)};
-    opt_choice_list(key, label, vals, names, 2, desc, *cfg_value(key) ? 1 : 0);
-}
-
-static bool validation_layer_present(void) {
-    static int have = -1;
-    if (have < 0) {
-        uint32_t n = 0;
-        vkEnumerateInstanceLayerProperties(&n, nullptr);
-        VkLayerProperties *l = (VkLayerProperties *)calloc(n ? n : 1, sizeof *l);
-        if (l && vkEnumerateInstanceLayerProperties(&n, l) >= 0)
-            for (uint32_t i = 0; i < n && have <= 0; i++) have = !strcmp(l[i].layerName, "VK_LAYER_KHRONOS_validation");
-        free(l);
-        if (have < 0) have = 0;
-    }
-    return have != 0;
-}
-
-// Every setting the menu shows back to its default (the environment's keys stay), written to dkb.ini.
 static void reset_all(void) {
-    const char *keys[128];
+    const char *keys[160];
     int n = 0;
-    for (const CfgMeta *m; n < 128 && (m = cfg_meta_at(n)); n++) keys[n] = m->key;
+    for (const CfgMeta *m; n < 160 && (m = cfg_meta_at(n)); n++) keys[n] = m->key;
     int done = cfg_reset(keys, n);
     opt_save_soon();
     rt_log("menu: reset %d settings to their defaults", done);
 }
 
-// A button's result shown in its value for a few seconds: 1 done (done_text), -1 failed.
-struct ActionNote { uint64_t until; int result; };
-
-static const char *action_value(const ActionNote &a, UiTextId done_text) {
-    if (!a.result || plat_now_ns() > a.until) return "";
-    return menu_text(a.result > 0 ? done_text : UI_MENU_ACTION_FAILED);
-}
-
-static void action_done(ActionNote &a, bool ok) { a = {plat_now_ns() + 3000000000ull, ok ? 1 : -1}; }
-
-static void tab_advanced(float scale) {
-    static ActionNote copy_note, log_note;
-    opt_begin("##advanced", scale);
-    opt_text(UI_MENU_ADV_WARNING, true);
-
-    opt_group(UI_MENU_GROUP_SCHED);
-    static const UiTextId preempt[] = {UI_MENU_PREEMPT_OFF, UI_MENU_PREEMPT_ON, UI_MENU_PREEMPT_INHERIT};   // 0|1|2
-    opt_choice("NS2_ASYNC_PREEMPT", UI_MENU_ASYNC_PREEMPT, preempt, 3, UI_MENU_ASYNC_PREEMPT_DESC);
-    opt_toggle("NS2_REPLAY_ASYNC", UI_MENU_REPLAY_ASYNC, UI_MENU_REPLAY_ASYNC_DESC);
-    opt_toggle("NS2_TIMER_1MS", UI_MENU_TIMER_1MS, UI_MENU_TIMER_1MS_DESC);
-
-    opt_group(UI_MENU_GROUP_SHADERS);
-    static const UiTextId wait[] = {UI_MENU_PIPE_WAIT_DEFAULT, UI_MENU_PIPE_WAIT_DRAW};
-    opt_choice("NS2_PIPE_WAIT", UI_MENU_PIPE_WAIT, wait, 2, UI_MENU_PIPE_WAIT_DESC);
-    static const UiTextId skip[] = {UI_MENU_PIPE_SKIP_STRICT, UI_MENU_PIPE_SKIP_ANY, UI_MENU_PIPE_SKIP_FULLSCREEN};
-    opt_choice("NS2_PIPE_SKIP", UI_MENU_PIPE_SKIP, skip, 3, UI_MENU_PIPE_SKIP_DESC);
-    opt_toggle("NS2_LIB_PREBUILD", UI_MENU_LIB_PREBUILD, UI_MENU_LIB_PREBUILD_DESC);
-    row_threads("NS2_LIB_PREBUILD_THREADS", UI_MENU_LIB_PREBUILD_THREADS, UI_MENU_LIB_PREBUILD_THREADS_DESC);
-    opt_toggle("NS2_PIPE_PREBUILD", UI_MENU_PIPE_PREBUILD, UI_MENU_PIPE_PREBUILD_DESC);
-    row_threads("NS2_PREWARM_XLATE", UI_MENU_PREWARM_XLATE, UI_MENU_PREWARM_XLATE_DESC);
-    opt_toggle("NS2_GPL", UI_MENU_GPL, UI_MENU_GPL_DESC);
-
-    opt_group(UI_MENU_GROUP_TEXMEM);
-    static const UiTextId astc[] = {UI_MENU_ASTC_AUTO, UI_MENU_ASTC_GPU, UI_MENU_ASTC_NATIVE, UI_MENU_ASTC_CPU};
-    opt_choice("NS2_ASTC", UI_MENU_ASTC, astc, 4, UI_MENU_ASTC_DESC);
-    static const UiTextId mem[] = {UI_MENU_MEMORY_AUTO, UI_MENU_MEMORY_IMPORT, UI_MENU_MEMORY_MIRROR,
-                                   UI_MENU_MEMORY_VERIFY};
-    opt_choice("NS2_MEMORY", UI_MENU_MEMORY, mem, 4, UI_MENU_MEMORY_DESC);
-    opt_toggle("NS2_TEX_ALIAS", UI_MENU_TEX_ALIAS, UI_MENU_TEX_ALIAS_DESC);
-    opt_slider("NS2_TEX_VRAM_PRESSURE", UI_MENU_TEX_VRAM_PRESSURE, 0, 100, UI_MENU_TEX_VRAM_PRESSURE_DESC, 1, "%.0f%%");
-    opt_toggle("NS2_ASTC_BC", UI_MENU_ASTC_BC, UI_MENU_ASTC_BC_DESC);
-    opt_toggle_text("NS2_GPU_DESWIZZLE", "GPU Compute Deswizzle",
-                    "Offloads Tegra Switch 2 block-linear (GOB) texture deswizzling onto Vulkan compute shaders and chains ASTC/BC3 decode directly in VRAM.");
-
-    opt_group(UI_MENU_GROUP_FIXES);
-    opt_toggle("NS2_LOD_GUARD", UI_MENU_LOD_GUARD, UI_MENU_LOD_GUARD_DESC);
-    opt_toggle("NS2_FIX_C0", UI_MENU_FIX_C0, UI_MENU_FIX_C0_DESC);
-    opt_toggle("NS2_FIX_ZERO", UI_MENU_FIX_ZERO, UI_MENU_FIX_ZERO_DESC);
-    opt_toggle("NS2_BIND_SKIP", UI_MENU_BIND_SKIP, UI_MENU_BIND_SKIP_DESC);
-    opt_toggle("NS2_SHADER_MEMO", UI_MENU_SHADER_MEMO, UI_MENU_SHADER_MEMO_DESC);
-    opt_toggle("NS2_PIPE_MEMO", UI_MENU_PIPE_MEMO, UI_MENU_PIPE_MEMO_DESC);
-    opt_toggle("NS2_TEX_MEMO", UI_MENU_TEX_MEMO, UI_MENU_TEX_MEMO_DESC);
-    opt_toggle("NS2_DESC_TEMPLATE", UI_MENU_DESC_TEMPLATE, UI_MENU_DESC_TEMPLATE_DESC);
-    opt_toggle("NS2_PUSH_SKIP", UI_MENU_PUSH_SKIP, UI_MENU_PUSH_SKIP_DESC);
-    opt_slider("NS2_SPLIT_DRAWS", UI_MENU_SPLIT_DRAWS, 0, 1000, UI_MENU_SPLIT_DRAWS_DESC, 8, "%.0f");
-
-    opt_group(UI_MENU_GROUP_VULKAN);
-    if (!validation_layer_present() && !cfg_bool("NS2_VK_VALIDATION")) opt_disable_next(UI_MENU_VK_VALIDATION_MISSING);
-    opt_toggle("NS2_VK_VALIDATION", UI_MENU_VK_VALIDATION, UI_MENU_VK_VALIDATION_DESC);
-    opt_toggle_text("NS2_VK_NOOPT", "Safe Shader Compile (Disable Driver Opt)",
-                    "Passes VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT when creating Vulkan graphics & compute pipelines (Hookshot RX_VK_NOOPT workaround for GPU driver compiler hangs or crashes).");
-    static const UiTextId dyn[] = {UI_MENU_AUTO, UI_MENU_OFF, UI_MENU_ON};   // unset, 0, 1
-    opt_choice("NS2_VK_DYN_VERTEX", UI_MENU_VK_DYN_VERTEX, dyn, 3, UI_MENU_VK_DYN_VERTEX_DESC);
-    opt_choice("NS2_VK_DYN_A2C", UI_MENU_VK_DYN_A2C, dyn, 3, UI_MENU_VK_DYN_A2C_DESC);
-    opt_toggle("NS2_VK_SUBGROUP_PIN", UI_MENU_VK_SUBGROUP_PIN, UI_MENU_VK_SUBGROUP_PIN_DESC);
-
-    opt_group(UI_MENU_GROUP_DIAG);
-    row_set_or_not("NS2_TRACE", UI_MENU_TRACE, UI_MENU_TRACE_DESC, "perf");
-    opt_toggle("NS2_FLIGHT", UI_MENU_FLIGHT, UI_MENU_FLIGHT_DESC);
-    opt_slider("NS2_FLIGHT_SPIKE_MS", UI_MENU_FLIGHT_SPIKE_MS, 20, 1000, UI_MENU_FLIGHT_SPIKE_MS_DESC, 10, "%.0f");
-    static char rec_path[600];   // the recording goes beside the log
-    if (!rec_path[0]) {
-        char dir[512];
-        snprintf(rec_path, sizeof rec_path, "%s/input-record.txt", sysinfo_log_folder(dir, sizeof dir) ? dir : ".");
-    }
-    row_set_or_not("NS2_INPUT_RECORD", UI_MENU_INPUT_RECORD, UI_MENU_INPUT_RECORD_DESC, rec_path);
-    if (opt_button("##open_log", UI_MENU_OPEN_LOG, UI_MENU_OPEN_LOG_DESC, action_value(log_note, UI_MENU_OPEN_LOG))) {
-        char dir[512];
-        bool ok = sysinfo_log_folder(dir, sizeof dir) && plat_open_folder(dir);
-        if (!ok) action_done(log_note, false);   // success shows as the opened folder
-    }
-    if (opt_button("##copy_info", UI_MENU_COPY_INFO, UI_MENU_COPY_INFO_DESC,
-                   action_value(copy_note, UI_MENU_COPY_INFO_DONE))) {
-        static char text[16384];
-        action_done(copy_note, sysinfo_text(text, sizeof text) > 0 && plat_clipboard_set(text));
-    }
+static void tab_system(float scale) {
+    opt_begin("##system", scale);
+    row_game_lang();
+    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU};
+    opt_choice("NS2_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
+    static const UiTextId themes[] = {UI_MENU_THEME_TENNIS, UI_MENU_THEME_LIGHT, UI_MENU_THEME_DARK};
+    opt_choice("NS2_MENU_THEME", UI_MENU_THEME, themes, 3, UI_MENU_THEME_DESC);
     bool ask = opt_button("##reset", UI_MENU_RESET, UI_MENU_RESET_DESC);
     opt_end();
     if (ask) ImGui::OpenPopup("##reset_confirm");   // at the level BeginPopupModal looks it up
 
-    // the confirmation, over the menu; Cancel has the cursor first
     g_modal = false;
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("##reset_confirm", nullptr,
@@ -1033,118 +756,325 @@ static void tab_advanced(float scale) {
             close = true;
         if (close) {
             ImGui::CloseCurrentPopup();
-            opt_focus_key("##reset");   // back on the row it came from
+            opt_focus_key("##reset");
         }
         ImGui::EndPopup();
     }
 }
 
-static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN, UI_MENU_TAB_GAME, UI_MENU_TAB_SOUND,
-                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_MENU, UI_MENU_TAB_ADVANCED};
+// ---- Advanced: the graphics card, the memory mode and the bug report helpers
+struct ActionNote { uint64_t until; int result; };
+
+static const char *action_value(const ActionNote &a, UiTextId done_text) {
+    if (!a.result || plat_now_ns() > a.until) return "";
+    return menu_text(a.result > 0 ? done_text : UI_MENU_ACTION_FAILED);
+}
+
+static void action_done(ActionNote &a, bool ok) { a = {plat_now_ns() + 3000000000ull, ok ? 1 : -1}; }
+
+static void tab_advanced(float scale) {
+    static ActionNote copy_note, log_note;
+    opt_begin("##advanced", scale);
+    opt_text(UI_MENU_ADV_WARNING, true);
+    row_gpu();
+    static const char *const mem_vals[] = {"auto", "import", "mirror"};
+    const char *mem_names[] = {menu_text(UI_MENU_AUTO), menu_text(UI_MENU_MEMORY_IMPORT_REC),
+                               menu_text(UI_MENU_MEMORY_MIRROR)};
+    opt_choice_list("NS2_MEMORY", UI_MENU_MEMORY, mem_vals, mem_names, 3, UI_MENU_MEMORY_MODE_DESC);
+    if (opt_button("##open_log", UI_MENU_OPEN_LOG, UI_MENU_OPEN_LOG_DESC, action_value(log_note, UI_MENU_OPEN_LOG))) {
+        char dir[512];
+        bool ok = sysinfo_log_folder(dir, sizeof dir) && plat_open_folder(dir);
+        if (!ok) action_done(log_note, false);
+    }
+    if (opt_button("##copy_info", UI_MENU_COPY_INFO, UI_MENU_COPY_INFO_DESC,
+                   action_value(copy_note, UI_MENU_COPY_INFO_DONE))) {
+        static char text[16384];
+        action_done(copy_note, sysinfo_text(text, sizeof text) > 0 && plat_clipboard_set(text));
+    }
+    opt_end();
+}
+
+static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_DISPLAY, UI_MENU_TAB_GRAPHICS, UI_MENU_TAB_SOUND,
+                                              UI_MENU_TAB_CONTROLS, UI_MENU_TAB_SYSTEM, UI_MENU_TAB_ADVANCED};
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
 
-// ---- the window: title, tabs (L / R or Q / E switch), the page, and the bottom row with "Continue" and "Quit game".
-// B on the gamepad and Esc close it.
+// ---- the window (Switch 2 system settings look, ui/theme.h): a title bar, the category list on the left (L / R or
+// Q / E step it, a click picks one), the page with its help box on the right, and a footer with the controller hints and
+// "Continue" / "Quit game". B on the gamepad and Esc close it.
+
+static void hint_glyph(ImDrawList *dl, ImVec2 c, float rad, const char *letter) {
+    using namespace mkw_theme;
+    dl->AddCircleFilled(c, rad, kText);
+    ImFont *font = ImGui::GetFont();
+    float fs = rad * 1.25f;
+    ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, letter);
+    dl->AddText(font, fs, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), kHeader, letter);
+}
+
+static float hint_pill(ImDrawList *dl, ImVec2 p, float h, const char *letter) {
+    using namespace mkw_theme;
+    ImFont *font = ImGui::GetFont();
+    float fs = h * 0.62f;
+    ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0, letter);
+    float w = ts.x + h * 0.9f;
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), kText, h * 0.5f);
+    dl->AddText(font, fs, ImVec2(p.x + (w - ts.x) * 0.5f, p.y + (h - ts.y) * 0.5f), kHeader, letter);
+    return w;
+}
+
+static void draw_tennis_ball(ImDrawList *dl, ImVec2 c, float r, float angle, ImU32 fill, ImU32 seam, float thick) {
+    // 3D golden-yellow shaded tennis ball with horizon-clipped parametric spherical seam
+    uint32_t alpha = (fill >> IM_COL32_A_SHIFT) & 0xFF;
+    dl->AddCircleFilled(c, r, IM_COL32(204, 178, 12, alpha), 32);
+    dl->AddCircleFilled(ImVec2(c.x - r * 0.14f, c.y - r * 0.14f), r * 0.80f, IM_COL32(246, 224, 34, alpha), 32);
+    const float a = 0.58f, b = 0.42f, k = 2.0f * sqrtf(a * b);
+    const float ry = 0.14f, rx = 0.28f, rz = -1.48f + angle * 0.25f;
+    const float cy_ = cosf(ry), sy_ = sinf(ry), cx_ = cosf(rx), sx_ = sinf(rx), cz_ = cosf(rz), sz_ = sinf(rz);
+    auto sample = [&](float u, float &ox, float &oy, float &oz) {
+        float x = a * cosf(u) + b * cosf(3.0f * u);
+        float y = a * sinf(u) - b * sinf(3.0f * u);
+        float z = k * sinf(2.0f * u);
+        float x1 = x * cy_ + z * sy_, z1 = -x * sy_ + z * cy_;
+        float y2 = y * cx_ - z1 * sx_, z2 = y * sx_ + z1 * cx_;
+        ox = c.x + (x1 * cz_ - y2 * sz_) * r * 0.96f;
+        oy = c.y + (x1 * sz_ + y2 * cz_) * r * 0.96f;
+        oz = z2;
+    };
+    const int N = 128;
+    float px = 0, py = 0, pz = 0;
+    bool open = false;
+    dl->PathClear();
+    for (int i = 0; i <= N; i++) {
+        float u = (float)i * (6.2831853f / N), x, y, z;
+        sample(u, x, y, z);
+        if (i > 0) {
+            if (!open && pz < 0.0f && z >= 0.0f) {
+                float t = pz / (pz - z);
+                dl->PathLineTo(ImVec2(px + (x - px) * t, py + (y - py) * t));
+                open = true;
+            }
+            if (open && z >= 0.0f) dl->PathLineTo(ImVec2(x, y));
+            if (open && z < 0.0f) {
+                float t = pz / (pz - z);
+                dl->PathLineTo(ImVec2(px + (x - px) * t, py + (y - py) * t));
+                dl->PathStroke(seam, 0, thick);
+                dl->PathClear();
+                open = false;
+            }
+        } else if (z >= 0.0f) {
+            dl->PathLineTo(ImVec2(x, y));
+            open = true;
+        }
+        px = x; py = y; pz = z;
+    }
+    if (open) dl->PathStroke(seam, 0, thick);
+}
+
+static void draw_tennis_racket(ImDrawList *dl, ImVec2 c, float s, float angle, ImU32 frame_col, ImU32 string_col,
+                               ImU32 grip_col, float thick) {
+    float ca = cosf(angle), sa = sinf(angle);
+    auto rot = [&](float x, float y) { return ImVec2(c.x + x * ca - y * sa, c.y + x * sa + y * ca); };
+    float rx = s * 0.44f, ry = s * 0.58f, cy = -s * 0.34f;
+    // Strings inside head
+    for (int i = -2; i <= 2; i++) {
+        float u = i * 0.30f;
+        float h = sqrtf(fmaxf(0.0f, 1.0f - u * u));
+        dl->AddLine(rot(u * rx, cy - ry * h * 0.92f), rot(u * rx, cy + ry * h * 0.92f), string_col, thick * 0.45f);
+    }
+    for (int i = -3; i <= 3; i++) {
+        float v = i * 0.24f;
+        float w = sqrtf(fmaxf(0.0f, 1.0f - v * v));
+        dl->AddLine(rot(-rx * w * 0.92f, cy + v * ry), rot(rx * w * 0.92f, cy + v * ry), string_col, thick * 0.45f);
+    }
+    // Oval frame
+    ImVec2 pts[24];
+    for (int i = 0; i < 24; i++) {
+        float a = (float)i * (6.2831853f / 24.0f);
+        pts[i] = rot(cosf(a) * rx, cy + sinf(a) * ry);
+    }
+    dl->AddPolyline(pts, 24, frame_col, ImDrawFlags_Closed, thick);
+    // V-throat & handle
+    dl->AddLine(rot(-rx * 0.45f, cy + ry * 0.86f), rot(0, s * 0.42f), frame_col, thick * 0.9f);
+    dl->AddLine(rot(rx * 0.45f, cy + ry * 0.86f), rot(0, s * 0.42f), frame_col, thick * 0.9f);
+    dl->AddLine(rot(0, s * 0.42f), rot(0, s * 0.88f), grip_col, thick * 1.65f);
+}
+
+static void draw_shadow_racket_motif(ImDrawList *dl, ImVec2 o, float W, float H, float head_h, float foot_h,
+                                     float side_w, float scale) {
+    float body_y = o.y + head_h, body_h = H - head_h - foot_h;
+    // 1. Diagonal racing/court stripes + mini tennis balls in the header bar
+    dl->PushClipRect(o, ImVec2(o.x + W, o.y + head_h), true);
+    ImU32 stripe = IM_COL32(204, 242, 42, 22), stripe2 = IM_COL32(246, 250, 244, 14);
+    float sx = o.x + W * 0.46f;
+    for (int i = 0; i < 4; i++) {
+        float x0 = sx + i * 38 * scale;
+        ImVec2 q[4] = {ImVec2(x0, o.y), ImVec2(x0 + 18 * scale, o.y),
+                       ImVec2(x0 - 10 * scale, o.y + head_h), ImVec2(x0 - 28 * scale, o.y + head_h)};
+        dl->AddConvexPolyFilled(q, 4, (i & 1) ? stripe2 : stripe);
+    }
+    draw_tennis_racket(dl, ImVec2(o.x + W * 0.57f, o.y + head_h * 0.52f), head_h * 0.44f, 0.55f,
+                       IM_COL32(204, 242, 42, 70), IM_COL32(246, 250, 244, 38), IM_COL32(160, 180, 195, 75),
+                       1.8f * scale);
+    draw_tennis_ball(dl, ImVec2(o.x + W * 0.57f + 22 * scale, o.y + head_h * 0.48f), head_h * 0.17f, 0.35f,
+                     IM_COL32(204, 242, 42, 165), IM_COL32(250, 252, 246, 200), 1.4f * scale);
+    dl->PopClipRect();
+
+    // 2. Sidebar lower court emblem: diagonal stripes + crossed rackets & tennis balls above L/R pills
+    float em_y = body_y + body_h - 145 * scale;
+    if (em_y > body_y + 290 * scale) {
+        dl->PushClipRect(ImVec2(o.x, body_y), ImVec2(o.x + side_w, body_y + body_h), true);
+        float cx = o.x + side_w * 0.5f, cy = em_y + 42 * scale;
+        for (int i = -1; i <= 1; i++) {
+            float x0 = cx + i * 26 * scale - 18 * scale;
+            ImVec2 q[4] = {ImVec2(x0 + 26 * scale, cy - 36 * scale), ImVec2(x0 + 38 * scale, cy - 36 * scale),
+                           ImVec2(x0 - 12 * scale, cy + 36 * scale), ImVec2(x0 - 24 * scale, cy + 36 * scale)};
+            dl->AddConvexPolyFilled(q, 4, IM_COL32(204, 242, 42, 18));
+        }
+        draw_tennis_racket(dl, ImVec2(cx - 8 * scale, cy), 34 * scale, -0.62f,
+                           IM_COL32(170, 194, 180, 95), IM_COL32(246, 250, 244, 48), IM_COL32(204, 242, 42, 100),
+                           2.0f * scale);
+        draw_tennis_racket(dl, ImVec2(cx + 8 * scale, cy), 34 * scale, 0.62f,
+                           IM_COL32(204, 242, 42, 110), IM_COL32(246, 250, 244, 55), IM_COL32(160, 180, 195, 110),
+                           2.0f * scale);
+        draw_tennis_ball(dl, ImVec2(cx, cy - 18 * scale), 9.5f * scale, 0.4f,
+                         IM_COL32(204, 242, 42, 190), IM_COL32(250, 252, 246, 220), 1.4f * scale);
+        draw_tennis_ball(dl, ImVec2(cx - 32 * scale, cy + 16 * scale), 6.5f * scale, -0.5f,
+                         IM_COL32(204, 242, 42, 120), IM_COL32(250, 252, 246, 150), 1.1f * scale);
+        draw_tennis_ball(dl, ImVec2(cx + 34 * scale, cy + 14 * scale), 6.5f * scale, 0.9f,
+                         IM_COL32(204, 242, 42, 120), IM_COL32(250, 252, 246, 150), 1.1f * scale);
+        dl->PopClipRect();
+    }
+}
+
 static void layout_menu(uint32_t w, uint32_t h, float scale) {
-    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2((float)w, (float)h), IM_COL32(3, 6, 12, 165));
-    float ww = fminf(w * 0.90f, 1460 * scale), wh = fminf(h * 0.88f, 860 * scale);
+    using namespace mkw_theme;
+    const RtGameProfile *gp = game_profile();
+    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2((float)w, (float)h), kBackdrop);
+    float ww = fminf(w * 0.86f, 1500 * scale), wh = fminf(h * 0.88f, 880 * scale);
     ImGui::SetNextWindowPos(ImVec2(w * 0.5f, h * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(ww, wh), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::Begin("##menu", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                                        ImGuiWindowFlags_NoSavedSettings);
+                                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImFont *font = ImGui::GetFont();
+    const ImGuiStyle &st = ImGui::GetStyle();
+    ImVec2 o = ImGui::GetWindowPos();
+    float W = ImGui::GetWindowWidth(), H = ImGui::GetWindowHeight(), fs = ImGui::GetFontSize();
+    float pad = 30 * scale, rounding = st.WindowRounding;
+    float head_h = floorf(fs * 3.1f), foot_h = floorf(fs * 3.3f), side_w = floorf(fminf(W * 0.26f, 380 * scale));
+    float body_y = o.y + head_h, body_h = H - head_h - foot_h;
 
-    const RtGameProfile *gp = game_profile();
-    unsigned win_sz[2] = {0, 0}, crop_sz[2] = {0, 0}, out_tgt[2] = {0, 0};
-    int hh = 0;
-    res_live_snapshot(win_sz, crop_sz, out_tgt, &hh);
-
-    // Header Row: Brand Pill + Game Name + Version
-    ImGui::TextColored(ImVec4(0.22f, 0.74f, 0.97f, 1.0f), "UNIVERSAL NS2 -> PC");
-    ImGui::SameLine(0, 12 * scale);
-    ImGui::TextUnformatted(gp->display_name);
-    char version[128];
-    snprintf(version, sizeof version, "ID %016llX  |  %s", (unsigned long long)gp->title_id, rt_port_version);
-    ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - ImGui::CalcTextSize(version).x);
-    ImGui::TextDisabled("%s", version);
-
-    // Live Telemetry Pipeline Bar (proving settings hook directly into game & swapchain)
-    {
-        ImDrawList *dl = ImGui::GetWindowDrawList();
-        ImVec2 bp = ImGui::GetCursorScreenPos();
-        float bw = ImGui::GetContentRegionAvail().x;
-        float bh = ImGui::GetFontSize() * 1.65f;
-        dl->AddRectFilled(bp, ImVec2(bp.x + bw, bp.y + bh), IM_COL32(14, 22, 38, 225), 8 * scale);
-        dl->AddRect(bp, ImVec2(bp.x + bw, bp.y + bh), IM_COL32(56, 189, 248, 70), 8 * scale, 0, 1.0f);
-        const char *up = cfg_value("NS2_UPSCALER");
-        const char *fg = cfg_value("NS2_FG_MODE");
-        char pipe_info[256];
-        snprintf(pipe_info, sizeof pipe_info,
-                 "  LIVE PIPELINE:   Game %ux%u (%s)   ->   %s [%s %d%%]   ->   Display %ux%u   |   FG: %s   |   Cap: %s",
-                 crop_sz[0], crop_sz[1], hh ? "Handheld" : "Docked",
-                 !strcmp(up, "smrs") ? "Nodix SMRS" : !strcmp(up, "fsr") ? "FSR 1.0" : !strcmp(up, "bilinear") ? "Bilinear" : "Off",
-                 cfg_value("NS2_UPSCALER_PRESET"), cfg_int("NS2_SHARPNESS"),
-                 w, h, strcmp(fg, "off") ? fg : "Off", cfg_value("NS2_FPS_LIMIT"));
-        ImFont *f = ImGui::GetFont();
-        float sfs = ImGui::GetFontSize() * 0.78f;
-        dl->AddText(f, sfs, ImVec2(bp.x + 8 * scale, bp.y + (bh - sfs) * 0.5f), IM_COL32(186, 230, 253, 255), pipe_info);
-        ImGui::Dummy(ImVec2(bw, bh + 4 * scale));
+    // title bar: an accent bar, the game title, the page title, and the version on the right
+    dl->AddRectFilled(o, ImVec2(o.x + W, o.y + head_h), kHeader, rounding, ImDrawFlags_RoundCornersTop);
+    dl->AddLine(ImVec2(o.x, o.y + head_h - 0.5f), ImVec2(o.x + W, o.y + head_h - 0.5f), kDivider, 1.0f);
+    float tfs = fs * 1.3f, ty = o.y + (head_h - tfs) * 0.5f;
+    dl->AddRectFilled(ImVec2(o.x + pad, o.y + head_h * 0.27f), ImVec2(o.x + pad + 6 * scale, o.y + head_h * 0.73f),
+                      kAccent, 3 * scale);
+    float tx = o.x + pad + 20 * scale;
+    const char *brand = gp->display_name;
+    dl->AddText(font, tfs, ImVec2(tx, ty), kText, brand);
+    tx += font->CalcTextSizeA(tfs, FLT_MAX, 0, brand).x + 14 * scale;
+    dl->AddText(font, fs, ImVec2(tx, o.y + (head_h - fs) * 0.5f + fs * 0.08f), kTextSoft, menu_text(UI_MENU_TITLE));
+    char version[96], gbuf[24];
+    const char *game_ver = (rt_game_display_version && rt_game_display_version[0]) ? rt_game_display_version : nullptr;
+    if (!game_ver) {
+        if (rt_game_version)
+            snprintf(gbuf, sizeof gbuf, "%d.%d.%d", rt_game_version / 100, rt_game_version / 10 % 10, rt_game_version % 10);
+        else
+            snprintf(gbuf, sizeof gbuf, "%016llX", (unsigned long long)gp->title_id);
+        game_ver = gbuf;
     }
+    snprintf(version, sizeof version, menu_text(UI_MENU_VERSION), rt_port_version, game_ver);
+    float vw = font->CalcTextSizeA(fs * 0.85f, FLT_MAX, 0, version).x;
+    dl->AddText(font, fs * 0.85f, ImVec2(o.x + W - pad - vw, o.y + (head_h - fs * 0.85f) * 0.5f), kTextDim, version);
 
+    // category list
+    dl->AddRectFilled(ImVec2(o.x, body_y), ImVec2(o.x + side_w, body_y + body_h), kSidebar);
+    dl->AddLine(ImVec2(o.x + side_w - 0.5f, body_y), ImVec2(o.x + side_w - 0.5f, body_y + body_h), kDivider, 1.0f);
+    if (menu_theme_kind() == THEME_TENNIS)
+        draw_shadow_racket_motif(dl, o, W, H, head_h, foot_h, side_w, scale);
     int step = g_modal || binds_modal()                                                                  ? 0
              : ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
              : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1
-                                                                                                         : 0;
+                                                                                                          : 0;
     if (step) g_tab_request = (g_tab + step + TAB_COUNT) % TAB_COUNT;
-    if (g_tab_request >= 0) g_focus_page = g_tab_request;   // the new page's first row takes the cursor
-
-    const ImGuiStyle &st = ImGui::GetStyle();
-    float bottom = ImGui::GetFrameHeight() + st.ItemSpacing.y * 2;
-    if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_NoTabListScrollingButtons)) {
-        for (int k = 0; k < TAB_COUNT; k++) {
-            char label[128];
-            snprintf(label, sizeof label, "  %s  ###tab%d", menu_text(kTabNames[k]), k);   // the id stays per language
-            if (!ImGui::BeginTabItem(label, nullptr, g_tab_request == k ? ImGuiTabItemFlags_SetSelected : 0)) continue;
-            g_tab = k;
-            if (g_focus_page == k) {
-                opt_focus_first();
-                g_focus_page = -1;
-            }
-            ImGui::Spacing();
-            // the page's rows are a NavFlattened child of this window itself: ImGui clips the items of a direct child
-            // only, so behind a second child level the rows scrolled out above the tabs won D-pad moves from the
-            // buttons and the tabs (up from "Continue" went to the tabs, down from the tabs to "Continue")
-            opt_reserve_bottom(bottom);
-            switch (k) {
-            case TAB_SCREEN: tab_screen(scale); break;
-            case TAB_GAME: tab_game(scale); break;
-            case TAB_SOUND: tab_sound(scale); break;
-            case TAB_CONTROLS: tab_controls(scale); break;
-            case TAB_MENU: tab_menu(scale); break;
-            case TAB_ADVANCED: tab_advanced(scale); break;
-            }
-            ImGui::EndTabItem();
+    float ih = floorf(fs * 2.4f), ix = o.x + 14 * scale, iw = side_w - 28 * scale, iy = body_y + 18 * scale;
+    for (int k = 0; k < TAB_COUNT; k++) {
+        ImVec2 a(ix, iy + k * (ih + 6 * scale)), b(ix + iw, a.y + ih);
+        ImGui::SetCursorScreenPos(a);
+        ImGui::PushID(k);
+        if (ImGui::InvisibleButton("##cat", ImVec2(iw, ih)) && !g_modal && !binds_modal()) g_tab_request = k;
+        bool hov = ImGui::IsItemHovered();
+        ImGui::PopID();
+        bool sel = k == (g_tab_request >= 0 ? g_tab_request : g_tab);
+        if (sel) {
+            dl->AddRectFilled(a, b, kRowSel, 8 * scale);
+            dl->AddRectFilled(ImVec2(a.x + 8 * scale, a.y + ih * 0.22f), ImVec2(a.x + 13 * scale, b.y - ih * 0.22f),
+                              kAccent, 3 * scale);
+        } else if (hov) {
+            dl->AddRectFilled(a, b, kRowHover, 8 * scale);
         }
+        dl->AddText(ImVec2(a.x + 26 * scale, a.y + (ih - fs) * 0.5f), sel ? kAccentText : kText, menu_text(kTabNames[k]));
+    }
+    {
+        float ph = fs * 1.1f, py = body_y + body_h - ph - 20 * scale, px = ix + 12 * scale;
+        px += hint_pill(dl, ImVec2(px, py), ph, "L") + 8 * scale;
+        hint_pill(dl, ImVec2(px, py), ph, "R");
+    }
+    if (g_tab_request >= 0) {
+        g_tab = g_tab_request;
+        g_focus_page = g_tab_request;
         g_tab_request = -1;
-        ImGui::EndTabBar();
     }
 
-    // bottom row: the save status on the left, the two buttons on the right
-    ImGui::Spacing();
-    float y = ImGui::GetCursorPosY();
-    if (!cfg_last_save_ok()) {   // stays until a save succeeds; the settings hold for the session
-        ImGui::SetCursorPosY(y + st.FramePadding.y);
-        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1), "%s", menu_text(UI_MENU_SAVE_FAILED));
+    // the page
+    ImGui::SetCursorScreenPos(ImVec2(o.x + side_w + pad, body_y + pad * 0.7f));
+    if (g_focus_page == g_tab) {
+        opt_focus_first();
+        g_focus_page = -1;
+    }
+    opt_reserve_bottom(foot_h + pad * 0.5f);
+    opt_reserve_right(pad);
+    switch (g_tab) {
+    case TAB_DISPLAY: tab_display(scale); break;
+    case TAB_GRAPHICS: tab_graphics(scale); break;
+    case TAB_SOUND: tab_sound(scale); break;
+    case TAB_CONTROLS: tab_controls(scale); break;
+    case TAB_SYSTEM: tab_system(scale); break;
+    case TAB_ADVANCED: tab_advanced(scale); break;
+    }
+
+    // footer
+    float fy = o.y + H - foot_h;
+    dl->AddRectFilled(ImVec2(o.x, fy), ImVec2(o.x + W, o.y + H), kHeader, rounding, ImDrawFlags_RoundCornersBottom);
+    dl->AddLine(ImVec2(o.x, fy + 0.5f), ImVec2(o.x + W, fy + 0.5f), kDivider, 1.0f);
+    float cy = fy + foot_h * 0.5f, rad = fs * 0.62f, hx = o.x + pad;
+    if (!cfg_last_save_ok()) {
+        dl->AddText(ImVec2(hx, cy - fs * 0.5f), kWarn, menu_text(UI_MENU_SAVE_FAILED));
+    } else {
+        const struct { const char *glyph; UiTextId text; } hints[] = {
+            {"A", UI_MENU_HINT_OK}, {"B", UI_MENU_HINT_BACK}};
+        for (const auto &e : hints) {
+            hint_glyph(dl, ImVec2(hx + rad, cy), rad, e.glyph);
+            hx += rad * 2 + 8 * scale;
+            dl->AddText(ImVec2(hx, cy - fs * 0.5f), kTextSoft, menu_text(e.text));
+            hx += ImGui::CalcTextSize(menu_text(e.text)).x + 26 * scale;
+        }
     }
     const char *cont = menu_text(UI_MENU_CONTINUE), *quit = menu_text(UI_MENU_QUIT);
     float bw = fmaxf(ImGui::CalcTextSize(cont).x, ImGui::CalcTextSize(quit).x) + st.FramePadding.x * 4;
-    ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - st.WindowPadding.x - bw * 2 - st.ItemSpacing.x, y));
+    float bh = ImGui::GetFrameHeight();
+    ImGui::SetCursorScreenPos(ImVec2(o.x + W - pad - bw * 2 - 14 * scale, cy - bh * 0.5f));
     if (ImGui::Button(cont, ImVec2(bw, 0))) set_open(0);
-    ImGui::SameLine();
+    ImGui::SameLine(0, 14 * scale);
     if (ImGui::Button(quit, ImVec2(bw, 0))) gfx_window_request_close();
+
     bool was_modal = g_modal || binds_modal();
-    if (g_tab != TAB_ADVANCED) g_modal = false;
+    if (g_tab != TAB_SYSTEM) g_modal = false;
     if (!was_modal && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
         set_open(0);
     ImGui::End();
@@ -1164,11 +1094,6 @@ static int g_perf_frames;
 static char g_perf_text[96];
 static char g_perf_fps_num[32];
 static char g_perf_ms_num[32];
-static char g_perf_upscaler[64];
-static char g_perf_line2[160];
-static char g_perf_battery[24];
-static char g_perf_fg_badge[32];
-static int  g_perf_theme;                // 0: NVIDIA green, 1: AMD red, 2: Cyber cyan, 3: Intel blue
 static uint32_t g_dt_ring[1000];
 static int g_dt_count = 0;
 static int g_dt_head = 0;
@@ -1242,104 +1167,24 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
             double base_fps = (g_perf_frames * 1e9) / (double)g_perf_win_ns;
             double base_ms = ((double)g_perf_win_ns / (double)g_perf_frames) / 1e6;
 
-            int fgm = vk_fg_active_multiplier();
-            double eff_fps = (fgm > 1) ? (base_fps * fgm) : base_fps;
-            double eff_ms = (eff_fps > 0) ? (1000.0 / eff_fps) : base_ms;
-
-            if (fgm > 1) {
-                const char *fgm_mode = cfg_value("NS2_FG_MODE");
-                const char *fgt = !strcmp(fgm_mode, "msm_fg") ? "MSM-FG"
-                                : !strcmp(fgm_mode, "xefg") ? "XeFG"
-                                : "FSR3 FG";
-                snprintf(g_perf_fg_badge, sizeof g_perf_fg_badge, "%s %dx", fgt, fgm);
-                snprintf(g_perf_fps_num, sizeof g_perf_fps_num, "%.0f FPS (Base %.0f)", eff_fps, base_fps);
-            } else {
-                g_perf_fg_badge[0] = 0;
-                if (eff_fps >= 100.0) snprintf(g_perf_fps_num, sizeof g_perf_fps_num, "%.0f FPS", eff_fps);
-                else snprintf(g_perf_fps_num, sizeof g_perf_fps_num, "%.1f FPS", eff_fps);
-            }
-            snprintf(g_perf_ms_num, sizeof g_perf_ms_num, "%.1f ms", eff_ms);
-
-            int battery_percent = -1, battery_charging = 0;
-            if (input_pad_power_info(&battery_percent, &battery_charging)) {
-                if (battery_charging) snprintf(g_perf_battery, sizeof g_perf_battery, "[CHG]");
-                else snprintf(g_perf_battery, sizeof g_perf_battery, "[BAT %d%%]", battery_percent);
-            } else {
-                g_perf_battery[0] = 0;
-            }
-
+            if (base_fps >= 100.0) snprintf(g_perf_fps_num, sizeof g_perf_fps_num, "%.0f FPS", base_fps);
+            else snprintf(g_perf_fps_num, sizeof g_perf_fps_num, "%.1f FPS", base_fps);
+            snprintf(g_perf_ms_num, sizeof g_perf_ms_num, "%.1f ms", base_ms);
             if (g_dt_count >= 10) {
                 uint32_t sorted_dt[1000];
                 int n_samples = g_dt_count;
                 memcpy(sorted_dt, g_dt_ring, n_samples * sizeof(uint32_t));
                 std::sort(sorted_dt, sorted_dt + n_samples);
-
-                int idx_1p = (int)(n_samples * 0.99f);
+                int idx_1p = (int)(n_samples * 0.99f), idx_01p = (int)(n_samples * 0.999f);
                 if (idx_1p >= n_samples) idx_1p = n_samples - 1;
-                int idx_01p = (int)(n_samples * 0.999f);
                 if (idx_01p >= n_samples) idx_01p = n_samples - 1;
-
-                uint32_t dt_1p = sorted_dt[idx_1p];
-                uint32_t dt_01p = sorted_dt[idx_01p];
-
-                double low_1p = (dt_1p > 0 ? (1e9 / (double)dt_1p) : base_fps) * (fgm > 1 ? fgm : 1.0);
-                double low_01p = (dt_01p > 0 ? (1e9 / (double)dt_01p) : base_fps) * (fgm > 1 ? fgm : 1.0);
+                double low_1p = sorted_dt[idx_1p] ? 1e9 / (double)sorted_dt[idx_1p] : base_fps;
+                double low_01p = sorted_dt[idx_01p] ? 1e9 / (double)sorted_dt[idx_01p] : base_fps;
                 snprintf(g_perf_1pct_num, sizeof g_perf_1pct_num, "1%% %.0f", low_1p);
                 snprintf(g_perf_01pct_num, sizeof g_perf_01pct_num, "0.1%% %.0f", low_01p);
             } else {
-                snprintf(g_perf_1pct_num, sizeof g_perf_1pct_num, "1%% %.0f", eff_fps);
-                snprintf(g_perf_01pct_num, sizeof g_perf_01pct_num, "0.1%% %.0f", eff_fps);
+                g_perf_1pct_num[0] = g_perf_01pct_num[0] = 0;
             }
-
-            const char *up = cfg_value("NS2_UPSCALER");
-            bool is_smrs = !strcmp(up, "smrs");
-            bool is_fsr = !strcmp(up, "fsr");
-            if (is_smrs) {
-                g_perf_theme = 2;
-                const char *p = cfg_value("NS2_UPSCALER_PRESET");
-                const char *op = cfg_value("NS2_OPERATION_MODE");
-                bool is_hh = (op && !strcmp(op, "handheld"));
-                const char *plabel = !strcmp(p, "native") ? "Native (1620p)"
-                                   : !strcmp(p, "quality") ? "Quality (1620p)"
-                                   : !strcmp(p, "balanced") ? "Balanced (1080p)"
-                                   : !strcmp(p, "performance") ? "Perf (1080p)"
-                                   : !strcmp(p, "ultra_performance") ? "UltraP (1080p)"
-                                   : is_hh ? "Handheld 1080p" : "Docked 1620p";
-                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "Nodix SMRS [%s]", plabel);
-            } else if (is_fsr) {
-                g_perf_theme = 1;
-                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "FSR 1.0 (EASU)");
-            } else if (!strcmp(up, "bilinear")) {
-                g_perf_theme = 2;
-                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "Bilinear");
-            } else {
-                g_perf_theme = 2;
-                snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "Native 1:1");
-            }
-
-            unsigned out[2], scene[2];
-            res_sizes(out, scene);
-
-            char line2[64] = {0};
-            if (scene[0] > 0 && out[0] > 0 && scene[0] < out[0]) {
-                char res_buf[32];
-                if (out[1] == 2160 && scene[1] == 1080) snprintf(res_buf, sizeof res_buf, "1080p->4K");
-                else if (out[1] == 1440 && scene[1] == 720) snprintf(res_buf, sizeof res_buf, "720p->1440p");
-                else snprintf(res_buf, sizeof res_buf, "%up->%up", scene[1], out[1]);
-                strncat(line2, res_buf, sizeof(line2) - strlen(line2) - 1);
-            }
-            const char *ref = cfg_value("NS2_REFLEX");
-            if (ref && !strcmp(ref, "boost")) {
-                if (line2[0]) strncat(line2, " · Reflex Boost", sizeof(line2) - strlen(line2) - 1);
-                else strncat(line2, "Reflex Boost", sizeof(line2) - strlen(line2) - 1);
-            } else if (ref && !strcmp(ref, "on")) {
-                if (line2[0]) strncat(line2, " · Reflex/Anti-Lag", sizeof(line2) - strlen(line2) - 1);
-                else strncat(line2, "Reflex/Anti-Lag", sizeof(line2) - strlen(line2) - 1);
-            } else if (cfg_bool("NS2_XELL")) {
-                if (line2[0]) strncat(line2, " · XeLL", sizeof(line2) - strlen(line2) - 1);
-                else strncat(line2, "XeLL", sizeof(line2) - strlen(line2) - 1);
-            }
-            snprintf(g_perf_line2, sizeof g_perf_line2, "%s", line2);
             snprintf(g_perf_text, sizeof g_perf_text, "%s", g_perf_fps_num);
             g_perf_win_ns = g_perf_max_ns = 0;
             g_perf_frames = 0;
@@ -1553,136 +1398,23 @@ static void perf_draw(const MenuTarget *t, float scale) {
     if (!g_perf_mode || !g_perf_fps_num[0]) return;
     // with the menu open: under its window, over the dimming layout_menu drew before
     ImDrawList *dl = g_open.load(std::memory_order_relaxed) ? ImGui::GetBackgroundDrawList() : ImGui::GetForegroundDrawList();
-
     ImFont *font = ImGui::GetFont();
-    // Sleek, compact HUD font size: ~14.5px at 1080p, ~29px at 4K (fits unobtrusively without taking up half the screen)
-    float font_sz = 14.5f * scale;
-
-    auto text_sz = [&](const char *s) -> ImVec2 {
-        if (!s || !s[0]) return ImVec2(0, 0);
-        return font->CalcTextSizeA(font_sz, FLT_MAX, -1.0f, s);
-    };
-
-    float pad_x = 9.0f * scale;
-    float pad_y = 5.0f * scale;
-    float spacing_x = 6.0f * scale;
-    float line_gap = 3.0f * scale;
-
-    // Line 1: Pure performance metrics [LED Dot] [FPS]  1% [1% Low]  0.1% [0.1% Low]  [ms]
-    float dot_rad = 3.0f * scale;
-    float dot_area_w = dot_rad * 2.0f + 5.0f * scale;
-    ImVec2 sz_fps = text_sz(g_perf_fps_num);
-    ImVec2 sz_1p = g_perf_1pct_num[0] ? text_sz(g_perf_1pct_num) : ImVec2(0, 0);
-    ImVec2 sz_01p = g_perf_01pct_num[0] ? text_sz(g_perf_01pct_num) : ImVec2(0, 0);
-    ImVec2 sz_ms = text_sz(g_perf_ms_num);
-
-    float line1_w = dot_area_w + sz_fps.x;
-    if (sz_1p.x > 0) line1_w += spacing_x + sz_1p.x;
-    if (sz_01p.x > 0) line1_w += spacing_x + sz_01p.x;
-    line1_w += spacing_x + sz_ms.x;
-    float line1_h = font_sz;
-
-    // Line 2: Grouped technologies [Upscaler] -> [FG Badge] -> [Tail Info] -> [Battery]
-    ImVec2 sz_up = text_sz(g_perf_upscaler);
-    ImVec2 sz_fg = g_perf_fg_badge[0] ? text_sz(g_perf_fg_badge) : ImVec2(0, 0);
-    float fg_pill_w = g_perf_fg_badge[0] ? (sz_fg.x + 6.0f * scale) : 0.0f;
-
-    ImVec2 sz_l2_tail = g_perf_line2[0] ? text_sz(g_perf_line2) : ImVec2(0, 0);
-    ImVec2 sz_battery = g_perf_battery[0] ? text_sz(g_perf_battery) : ImVec2(0, 0);
-
-    float line2_w = sz_up.x;
-    if (fg_pill_w > 0) line2_w += spacing_x + fg_pill_w;
-    if (sz_l2_tail.x > 0) line2_w += spacing_x + sz_l2_tail.x;
-    if (sz_battery.x > 0) line2_w += spacing_x + sz_battery.x;
-    float line2_h = font_sz;
-
-    float card_w = fmaxf(line1_w, line2_w) + pad_x * 2.0f;
-    float card_h = line1_h + line2_h + line_gap + pad_y * 2.0f;
-
-    ImVec2 p_min(w - 12.0f * scale - card_w, 10.0f * scale);
-    ImVec2 p_max(p_min.x + card_w, p_min.y + card_h);
-
-    // Color theme
-    ImU32 border_col = (g_perf_theme == 0) ? IM_COL32(118, 185, 0, 180)   // NVIDIA RTX Green
-                     : (g_perf_theme == 1) ? IM_COL32(235, 60, 60, 180)   // AMD Crimson
-                     : (g_perf_theme == 3) ? IM_COL32(0, 140, 255, 180)   // Intel Electric Blue
-                     : IM_COL32(40, 160, 230, 160);                        // Cyber Cyan
-
-    ImU32 dot_core_col = (g_perf_theme == 0)  ? IM_COL32(118, 185, 0, 255)
-                       : (g_perf_theme == 1)  ? IM_COL32(245, 65, 65, 255)
-                       : (g_perf_theme == 3)  ? IM_COL32(0, 160, 255, 255)
-                       : IM_COL32(50, 185, 255, 255);
-
-    ImU32 dot_glow_col = (g_perf_theme == 0)  ? IM_COL32(118, 185, 0, 65)
-                       : (g_perf_theme == 1)  ? IM_COL32(245, 65, 65, 65)
-                       : (g_perf_theme == 3)  ? IM_COL32(0, 140, 255, 75)
-                       : IM_COL32(50, 185, 255, 65);
-
-    // Card background & sleek rounded border
-    dl->AddRectFilled(p_min, p_max, IM_COL32(12, 16, 24, 225), 4.0f * scale);
-    dl->AddRect(p_min, p_max, border_col, 4.0f * scale, 0, 1.0f * scale);
-
-    // Line 1 drawing:
-    float cur_x = p_min.x + pad_x;
-    float line1_y = p_min.y + pad_y;
-
-    // LED Dot
-    ImVec2 dot_c(cur_x + dot_rad, line1_y + line1_h * 0.5f);
-    dl->AddCircleFilled(dot_c, dot_rad + 1.5f * scale, dot_glow_col);
-    dl->AddCircleFilled(dot_c, dot_rad, dot_core_col);
-    cur_x += dot_area_w;
-
-    // Numeric FPS
-    dl->AddText(font, font_sz, ImVec2(cur_x, line1_y), IM_COL32(255, 255, 255, 255), g_perf_fps_num);
-    cur_x += sz_fps.x + spacing_x;
-
-    // 1% Low
-    if (sz_1p.x > 0) {
-        dl->AddText(font, font_sz, ImVec2(cur_x, line1_y), IM_COL32(210, 225, 245, 225), g_perf_1pct_num);
-        cur_x += sz_1p.x + spacing_x;
-    }
-
-    // 0.1% Low
-    if (sz_01p.x > 0) {
-        dl->AddText(font, font_sz, ImVec2(cur_x, line1_y), IM_COL32(180, 205, 235, 200), g_perf_01pct_num);
-        cur_x += sz_01p.x + spacing_x;
-    }
-
-    // Frame Time
-    dl->AddText(font, font_sz, ImVec2(cur_x, line1_y), IM_COL32(160, 185, 215, 230), g_perf_ms_num);
-
-    // Line 2 drawing: [Upscaler] -> [FG Badge] -> [Tail Info] -> [Battery]
-    float line2_y = line1_y + line1_h + line_gap;
-    float l2_x = p_min.x + pad_x;
-
-    // 1) Upscaler name & preset in theme accent color
-    ImU32 up_col = (g_perf_theme == 0) ? IM_COL32(118, 195, 20, 255)
-                 : (g_perf_theme == 1) ? IM_COL32(255, 95, 95, 255)
-                 : (g_perf_theme == 3) ? IM_COL32(30, 175, 255, 255)
-                 : IM_COL32(95, 205, 250, 255);
-    dl->AddText(font, font_sz, ImVec2(l2_x, line2_y), up_col, g_perf_upscaler);
-    l2_x += sz_up.x;
-
-    // 2) Frame Generation pill badge directly adjacent to upscaler
-    if (fg_pill_w > 0) {
-        l2_x += spacing_x;
-        ImVec2 fg_min(l2_x, line2_y + 0.5f * scale);
-        ImVec2 fg_max(l2_x + fg_pill_w, line2_y + line2_h - 0.5f * scale);
-        dl->AddRectFilled(fg_min, fg_max, IM_COL32(105, 40, 175, 190), 2.5f * scale);
-        dl->AddRect(fg_min, fg_max, IM_COL32(175, 100, 250, 220), 2.5f * scale, 0, 0.8f * scale);
-        dl->AddText(font, font_sz, ImVec2(l2_x + 3.0f * scale, line2_y), IM_COL32(245, 215, 255, 255), g_perf_fg_badge);
-        l2_x += fg_pill_w;
-    }
-
-    // 3) Remaining tail info: resolution, Reflex, XeLL
-    if (sz_l2_tail.x > 0) {
-        l2_x += spacing_x;
-        dl->AddText(font, font_sz, ImVec2(l2_x, line2_y), IM_COL32(175, 190, 205, 225), g_perf_line2);
-        l2_x += sz_l2_tail.x;
-    }
-    if (sz_battery.x > 0) {
-        l2_x += spacing_x;
-        dl->AddText(font, font_sz, ImVec2(l2_x, line2_y), IM_COL32(135, 225, 180, 240), g_perf_battery);
+    float font_sz = 14.5f * scale, pad_x = 9.0f * scale, pad_y = 5.0f * scale, gap = 8.0f * scale;
+    const char *parts[4] = {g_perf_fps_num, g_perf_1pct_num, g_perf_01pct_num, g_perf_ms_num};
+    static const ImU32 cols[4] = {IM_COL32(255, 255, 255, 255), IM_COL32(210, 225, 245, 225), IM_COL32(180, 205, 235, 200),
+                                  IM_COL32(160, 185, 215, 230)};
+    float tw = 0;
+    int n = 0;
+    for (const char *p : parts)
+        if (p[0]) tw += (n++ ? gap : 0) + font->CalcTextSizeA(font_sz, FLT_MAX, -1.0f, p).x;
+    ImVec2 p_min(w - 12.0f * scale - tw - pad_x * 2, 10.0f * scale);
+    ImVec2 p_max(p_min.x + tw + pad_x * 2, p_min.y + font_sz + pad_y * 2);
+    dl->AddRectFilled(p_min, p_max, IM_COL32(12, 16, 24, 210), 4.0f * scale);
+    float x = p_min.x + pad_x;
+    for (int i = 0; i < 4; i++) {
+        if (!parts[i][0]) continue;
+        dl->AddText(font, font_sz, ImVec2(x, p_min.y + pad_y), cols[i], parts[i]);
+        x += font->CalcTextSizeA(font_sz, FLT_MAX, -1.0f, parts[i]).x + gap;
     }
 }
 
@@ -1717,6 +1449,13 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
         g_failed.store(1);
         set_open(0);
         return 0;
+    }
+    static int g_theme = -1;
+    int th = menu_theme_kind();
+    if (th != g_theme) {
+        g_theme = th;
+        style_init(g_base_style);
+        g_style_scale = 0;
     }
     if (g_style_scale != scale) {
         ImGui::GetStyle() = g_base_style;

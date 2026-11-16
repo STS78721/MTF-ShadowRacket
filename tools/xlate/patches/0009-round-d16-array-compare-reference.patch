@@ -1,15 +1,26 @@
 --- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
 +++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
-@@ -1283,6 +1283,18 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+@@ -1168,6 +1168,14 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             return new OperationResult(AggregateType.FP32, result);
+         }
+ 
++        // NS2_SHADOW_D16=1 snaps array shadow references to 16-bit. TotK's cascades are D16, and AMD
++        // compares the full float, so a lit face fails its own test without the snap. D24 cascades
++        // (Mario Tennis Fever) are finer than that step: snapping them fails every receiver.
++        static bool ShadowD16Reference()
++        {
++            return Environment.GetEnvironmentVariable("NS2_SHADOW_D16") == "1";
++        }
++
+         private static OperationResult GenerateTextureSample(CodeGenContext context, AstOperation operation)
+         {
+             AstTextureOperation texOp = (AstTextureOperation)operation;
+@@ -1283,6 +1291,14 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
              if (isShadow)
              {
                  dRef = Src(AggregateType.FP32);
 +
-+                // TOTK: the shadow cascades are D16 array textures. Maxwell rounds the compare reference to the texture's
-+                // 16-bit precision before the compare; Vulkan drivers may compare the full float (AMD does), so a lit
-+                // surface fails its own compare by a fraction of a step and the whole face reads as shadowed. Array
-+                // compares only: in TotK those are the D16 cascades (MacNativeGames 6283599 rounds the same ones).
-+                if (isArray)
++                if (isArray && ShadowD16Reference())
 +                {
 +                    SpvInstruction d16Fp32 = context.TypeFP32();
 +                    SpvInstruction d16Clamped = context.GlslFClamp(d16Fp32, dRef, context.Constant(d16Fp32, 0f), context.Constant(d16Fp32, 1f));

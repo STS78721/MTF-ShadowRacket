@@ -43,6 +43,7 @@ typedef struct {                                           // the translator's a
     uint16_t local[3]; uint32_t shared_bytes;
     uint8_t depth_minus_w;
     uint8_t geometry_input;                              // GFX_GEOMETRY_*; required for GS, zero for other stages
+    uint64_t img_uint, img_sint;                         // CS texture/image binding masks requiring uint/sint SPIR-V
 } GfxShaderAnswers;
 typedef struct GfxShader GfxShader;                        // SPIR-V words + parsed reflection; owned by the cache
 void gfx_shader_nvn2_dump(const uint8_t *control, const uint8_t *code);   // DKB_SHADER_DUMP (gfx_shader.c)
@@ -51,6 +52,14 @@ uint64_t gfx_shader_nvn2_hash(const uint8_t *control, const uint8_t *code);   //
 uint64_t nvn2_origin(const uint8_t *code);   // that name of the NVN 2 stage a lowered code buffer came from, or 0
 // NVN 2 stage -> NVN 1 control and Maxwell code (nvn2_lower.cpp); 0 when it does not lower
 int nvn2_lower(const uint8_t *control, const uint8_t *code, const uint8_t **out_control, const uint8_t **out_code);
+uint32_t nvn2_control_size(const uint8_t *control);
+uint32_t nvn2_program_stage(const uint8_t *control, const uint8_t *code);
+uint32_t nvn2_program_length(const uint8_t *control, const uint8_t *code);
+uint32_t nvn2_program_blob_bytes(const uint8_t *control, const uint8_t *code);
+void nvn2_program_key(const uint8_t *control, const uint8_t *code, uint8_t key[32]);
+int gfx_shader_prepared_nvn2(const uint8_t *control, const uint8_t *code);
+int gfx_shader_is_prepared(const GfxShader *s);
+int gfx_shader_is_source_passthrough(const GfxShader *s);
 const GfxShader *gfx_shader_get(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                                 const uint8_t *c1, const GfxShaderAnswers *a);   // blocks; NULL on failure (counted)
 // As gfx_shader_get with c1 inside the code, but a shader in neither cache is queued to a background translation and

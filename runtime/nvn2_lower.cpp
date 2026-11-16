@@ -13,6 +13,7 @@
 
 extern "C" void rt_log(const char *fmt, ...);
 extern "C" uint64_t gfx_shader_nvn2_hash(const uint8_t *control, const uint8_t *code);
+extern "C" int gfx_shader_prepared_nvn2(const uint8_t *control, const uint8_t *code);
 
 namespace {
 constexpr size_t kControl = 0x880;   // gfx_shader.c CONTROL_SIZE
@@ -167,6 +168,7 @@ Lowered *lower(const uint8_t *control, const uint8_t *code) {
 // 1 and the replacement control and code for an NVN 2 stage, 0 when it does not lower.
 extern "C" int nvn2_lower(const uint8_t *control, const uint8_t *code, const uint8_t **out_control,
                           const uint8_t **out_code) {
+    if (gfx_shader_prepared_nvn2(control, code)) return 0;
     const uint64_t key = gfx_shader_nvn2_hash(control, code);
     if (!key) {
         uint32_t w[6];

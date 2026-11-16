@@ -41,6 +41,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "game_profile.h"
 #include "gfx.h"
 #include "host.h"
 #include "nvn_geometry_control.h"
@@ -109,6 +110,8 @@ struct GfxShader {
     Nvn2C0Layout c0;                                       // NVN 2 compute parameter-block layout, when has_c0
     int has_c0;
     uint64_t origin;                                       // NVN 2 stage origin, set by note_origin (DKB_DUMP_SPV naming only)
+    int prepared;
+    uint64_t variant_of;
 };
 
 static PlatMutex cache_lock = PLAT_MUTEX_INIT;                  // memory cache
@@ -139,6 +142,7 @@ static struct {                                            // translations in fl
 
 #define PATH_CAP 1024                                  // bytes of a UTF-8 path
 static char cache_dir[PATH_CAP];
+static char spirv_dir[PATH_CAP];
 static char xlate_exe[PATH_CAP];
 static uint8_t xlate_id[32];                               // translator identity (see the keys at the top)
 static int host_f64 = 1, host_set;                         // gfx_shader_set_host
@@ -286,7 +290,12 @@ static void xlate_identity(void) {
         strcat(p, ".id");
         uint64_t size = 0;
         char *f = (char *)read_file(p, &size);
-        how = "dkb_xlate.id";
+        {
+            static char howbuf[64];
+            const char *base = plat_last_sep(p);
+            snprintf(howbuf, sizeof howbuf, "%s", base ? base + 1 : p);
+            how = howbuf;
+        }
         if (!f || !hex32(f, xlate_id)) {
             uint8_t *exe = read_file(xlate_exe, &size);
             how = exe ? "sha256 of the exe; tools/build_xlate.py writes totk_xlate.id" : "none: no translator";
@@ -339,6 +348,11 @@ static void init_paths(void *param) {
     }
     if (cache_cfg && *cache_cfg && strlen(cache_cfg) < sizeof cache_dir) strcpy(cache_dir, cache_cfg);
     else if (exe_dir[0]) snprintf(cache_dir, sizeof cache_dir, "%s/shader-cache", exe_dir);
+    const char *spv_cfg = cfg_get("NS2_SPIRV");
+    if (!spv_cfg || !*spv_cfg) spv_cfg = cfg_get("TOTK_SPIRV");
+    if (!spv_cfg || !*spv_cfg) spv_cfg = cfg_get("MKW_SPIRV");
+    if (spv_cfg && *spv_cfg && strlen(spv_cfg) < sizeof spirv_dir) strcpy(spirv_dir, spv_cfg);
+    else if (exe_dir[0]) snprintf(spirv_dir, sizeof spirv_dir, "%s/spirv", exe_dir);
     xlate_identity();
     if (cache_dir[0]) pack_open();
     use_preload_start();
@@ -394,6 +408,17 @@ static int child_start(Svc *v) {
         return 0;
     }
     uint32_t err = 0;
+    // TotK's sun cascades are D16, and AMD compares a full-float reference, so those references are snapped to
+    // 16-bit. Mario Tennis Fever's cascades are D24: the same snap is coarser than the map and the bias, and every
+    // receiver fails (blue court, no silhouette). The translator reads this before it emits the compare.
+    static int shadow_ref;
+    if (!shadow_ref) {
+        shadow_ref = 1;
+        const RtGameProfile *gp = game_profile();
+        int d16 = gp->short_name && !strcmp(gp->short_name, "totk");
+        plat_setenv("NS2_SHADOW_D16", d16 ? "1" : NULL);
+        rt_log("gfx_shader: array shadow compare reference %s", d16 ? "snapped to 16-bit" : "full precision");
+    }
     v->child = plat_child_start(xlate_exe, "--serve", &err);
     if (!v->child) {
         rt_log("gfx_shader: cannot start %s (error %lu)", xlate_exe, (unsigned long)err);
@@ -594,7 +619,7 @@ static int reflection_valid(const char *res, uint64_t size) {
     if (!st) return 0;
     st = strchr(st + 7, '"');
     return st && (!strncmp(st, "\"vs\"", 4) || !strncmp(st, "\"ps\"", 4) || !strncmp(st, "\"cs\"", 4) ||
-                  !strncmp(st, "\"gs\"", 4));
+                  !strncmp(st, "\"gs\"", 4) || !strncmp(st, "\"tcs\"", 5) || !strncmp(st, "\"tes\"", 5));
 }
 
 // Every instruction after the header has a word count and the last one ends at the module's end: a module with
@@ -894,6 +919,7 @@ static void add_res(GfxShader *s, int kind, const char *o, const char *e) {
     if (kind == GFX_RES_UBO || kind == GFX_RES_SSBO) {
         r->slot = (int16_t)json_int(o, e, "slot", -1);
         r->count = 1;
+        r->flags = (uint8_t)json_int(o, e, "flags", 0);
         if (kind == GFX_RES_SSBO) {
             r->cbuf_slot = (int8_t)json_int(o, e, "cb_slot", -1);
             r->handle = (uint16_t)json_int(o, e, "cb_offset", 0);
@@ -1112,13 +1138,32 @@ static int reflect(GfxShader *s, int flags) {
     const char *whole = json_token_end(js, end, 0), *stage = json_member(js, end, "stage");
     if (!whole || json_space(whole, end) != end) return 0;
     s->stage = json_string_is(stage, end, "vs") ? GFX_STAGE_VS : json_string_is(stage, end, "ps") ? GFX_STAGE_FS :
-               json_string_is(stage, end, "cs") ? GFX_STAGE_CS : json_string_is(stage, end, "gs") ? GFX_STAGE_GS : -1;
+               json_string_is(stage, end, "cs") ? GFX_STAGE_CS : json_string_is(stage, end, "gs") ? GFX_STAGE_GS :
+               (s->prepared && json_string_is(stage, end, "tcs")) ? GFX_STAGE_TCS :
+               (s->prepared && json_string_is(stage, end, "tes")) ? GFX_STAGE_TES : -1;
     if (s->stage < 0) return 0;
-    if (s->stage == GFX_STAGE_GS) {
+    if (s->stage == GFX_STAGE_GS && s->prepared) {
+        const char *g = json_member(js, end, "geometry"), *ge = g ? json_token_end(g, end, 0) : NULL;
+        if (!g || *g != '{' || !ge) return 0;
+        uint32_t ver = 0, inv = 0, max_v = 0, in_v = 0;
+        const char *inp = json_member(g, ge, "input"), *outp = json_member(g, ge, "output");
+        if (!json_uint(g, ge, "version", &ver) || ver != GFX_GEOMETRY_VERSION ||
+            !json_uint(g, ge, "input_vertices", &in_v) || !json_uint(g, ge, "invocations", &inv) ||
+            !json_uint(g, ge, "max_output_vertices", &max_v) || !inp || !outp) return 0;
+        uint8_t gi = 0, go = 0;
+        for (unsigned i = 1; i < COUNT(geometry_names); i++)
+            if (json_string_is(inp, ge, geometry_names[i])) gi = (uint8_t)i;
+        for (unsigned i = 1; i < COUNT(geometry_outputs); i++)
+            if (json_string_is(outp, ge, geometry_outputs[i])) go = (uint8_t)i;
+        if (!gi || !go || !in_v || !inv || !max_v) return 0;
+        s->geometry = (GfxShaderGeometry){(uint8_t)ver, gi, (uint8_t)in_v, go, (uint8_t)inv, (uint16_t)max_v, 0};
+    } else if (s->stage == GFX_STAGE_GS) {
         if (!host_gs_sg || !geometry_json(js, end, &s->geometry, s->geometry_skip, &s->geometry_source_passthrough)) return 0;
     } else if (json_member(js, end, "geometry_version") || json_member(js, end, "gs_input") ||
                json_member(js, end, "geometry") || json_member(js, end, "gs_passthrough_skip")) return 0;
-    if (!geometry_spirv(s)) return 0;
+    if (!s->prepared && !geometry_spirv(s)) return 0;
+    int storage_version = 0;
+    if (!s->prepared) {
     // Driver contracts are unique root fields. Extra nested properties are metadata, not alternate layouts.
     const char *c0 = json_member(js, end, "c0"), *roots = json_member(js, end, "c0_roots"),
                *c0_version = json_member(js, end, "c0_version");
@@ -1152,12 +1197,13 @@ static int reflect(GfxShader *s, int flags) {
         rt_log("gfx_shader: translator omitted the NVN 2 root layout; rebuild the shader translator");
         return 0;
     }
-    int storage_version = storage_contract_version(js, end);
+    storage_version = storage_contract_version(js, end);
     if ((require_c0 && storage_version != GFX_STORAGE_CANDIDATES_VERSION) ||
         (storage_version && (storage_version != GFX_STORAGE_CANDIDATES_VERSION ||
                              !s->has_c0 || s->stage != GFX_STAGE_CS))) {
         rt_log("gfx_shader: incompatible guarded storage contract; rebuild the shader translator");
         return 0;
+    }
     }
     for (int k = 0; k < GFX_RES_KINDS; k++) {
         int count = json_objects(js, kinds[k], NULL, s, k);
@@ -1696,6 +1742,745 @@ void gfx_shader_nvn2_dump(const uint8_t *control, const uint8_t *code) {
     plat_mutex_unlock(&dump_lock);
 }
 
+// ---- prepared SM86 SPIR-V modules (<exe_dir>/spirv/<key>.{spv,res.json})
+
+uint32_t nvn2_control_size(const uint8_t *control) {
+    if (!control || !gfx_shader_is_nvn2(control)) return 0;
+    uint32_t n = 0;
+    memcpy(&n, control + 0x30, 4);
+    return n ? n : 0xd8u;
+}
+
+uint32_t nvn2_program_stage(const uint8_t *control, const uint8_t *code) {
+    if (control && gfx_shader_is_nvn2(control)) {
+        uint8_t st = control[0x56];
+        if (st <= 5) return st;
+    }
+    if (code) {
+        uint32_t w0 = 0;
+        memcpy(&w0, code, 4);
+        if (((w0 & 31u) == 1u || (w0 & 31u) == 2u) && ((w0 >> 5) & 31u) == 4u) {
+            uint32_t t = (w0 >> 10) & 15u;
+            return t == 5u ? 1u : t == 4u ? 2u : t == 2u ? 3u : t == 3u ? 4u : 0u;
+        }
+    }
+    return 0;
+}
+
+uint32_t nvn2_program_blob_bytes(const uint8_t *control, const uint8_t *code) {
+    (void)code;
+    if (!control || !gfx_shader_is_nvn2(control)) return 0;
+    uint32_t sz38 = 0, c1_sz = 0, c1_off = 0, c1_end = 0;
+    memcpy(&sz38, control + 0x38, 4);
+    memcpy(&c1_sz, control + 0x3c, 4);
+    memcpy(&c1_off, control + 0x40, 4);
+    memcpy(&c1_end, control + 0x44, 4);
+    uint32_t len = sz38;
+    if (c1_end > len && c1_end - len <= 0x10000u) len = c1_end;
+    if (c1_sz && c1_sz <= 0x10000u && c1_off + c1_sz > len && c1_off + c1_sz - len <= 0x10000u) len = c1_off + c1_sz;
+    return len;
+}
+
+uint32_t nvn2_program_length(const uint8_t *control, const uint8_t *code) {
+    if (!control || !code || !gfx_shader_is_nvn2(control)) return 0;
+    uint32_t blob = 0, sz38 = 0, c1_sz = 0, c1_off = 0;
+    memcpy(&sz38, control + 0x38, 4);
+    memcpy(&c1_sz, control + 0x3c, 4);
+    memcpy(&c1_off, control + 0x40, 4);
+    memcpy(&blob, control + 0x44, 4);
+    if (!blob) blob = sz38;
+    uint32_t st = nvn2_program_stage(control, code);
+    uint32_t start = st == 5u ? 0u : 0x80u;
+    uint32_t end = blob;
+    if (c1_sz && c1_off >= start && c1_off < end) end = c1_off;
+    if (end <= start) return end;
+    for (uint32_t at = start; at + 16u <= end; at += 16u) {
+        uint32_t w[4];
+        memcpy(w, code + at, 16);
+        if (!w[0] && !w[1] && !w[2] && !w[3]) return at;
+        if (at > start) {
+            uint16_t prev_lo = 0;
+            memcpy(&prev_lo, code + at - 16u, 2);
+            if (prev_lo == 0x7918u && (((w[0] & 31u) == 1u || (w[0] & 31u) == 2u) && ((w[0] >> 5) & 31u) == 4u)) {
+                uint32_t sph = (w[0] >> 10) & 15u;
+                if (sph >= 1u && sph <= 5u) return at;
+            }
+        }
+    }
+    return end;
+}
+
+void nvn2_program_key(const uint8_t *control, const uint8_t *code, uint8_t key[32]) {
+    memset(key, 0, 32);
+    uint32_t ctl_sz = nvn2_control_size(control);
+    uint32_t code_len = nvn2_program_length(control, code);
+    if (!ctl_sz || !code_len) return;
+    uint8_t *buf = malloc((size_t)ctl_sz + code_len);
+    if (!buf) return;
+    memcpy(buf, control, ctl_sz);
+    memcpy(buf + ctl_sz, code, code_len);
+    rt_sha256(buf, (size_t)ctl_sz + code_len, key);
+    free(buf);
+}
+
+int gfx_shader_is_prepared(const GfxShader *s) {
+    return s && s->prepared;
+}
+
+int gfx_shader_is_source_passthrough(const GfxShader *s) {
+    return s && s->prepared && s->geometry_source_passthrough;
+}
+
+// Retype vec4 Input (VS) or Output (FS) variables whose Location bits are in umask (uvec4) or smask (ivec4).
+static uint32_t *spirv_int_io(const uint32_t *w, uint64_t n, uint32_t sc, uint32_t umask, uint32_t smask,
+                              uint64_t *out_n) {
+    if (!w || n < 5 || !(umask | smask)) return NULL;
+    uint32_t bound = w[3];
+    if (!bound || bound > (1u << 22)) return NULL;
+    uint64_t fn_at = 0, var_at = 0;
+    uint32_t f32 = 0, u32 = 0, i32 = 0, v4f = 0, v4u = 0, v4i = 0;
+    uint32_t pf32 = 0, pu32 = 0, pi32 = 0, pv4u = 0, pv4i = 0, exec_model = 99u;
+    uint64_t dec_at = 0;
+    uint32_t *ptr_pointee = calloc(bound, 4);
+    uint32_t *ptr_sc = calloc(bound, 4);
+    int32_t *var_loc = malloc((size_t)bound * 4);
+    uint8_t *var_kind = calloc(bound, 1);
+    uint8_t *ac_kind = calloc(bound, 1);
+    uint8_t *var_flat = calloc(bound, 1);
+    if (!ptr_pointee || !ptr_sc || !var_loc || !var_kind || !ac_kind || !var_flat) {
+        free(ptr_pointee), free(ptr_sc), free(var_loc), free(var_kind), free(ac_kind), free(var_flat);
+        return NULL;
+    }
+    for (uint32_t i = 0; i < bound; i++) var_loc[i] = -1;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffffu, len = w[i] >> 16;
+        if (!len || i + len > n) {
+            free(ptr_pointee), free(ptr_sc), free(var_loc), free(var_kind), free(ac_kind), free(var_flat);
+            return NULL;
+        }
+        const uint32_t *a = w + i + 1;
+        if (op == 54u) { fn_at = i; break; }
+        if (op == 15u && len >= 2 && exec_model == 99u) exec_model = a[0];
+        if (op == OP_TYPE_FLOAT && len >= 3 && a[1] == 32 && a[0] < bound) f32 = a[0];
+        else if (op == OP_TYPE_INT && len >= 4 && a[1] == 32 && a[0] < bound) {
+            if (a[2]) i32 = a[0]; else u32 = a[0];
+        } else if (op == OP_TYPE_VECTOR && len >= 4 && a[0] < bound && a[2] == 4) {
+            if (a[1] == f32) v4f = a[0];
+            else if (u32 && a[1] == u32) v4u = a[0];
+            else if (i32 && a[1] == i32) v4i = a[0];
+        } else if (op == OP_TYPE_POINTER && len >= 4 && a[0] < bound) {
+            ptr_sc[a[0]] = a[1];
+            ptr_pointee[a[0]] = a[2];
+            if (a[1] == sc) {
+                if (f32 && a[2] == f32) pf32 = a[0];
+                else if (u32 && a[2] == u32) pu32 = a[0];
+                else if (i32 && a[2] == i32) pi32 = a[0];
+                else if (v4u && a[2] == v4u) pv4u = a[0];
+                else if (v4i && a[2] == v4i) pv4i = a[0];
+            }
+        } else if (op == OP_DECORATE && len >= 3 && a[0] < bound) {
+            if (!dec_at) dec_at = i;
+            if (len >= 4 && a[1] == DEC_LOCATION) var_loc[a[0]] = (int32_t)a[2];
+            else if (a[1] == 14u) var_flat[a[0]] = 1;
+        } else if (op == OP_VARIABLE && len >= 4) {
+            if (!var_at) var_at = i;
+            if (a[1] < bound && a[2] == sc && a[0] < bound && ptr_sc[a[0]] == sc && ptr_pointee[a[0]] == v4f) {
+                int32_t loc = var_loc[a[1]];
+                if (loc >= 0 && loc < 32) {
+                    if ((umask >> loc) & 1u) var_kind[a[1]] = 1;
+                    else if ((smask >> loc) & 1u) var_kind[a[1]] = 2;
+                }
+            }
+        }
+        i += len;
+    }
+    int need_u = 0, need_i = 0, changed = 0;
+    uint32_t extra_flat = 0;
+    for (uint32_t id = 0; id < bound; id++) {
+        if (var_kind[id] == 1) need_u = changed = 1;
+        else if (var_kind[id] == 2) need_i = changed = 1;
+        if (var_kind[id] && exec_model == 4u && sc == 1u && !var_flat[id]) extra_flat++;
+    }
+    if (!fn_at || !f32 || !v4f || !changed) {
+        free(ptr_pointee), free(ptr_sc), free(var_loc), free(var_kind), free(ac_kind), free(var_flat);
+        return NULL;
+    }
+    if (!var_at) var_at = fn_at;
+    uint32_t extra_casts = 0;
+    for (uint64_t i = fn_at; i < n;) {
+        uint32_t op = w[i] & 0xffffu, len = w[i] >> 16;
+        if (!len || i + len > n) {
+            free(ptr_pointee), free(ptr_sc), free(var_loc), free(var_kind), free(ac_kind), free(var_flat);
+            return NULL;
+        }
+        const uint32_t *a = w + i + 1;
+        if ((op == 65u || op == 66u) && len >= 5 && a[1] < bound && a[2] < bound && var_kind[a[2]] && a[0] == pf32) {
+            ac_kind[a[1]] = var_kind[a[2]];
+        } else if (op == 61u && len >= 4 && a[2] < bound && (var_kind[a[2]] || ac_kind[a[2]])) {
+            extra_casts++;
+        } else if (op == 62u && len >= 3 && a[0] < bound && (var_kind[a[0]] || ac_kind[a[0]])) {
+            extra_casts++;
+        }
+        i += len;
+    }
+    uint32_t types[64];
+    int nt = 0;
+    if (need_u && !u32) u32 = bound++, types[nt++] = (4u << 16) | 21u, types[nt++] = u32, types[nt++] = 32u, types[nt++] = 0u;
+    if (need_i && !i32) i32 = bound++, types[nt++] = (4u << 16) | 21u, types[nt++] = i32, types[nt++] = 32u, types[nt++] = 1u;
+    if (need_u && !v4u) v4u = bound++, types[nt++] = (4u << 16) | 23u, types[nt++] = v4u, types[nt++] = u32, types[nt++] = 4u;
+    if (need_i && !v4i) v4i = bound++, types[nt++] = (4u << 16) | 23u, types[nt++] = v4i, types[nt++] = i32, types[nt++] = 4u;
+    if (need_u && !pv4u) pv4u = bound++, types[nt++] = (4u << 16) | 32u, types[nt++] = pv4u, types[nt++] = sc, types[nt++] = v4u;
+    if (need_i && !pv4i) pv4i = bound++, types[nt++] = (4u << 16) | 32u, types[nt++] = pv4i, types[nt++] = sc, types[nt++] = v4i;
+    if (need_u && !pu32 && pf32) pu32 = bound++, types[nt++] = (4u << 16) | 32u, types[nt++] = pu32, types[nt++] = sc, types[nt++] = u32;
+    if (need_i && !pi32 && pf32) pi32 = bound++, types[nt++] = (4u << 16) | 32u, types[nt++] = pi32, types[nt++] = sc, types[nt++] = i32;
+
+    uint32_t orig_bound = w[3];
+    uint32_t *out = malloc((size_t)(n + nt + (uint64_t)extra_flat * 3u + (uint64_t)extra_casts * 4u) * 4u);
+    if (!out) {
+        free(ptr_pointee), free(ptr_sc), free(var_loc), free(var_kind), free(ac_kind), free(var_flat);
+        return NULL;
+    }
+    uint32_t *p = out;
+    memcpy(p, w, 5 * 4);
+    p += 5;
+    for (uint64_t i = 5; i < fn_at;) {
+        uint32_t op = w[i] & 0xffffu, len = w[i] >> 16;
+        if (i == dec_at && extra_flat) {
+            for (uint32_t id = 0; id < orig_bound; id++)
+                if (var_kind[id] && !var_flat[id]) p[0] = (3u << 16) | OP_DECORATE, p[1] = id, p[2] = 14u, p += 3;
+        }
+        if (!(op == OP_VARIABLE && len >= 4 && w[i + 2] < orig_bound && var_kind[w[i + 2]])) {
+            memcpy(p, w + i, (size_t)len * 4u);
+            p += len;
+        }
+        i += len;
+    }
+    if (nt) memcpy(p, types, (size_t)nt * 4u), p += nt;
+    for (uint64_t i = 5; i < fn_at;) {
+        uint32_t op = w[i] & 0xffffu, len = w[i] >> 16;
+        if (op == OP_VARIABLE && len >= 4 && w[i + 2] < orig_bound && var_kind[w[i + 2]]) {
+            memcpy(p, w + i, (size_t)len * 4u);
+            p[1] = var_kind[w[i + 2]] == 1 ? pv4u : pv4i;
+            p += len;
+        }
+        i += len;
+    }
+    for (uint64_t i = fn_at; i < n;) {
+        uint32_t op = w[i] & 0xffffu, len = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        if (op == 61u && len >= 4 && a[2] < orig_bound && (var_kind[a[2]] || ac_kind[a[2]])) {
+            int is_ac = ac_kind[a[2]] != 0;
+            uint8_t k = is_ac ? ac_kind[a[2]] : var_kind[a[2]];
+            uint32_t tmp = bound++;
+            uint32_t xt = is_ac ? (k == 1 ? u32 : i32) : (k == 1 ? v4u : v4i);
+            uint32_t ft = is_ac ? f32 : v4f;
+            memcpy(p, w + i, (size_t)len * 4u);
+            p[1] = xt, p[2] = tmp;
+            p += len;
+            p[0] = (4u << 16) | 124u, p[1] = ft, p[2] = a[1], p[3] = tmp;
+            p += 4;
+        } else if (op == 62u && len >= 3 && a[0] < orig_bound && (var_kind[a[0]] || ac_kind[a[0]])) {
+            int is_ac = ac_kind[a[0]] != 0;
+            uint8_t k = is_ac ? ac_kind[a[0]] : var_kind[a[0]];
+            uint32_t tmp = bound++;
+            uint32_t xt = is_ac ? (k == 1 ? u32 : i32) : (k == 1 ? v4u : v4i);
+            p[0] = (4u << 16) | 124u, p[1] = xt, p[2] = tmp, p[3] = a[1];
+            p += 4;
+            memcpy(p, w + i, (size_t)len * 4u);
+            p[2] = tmp;
+            p += len;
+        } else if ((op == 65u || op == 66u) && len >= 5 && a[1] < orig_bound && ac_kind[a[1]]) {
+            memcpy(p, w + i, (size_t)len * 4u);
+            p[1] = ac_kind[a[1]] == 1 ? pu32 : pi32;
+            p += len;
+        } else {
+            memcpy(p, w + i, (size_t)len * 4u);
+            p += len;
+        }
+        i += len;
+    }
+    out[3] = bound;
+    *out_n = (uint64_t)(p - out);
+    free(ptr_pointee), free(ptr_sc), free(var_loc), free(var_kind), free(ac_kind), free(var_flat);
+    return out;
+}
+
+// Retype UniformConstant texture/storage image bindings (umask=uint, smask=sint, indexed by binding < 64) for CS.
+static uint32_t *spirv_int_images(const uint32_t *w, uint64_t n, uint64_t umask, uint64_t smask, uint64_t *out_n) {
+    if (!w || n < 5 || !(umask | smask)) return NULL;
+    uint32_t bound = w[3];
+    if (!bound || bound > (1u << 22)) return NULL;
+    typedef struct { uint32_t w[10]; uint8_t len; } ImgDesc;
+    uint64_t fn_at = 0, var_at = 0;
+    uint32_t f32 = 0, u32 = 0, i32 = 0, v4f = 0, v4u = 0, v4i = 0;
+    int32_t *bind_of = malloc((size_t)bound * 4);
+    uint64_t *img_at = calloc(bound, sizeof *img_at);
+    uint32_t *samp_of = calloc(bound, 4);
+    uint32_t *arr_elem = calloc(bound, 4), *arr_len = calloc(bound, 4);
+    uint32_t *ptr_sc = calloc(bound, 4), *ptr_pointee = calloc(bound, 4);
+    uint8_t *var_kind = calloc(bound, 1);
+    uint32_t *var_new_ptr = calloc(bound, 4), *var_new_elem_ptr = calloc(bound, 4),
+             *var_new_img = calloc(bound, 4), *var_new_samp = calloc(bound, 4);
+    uint8_t *val_kind = calloc(bound, 1);
+    uint32_t *val_new_elem_ptr = calloc(bound, 4), *val_new_img = calloc(bound, 4), *val_new_samp = calloc(bound, 4);
+    if (!bind_of || !img_at || !samp_of || !arr_elem || !arr_len || !ptr_sc || !ptr_pointee ||
+        !var_kind || !var_new_ptr || !var_new_elem_ptr || !var_new_img || !var_new_samp ||
+        !val_kind || !val_new_elem_ptr || !val_new_img || !val_new_samp) {
+        free(bind_of), free(img_at), free(samp_of), free(arr_elem), free(arr_len), free(ptr_sc), free(ptr_pointee);
+        free(var_kind), free(var_new_ptr), free(var_new_elem_ptr), free(var_new_img), free(var_new_samp);
+        free(val_kind), free(val_new_elem_ptr), free(val_new_img), free(val_new_samp);
+        return NULL;
+    }
+    for (uint32_t i = 0; i < bound; i++) bind_of[i] = -1;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffffu, len = w[i] >> 16;
+        if (!len || i + len > n) {
+            free(bind_of), free(img_at), free(samp_of), free(arr_elem), free(arr_len), free(ptr_sc), free(ptr_pointee);
+            free(var_kind), free(var_new_ptr), free(var_new_elem_ptr), free(var_new_img), free(var_new_samp);
+            free(val_kind), free(val_new_elem_ptr), free(val_new_img), free(val_new_samp);
+            return NULL;
+        }
+        const uint32_t *a = w + i + 1;
+        if (op == 54u) { fn_at = i; break; }
+        if (op == OP_TYPE_FLOAT && len >= 3 && a[1] == 32 && a[0] < bound) f32 = a[0];
+        else if (op == OP_TYPE_INT && len >= 4 && a[1] == 32 && a[0] < bound) {
+            if (a[2]) i32 = a[0]; else u32 = a[0];
+        } else if (op == OP_TYPE_VECTOR && len >= 4 && a[0] < bound && a[2] == 4) {
+            if (a[1] == f32) v4f = a[0];
+            else if (u32 && a[1] == u32) v4u = a[0];
+            else if (i32 && a[1] == i32) v4i = a[0];
+        } else if (op == 25u && len >= 9 && len <= 10 && a[0] < bound) img_at[a[0]] = i;
+        else if (op == 27u && len == 3 && a[0] < bound) samp_of[a[0]] = a[1];
+        else if (op == OP_TYPE_ARRAY && len == 4 && a[0] < bound) arr_elem[a[0]] = a[1], arr_len[a[0]] = a[2];
+        else if (op == OP_TYPE_POINTER && len >= 4 && a[0] < bound) ptr_sc[a[0]] = a[1], ptr_pointee[a[0]] = a[2];
+        else if (op == OP_DECORATE && len >= 4 && a[1] == 33u && a[0] < bound) bind_of[a[0]] = (int32_t)a[2];
+        else if (op == OP_VARIABLE && len >= 4) {
+            if (!var_at) var_at = i;
+            if (a[1] < bound && a[2] == 0 && bind_of[a[1]] >= 0 && bind_of[a[1]] < 64) {
+                int32_t b = bind_of[a[1]];
+                uint8_t k = ((umask >> b) & 1ull) ? 1 : ((smask >> b) & 1ull) ? 2 : 0;
+                uint32_t t = a[0] < bound ? ptr_pointee[a[0]] : 0;
+                if (t && arr_elem[t]) t = arr_elem[t];
+                uint32_t img_t = t && samp_of[t] ? samp_of[t] : t;
+                if (k && img_t && img_at[img_t] && w[img_at[img_t] + 2] == f32) var_kind[a[1]] = k;
+            }
+        }
+        i += len;
+    }
+    int need_u = 0, need_i = 0, changed = 0;
+    for (uint32_t id = 0; id < bound; id++) {
+        if (var_kind[id] == 1) need_u = changed = 1;
+        else if (var_kind[id] == 2) need_i = changed = 1;
+    }
+    if (!fn_at || !f32 || !v4f || !changed) {
+        free(bind_of), free(img_at), free(samp_of), free(arr_elem), free(arr_len), free(ptr_sc), free(ptr_pointee);
+        free(var_kind), free(var_new_ptr), free(var_new_elem_ptr), free(var_new_img), free(var_new_samp);
+        free(val_kind), free(val_new_elem_ptr), free(val_new_img), free(val_new_samp);
+        return NULL;
+    }
+    if (!var_at) var_at = fn_at;
+    uint32_t types[4096];
+    int nt = 0;
+    if (need_u && !u32) u32 = bound++, types[nt++] = (4u << 16) | OP_TYPE_INT, types[nt++] = u32, types[nt++] = 32u, types[nt++] = 0u;
+    if (need_i && !i32) i32 = bound++, types[nt++] = (4u << 16) | OP_TYPE_INT, types[nt++] = i32, types[nt++] = 32u, types[nt++] = 1u;
+    if (need_u && !v4u) v4u = bound++, types[nt++] = (4u << 16) | OP_TYPE_VECTOR, types[nt++] = v4u, types[nt++] = u32, types[nt++] = 4u;
+    if (need_i && !v4i) v4i = bound++, types[nt++] = (4u << 16) | OP_TYPE_VECTOR, types[nt++] = v4i, types[nt++] = i32, types[nt++] = 4u;
+
+    for (uint64_t i = 5; i < fn_at;) {
+        uint32_t op = w[i] & 0xffffu, len = w[i] >> 16;
+        if (op == OP_VARIABLE && len >= 4 && w[i + 2] < w[3] && var_kind[w[i + 2]]) {
+            uint32_t vid = w[i + 2], k = var_kind[vid], scalar = k == 1 ? u32 : i32;
+            uint32_t base_ptr = w[i + 1], t = ptr_pointee[base_ptr];
+            uint32_t is_arr = arr_elem[t] != 0, arr_t = is_arr ? t : 0;
+            uint32_t leaf = is_arr ? arr_elem[t] : t;
+            uint32_t samp_t = samp_of[leaf] ? leaf : 0, img_t = samp_t ? samp_of[samp_t] : leaf;
+            uint64_t ia = img_at[img_t];
+            uint32_t ilen = w[ia] >> 16;
+            if (nt + 32 >= 4096) {
+                free(bind_of), free(img_at), free(samp_of), free(arr_elem), free(arr_len), free(ptr_sc), free(ptr_pointee);
+                free(var_kind), free(var_new_ptr), free(var_new_elem_ptr), free(var_new_img), free(var_new_samp);
+                free(val_kind), free(val_new_elem_ptr), free(val_new_img), free(val_new_samp);
+                return NULL;
+            }
+            ImgDesc d = {0};
+            memcpy(d.w, w + ia, (size_t)ilen * 4u);
+            if (ilen >= 5 && d.w[4] == 1u) {
+                var_kind[vid] = 0;
+            } else {
+                d.w[2] = scalar;
+                uint32_t ni = 0;
+                for (uint32_t id = 1; id < w[3] && !ni; id++) {
+                    uint64_t oa = img_at[id];
+                    if (oa && (w[oa] >> 16) == ilen && memcmp(w + oa + 2, d.w + 2, (size_t)(ilen - 2) * 4u) == 0)
+                        ni = id;
+                }
+                for (int k = 0; k < nt && !ni; k += (int)(types[k] >> 16)) {
+                    if ((types[k] & 0xffffu) == 25u && (types[k] >> 16) == ilen &&
+                        memcmp(types + k + 2, d.w + 2, (size_t)(ilen - 2) * 4u) == 0)
+                        ni = types[k + 1];
+                }
+                if (!ni) {
+                    ni = bound++;
+                    d.w[1] = ni;
+                    memcpy(types + nt, d.w, (size_t)ilen * 4u), nt += (int)ilen;
+                }
+                var_new_img[vid] = ni;
+                uint32_t nl = ni;
+                if (samp_t) {
+                    uint32_t ns = 0;
+                    for (uint32_t id = 1; id < w[3] && !ns; id++) {
+                        if (samp_of[id] == ni) ns = id;
+                    }
+                    for (int k = 0; k < nt && !ns; k += (int)(types[k] >> 16)) {
+                        if ((types[k] & 0xffffu) == 27u && types[k + 2] == ni) ns = types[k + 1];
+                    }
+                    if (!ns) {
+                        ns = bound++;
+                        types[nt++] = (3u << 16) | 27u, types[nt++] = ns, types[nt++] = ni;
+                    }
+                    var_new_samp[vid] = ns, nl = ns;
+                }
+                uint32_t ntgt = nl;
+                if (arr_t) {
+                    uint32_t np_elem = bound++;
+                    types[nt++] = (4u << 16) | OP_TYPE_POINTER, types[nt++] = np_elem, types[nt++] = 0u, types[nt++] = nl;
+                    var_new_elem_ptr[vid] = np_elem;
+                    uint32_t na = bound++;
+                    types[nt++] = (4u << 16) | OP_TYPE_ARRAY, types[nt++] = na, types[nt++] = nl, types[nt++] = arr_len[arr_t];
+                    ntgt = na;
+                }
+                uint32_t np = bound++;
+                types[nt++] = (4u << 16) | OP_TYPE_POINTER, types[nt++] = np, types[nt++] = 0u, types[nt++] = ntgt;
+                var_new_ptr[vid] = np;
+            }
+        }
+        i += len;
+    }
+
+    uint32_t orig_bound = w[3], extra_casts = 0;
+    for (uint64_t i = fn_at; i < n;) {
+        uint32_t op = w[i] & 0xffffu, len = w[i] >> 16;
+        if (!len || i + len > n) {
+            free(bind_of), free(img_at), free(samp_of), free(arr_elem), free(arr_len), free(ptr_sc), free(ptr_pointee);
+            free(var_kind), free(var_new_ptr), free(var_new_elem_ptr), free(var_new_img), free(var_new_samp);
+            free(val_kind), free(val_new_elem_ptr), free(val_new_img), free(val_new_samp);
+            return NULL;
+        }
+        const uint32_t *a = w + i + 1;
+        if ((op == 65u || op == 66u) && len >= 5 && a[1] < orig_bound && a[2] < orig_bound && var_kind[a[2]]) {
+            val_kind[a[1]] = var_kind[a[2]];
+            val_new_elem_ptr[a[1]] = var_new_elem_ptr[a[2]];
+            val_new_img[a[1]] = var_new_img[a[2]], val_new_samp[a[1]] = var_new_samp[a[2]];
+        } else if (op == 61u && len >= 4 && a[1] < orig_bound && a[2] < orig_bound) {
+            if (var_kind[a[2]]) {
+                val_kind[a[1]] = var_kind[a[2]];
+                val_new_img[a[1]] = var_new_img[a[2]], val_new_samp[a[1]] = var_new_samp[a[2]];
+            } else if (val_kind[a[2]]) {
+                val_kind[a[1]] = val_kind[a[2]];
+                val_new_img[a[1]] = val_new_img[a[2]], val_new_samp[a[1]] = val_new_samp[a[2]];
+            }
+        } else if (op == 100u && len == 4 && a[1] < orig_bound && a[2] < orig_bound && val_kind[a[2]]) {
+            val_kind[a[1]] = val_kind[a[2]], val_new_img[a[1]] = val_new_img[a[2]], val_new_samp[a[1]] = val_new_samp[a[2]];
+        } else if (op == 86u && len == 5 && a[1] < orig_bound && a[2] < orig_bound && val_kind[a[2]]) {
+            val_kind[a[1]] = val_kind[a[2]], val_new_img[a[1]] = val_new_img[a[2]], val_new_samp[a[1]] = val_new_samp[a[2]];
+        } else if (((op >= 87u && op <= 98u && op != 89u && op != 90u && op != 93u && op != 94u && op != 97u)) &&
+                   len >= 4 && a[2] < orig_bound && val_kind[a[2]] && a[0] == v4f) {
+            extra_casts++;
+        } else if (op == 99u && len >= 4 && a[0] < orig_bound && val_kind[a[0]]) {
+            extra_casts++;
+        }
+        i += len;
+    }
+
+    uint32_t *out = malloc((size_t)(n + nt + (uint64_t)extra_casts * 4u) * 4u);
+    if (!out) {
+        free(bind_of), free(img_at), free(samp_of), free(arr_elem), free(arr_len), free(ptr_sc), free(ptr_pointee);
+        free(var_kind), free(var_new_ptr), free(var_new_elem_ptr), free(var_new_img), free(var_new_samp);
+        free(val_kind), free(val_new_elem_ptr), free(val_new_img), free(val_new_samp);
+        return NULL;
+    }
+    uint32_t *p = out;
+    memcpy(p, w, 5 * 4);
+    p += 5;
+    uint64_t def_off[256];
+    int ndef = 0;
+    for (uint64_t i = 5; i < fn_at;) {
+        uint32_t op = w[i] & 0xffffu, len = w[i] >> 16;
+        if (op == OP_VARIABLE && len >= 4 && w[i + 2] < orig_bound && var_kind[w[i + 2]] &&
+            ndef < (int)(sizeof def_off / sizeof def_off[0])) {
+            def_off[ndef++] = i;
+        } else {
+            memcpy(p, w + i, (size_t)len * 4u);
+            if (op == OP_VARIABLE && len >= 4 && w[i + 2] < orig_bound && var_kind[w[i + 2]])
+                p[1] = var_new_ptr[w[i + 2]];
+            p += len;
+        }
+        i += len;
+    }
+    if (nt) memcpy(p, types, (size_t)nt * 4u), p += nt;
+    for (int d = 0; d < ndef; d++) {
+        uint64_t off = def_off[d];
+        uint32_t len = w[off] >> 16;
+        memcpy(p, w + off, (size_t)len * 4u);
+        p[1] = var_new_ptr[w[off + 2]];
+        p += len;
+    }
+    for (uint64_t i = fn_at; i < n;) {
+        uint32_t op = w[i] & 0xffffu, len = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        if (op == 61u && len >= 4 && a[1] < orig_bound && val_kind[a[1]]) {
+            memcpy(p, w + i, (size_t)len * 4u);
+            p[1] = val_new_samp[a[1]] ? val_new_samp[a[1]] : val_new_img[a[1]];
+            p += len;
+        } else if ((op == 65u || op == 66u) && len >= 5 && a[1] < orig_bound && val_new_elem_ptr[a[1]]) {
+            memcpy(p, w + i, (size_t)len * 4u);
+            p[1] = val_new_elem_ptr[a[1]];
+            p += len;
+        } else if (op == 100u && len == 4 && a[1] < orig_bound && val_kind[a[1]]) {
+            memcpy(p, w + i, (size_t)len * 4u);
+            p[1] = val_new_img[a[1]];
+            p += len;
+        } else if (op == 86u && len == 5 && a[1] < orig_bound && val_kind[a[1]]) {
+            memcpy(p, w + i, (size_t)len * 4u);
+            p[1] = val_new_samp[a[1]];
+            p += len;
+        } else if ((op >= 87u && op <= 98u && op != 89u && op != 90u && op != 93u && op != 94u && op != 97u) &&
+                   len >= 4 && a[2] < orig_bound && val_kind[a[2]] && a[0] == v4f) {
+            uint32_t tmp = bound++;
+            memcpy(p, w + i, (size_t)len * 4u);
+            p[1] = val_kind[a[2]] == 1 ? v4u : v4i, p[2] = tmp;
+            p += len;
+            p[0] = (4u << 16) | 124u, p[1] = v4f, p[2] = a[1], p[3] = tmp;
+            p += 4;
+        } else if (op == 99u && len >= 4 && a[0] < orig_bound && val_kind[a[0]]) {
+            uint32_t tmp = bound++;
+            p[0] = (4u << 16) | 124u, p[1] = val_kind[a[0]] == 1 ? v4u : v4i, p[2] = tmp, p[3] = a[2];
+            p += 4;
+            memcpy(p, w + i, (size_t)len * 4u);
+            p[3] = tmp;
+            p += len;
+        } else {
+            memcpy(p, w + i, (size_t)len * 4u);
+            p += len;
+        }
+        i += len;
+    }
+    out[3] = bound;
+    *out_n = (uint64_t)(p - out);
+    free(bind_of), free(img_at), free(samp_of), free(arr_elem), free(arr_len), free(ptr_sc), free(ptr_pointee);
+    free(var_kind), free(var_new_ptr), free(var_new_elem_ptr), free(var_new_img), free(var_new_samp);
+    free(val_kind), free(val_new_elem_ptr), free(val_new_img), free(val_new_samp);
+    return out;
+}
+
+static int prepared_dir_active(void) {
+    paths();
+    static volatile int32_t cached = -1;
+    int32_t v = plat_cas32(&cached, -1, -1);
+    if (v >= 0) return v;
+    int ok = spirv_dir[0] && plat_fs_kind(spirv_dir) == PLAT_FS_DIR;
+    plat_xchg32(&cached, ok);
+    return ok;
+}
+
+static int prep_cmp(const void *x, const void *y) { return memcmp(x, y, 32); }
+
+typedef struct {
+    uint8_t (*keys)[32];
+    size_t n, cap;
+    const char *ext;
+    size_t ext_len;
+    const uint8_t (*filter)[32];
+    size_t filter_n;
+    int oom;
+} PrepScan;
+
+static int prep_scan_cb(const char *name, void *ctx) {
+    PrepScan *s = ctx;
+    size_t len = strlen(name);
+    if (len != 64 + s->ext_len || strcmp(name + 64, s->ext) != 0) return 1;
+    char h[65];
+    memcpy(h, name, 64);
+    h[64] = 0;
+    uint8_t k[32];
+    if (!hex32(h, k)) return 1;
+    if (s->filter && !bsearch(k, s->filter, s->filter_n, 32, prep_cmp)) return 1;
+    if (s->n == s->cap) {
+        size_t ncap = s->cap ? s->cap * 2 : 512;
+        uint8_t (*nk)[32] = realloc(s->keys, ncap * sizeof *nk);
+        if (!nk) { s->oom = 1; return 0; }
+        s->keys = nk;
+        s->cap = ncap;
+    }
+    memcpy(s->keys[s->n++], k, 32);
+    return 1;
+}
+
+static volatile int32_t prep_idx_state;   // 0=uninit, 1=building, 2=ready, -1=failed(oom)
+static uint8_t (*prep_keys)[32];
+static size_t prep_n;
+
+static int prep_ensure(void) {
+    int32_t st = __atomic_load_n(&prep_idx_state, __ATOMIC_ACQUIRE);
+    if (st == 2) return 1;
+    if (st < 0) return 0;
+    if (plat_cas32(&prep_idx_state, 0, 1) == 0) {
+        PrepScan spv = { .ext = ".spv", .ext_len = 4 };
+        plat_file_list(spirv_dir, ".spv", prep_scan_cb, &spv);
+        if (!spv.oom && spv.n) qsort(spv.keys, spv.n, 32, prep_cmp);
+        PrepScan res = { .ext = ".res.json", .ext_len = 9, .filter = spv.keys, .filter_n = spv.n };
+        if (!spv.oom && spv.n) {
+            plat_file_list(spirv_dir, ".res.json", prep_scan_cb, &res);
+            if (!res.oom && res.n) qsort(res.keys, res.n, 32, prep_cmp);
+        }
+        free(spv.keys);
+        if (spv.oom || res.oom) {
+            free(res.keys);
+            __atomic_store_n(&prep_idx_state, -1, __ATOMIC_RELEASE);
+            return 0;
+        }
+        prep_keys = res.keys;
+        prep_n = res.n;
+        __atomic_store_n(&prep_idx_state, 2, __ATOMIC_RELEASE);
+        return 1;
+    }
+    while ((st = __atomic_load_n(&prep_idx_state, __ATOMIC_ACQUIRE)) == 1) plat_yield();
+    return st == 2;
+}
+
+int gfx_shader_prepared_nvn2(const uint8_t *control, const uint8_t *code) {
+    if (!prepared_dir_active() || !control || !code || !gfx_shader_is_nvn2(control)) return 0;
+    uint8_t base[32];
+    nvn2_program_key(control, code, base);
+    uint8_t z[32] = {0};
+    if (!memcmp(base, z, 32)) return 0;
+    if (prep_ensure()) return bsearch(base, prep_keys, prep_n, 32, prep_cmp) != NULL;
+    char hex[65], spv_p[PATH_CAP + 80], res_p[PATH_CAP + 80];
+    key_hex(base, hex);
+    snprintf(spv_p, sizeof spv_p, "%s/%s.spv", spirv_dir, hex);
+    snprintf(res_p, sizeof res_p, "%s/%s.res.json", spirv_dir, hex);
+    return file_exists(spv_p) && file_exists(res_p);
+}
+
+static void variant_key(const uint8_t base[32], uint32_t tag, uint64_t umask, uint64_t smask, uint8_t out[32]) {
+    if (!umask && !smask) { memcpy(out, base, 32); return; }
+    uint8_t buf[8 + 32 + 4 + 16];
+    memcpy(buf, "NVN2VAR1", 8);
+    memcpy(buf + 8, base, 32);
+    memcpy(buf + 40, &tag, 4);
+    memcpy(buf + 44, &umask, 8);
+    memcpy(buf + 52, &smask, 8);
+    rt_sha256(buf, sizeof buf, out);
+}
+
+static GfxShader *prepared_load(int stage, const uint8_t *control, const uint8_t *code, const uint8_t base[32],
+                                const uint8_t key[32], const GfxShaderAnswers *a) {
+    char hex[65], spv_p[PATH_CAP + 80], res_p[PATH_CAP + 80];
+    key_hex(base, hex);
+    snprintf(spv_p, sizeof spv_p, "%s/%s.spv", spirv_dir, hex);
+    snprintf(res_p, sizeof res_p, "%s/%s.res.json", spirv_dir, hex);
+    uint64_t sb = 0, rb = 0;
+    uint8_t *spv_bytes = read_file(spv_p, &sb), *res_bytes = read_file(res_p, &rb);
+    uint32_t magic = 0;
+    if (spv_bytes && sb >= 4) memcpy(&magic, spv_bytes, 4);
+    if (!spv_bytes || !res_bytes || (sb % 4) || magic != 0x07230203u ||
+        !spirv_complete((const uint32_t *)spv_bytes, sb / 4u) || !reflection_valid((const char *)res_bytes, rb)) {
+        free(spv_bytes), free(res_bytes);
+        return NULL;
+    }
+    GfxShader *s = calloc(1, sizeof *s);
+    if (!s) return free(spv_bytes), free(res_bytes), NULL;
+    memcpy(s->key, key, 32);
+    memcpy(s->iid, base, 32);
+    s->spirv = (uint32_t *)spv_bytes, s->words = sb / 4u;
+    s->reflection = (char *)res_bytes, s->reflection_size = rb;
+    s->prepared = 1;
+    s->origin = gfx_shader_nvn2_hash(control, code);
+    if (a && (stage == GFX_STAGE_VS || stage == GFX_STAGE_FS)) {
+        uint32_t umask = 0, smask = 0;
+        if (stage == GFX_STAGE_VS) {
+            for (int i = 0; i < 32; i++) {
+                if (a->attr_type[i] == GFX_TYPE_UINT) umask |= 1u << i;
+                else if (a->attr_type[i] == GFX_TYPE_SINT) smask |= 1u << i;
+            }
+        } else {
+            for (int i = 0; i < 8; i++) {
+                if (a->frag_out_type[i] == GFX_TYPE_UINT) umask |= 1u << i;
+                else if (a->frag_out_type[i] == GFX_TYPE_SINT) smask |= 1u << i;
+            }
+        }
+        uint64_t new_n = 0;
+        uint32_t *patched = spirv_int_io(s->spirv, s->words, stage == GFX_STAGE_VS ? SC_INPUT : SC_OUTPUT,
+                                         umask, smask, &new_n);
+        if (patched) { free(s->spirv); s->spirv = patched; s->words = new_n; }
+    }
+    if (a && (a->img_uint | a->img_sint)) {
+        uint64_t new_n = 0;
+        uint32_t *patched = spirv_int_images(s->spirv, s->words, a->img_uint, a->img_sint, &new_n);
+        if (patched) { free(s->spirv); s->spirv = patched; s->words = new_n; }
+    }
+    uint32_t ctl_sz = nvn2_control_size(control);
+    if (stage == GFX_STAGE_CS && ctl_sz >= 0xb7u) {
+        memcpy(s->local, control + 0x58, 12);
+        memset(&s->c0, 0, sizeof s->c0);
+        s->c0.images = control[0xb6];
+        s->c0.ubos = control[0xb1];
+        s->c0.ssbos = control[0xb2];
+        s->c0.textures = control[0xb3];
+        memcpy(s->c0.roots, control + 0xa9, NVN2_ROOT_TABLES);
+        if (nvn2_c0_valid(&s->c0, NVN2_C0_BYTES)) s->has_c0 = 1;
+    }
+    if (!reflect(s, 0) || s->stage != stage) {
+        shader_free(s);
+        return NULL;
+    }
+    if (stage == GFX_STAGE_GS) {
+        const char *g = json_member(s->reflection, s->reflection + strlen(s->reflection), "geometry");
+        const char *ge = g ? json_token_end(g, s->reflection + strlen(s->reflection), 0) : NULL;
+        const char *sp = (g && ge) ? json_member(g, ge, "source_passthrough") : NULL;
+        if (sp && sp + 4 <= ge && !memcmp(sp, "true", 4)) s->geometry_source_passthrough = 1;
+    }
+    return s;
+}
+
+static const GfxShader *prepared_get(int stage, const uint8_t *control, const uint8_t *code, const GfxShaderAnswers *a) {
+    if (!prepared_dir_active() || !control || !code || !gfx_shader_is_nvn2(control)) return NULL;
+    uint8_t base[32], key[32], z[32] = {0};
+    nvn2_program_key(control, code, base);
+    if (!memcmp(base, z, 32)) return fail("NVN 2 prepared shader: invalid control/code", NULL), NULL;
+    uint64_t umask = 0, smask = 0;
+    uint32_t tag = 0;
+    if (a && stage == GFX_STAGE_VS) {
+        tag = 1;
+        for (int i = 0; i < 32; i++) {
+            if (a->attr_type[i] == GFX_TYPE_UINT) umask |= 1ull << i;
+            else if (a->attr_type[i] == GFX_TYPE_SINT) smask |= 1ull << i;
+        }
+    } else if (a && stage == GFX_STAGE_FS) {
+        tag = 2;
+        for (int i = 0; i < 8; i++) {
+            if (a->frag_out_type[i] == GFX_TYPE_UINT) umask |= 1ull << i;
+            else if (a->frag_out_type[i] == GFX_TYPE_SINT) smask |= 1ull << i;
+        }
+    } else if (a && stage == GFX_STAGE_CS) {
+        tag = 3;
+        umask = a->img_uint, smask = a->img_sint;
+    }
+    variant_key(base, tag, umask, smask, key);
+    if (a && stage != GFX_STAGE_CS && (a->img_uint | a->img_sint))
+        variant_key(key, 3, a->img_uint, a->img_sint, key);
+    GfxShader *s = mem_find(key);
+    if (s) { plat_inc64(&n_hits); return s; }
+    s = prepared_load(stage, control, code, base, key, a);
+    if (!s) {
+        char hex[65];
+        key_hex(base, hex);
+        return fail("NVN 2 prepared shader missing from spirv/", hex), NULL;
+    }
+    plat_inc64(&n_hits);
+    return mem_insert(s);
+}
+
 static int req_init(Req *r, int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size, const uint8_t *c1,
                     const GfxShaderAnswers *a) {
     memset(r, 0, sizeof *r);
@@ -1808,6 +2593,7 @@ uint64_t gfx_shader_origin(const GfxShader *s) { return s->origin; }
 
 const GfxShader *gfx_shader_get(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                                 const uint8_t *c1, const GfxShaderAnswers *a) {
+    if (gfx_shader_prepared_nvn2(control, code)) return prepared_get(stage, control, code, a);
     Req r;
     if (!req_init(&r, stage, control, code, code_size, c1, a)) return NULL;
     const GfxShader *s = get_one(&r, stage, control, code, a);
@@ -2135,6 +2921,7 @@ static void xlate_worker(void *arg) {
 const GfxShader *gfx_shader_get_async(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                                       const GfxShaderAnswers *a, int *pending) {
     *pending = 0;
+    if (gfx_shader_prepared_nvn2(control, code)) return prepared_get(stage, control, code, a);
     Req r;
     if (!req_init(&r, stage, control, code, code_size, NULL, a)) return NULL;
     const GfxShader *s = get_async_one(r, stage, control, code, a, pending);

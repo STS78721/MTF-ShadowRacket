@@ -386,12 +386,23 @@ static int alias_all_mapped(uint64_t a, uint64_t n) {   // under lock
     return 1;
 }
 
+static int in_loaded_module(uint64_t a, uint64_t n) {
+    for (int i = 0; i < ldr_count(); i++) {
+        const RtLoaded *m = ldr_module(i);
+        if (m && inside(a, n, (RtRange){m->base, m->size})) return 1;
+    }
+    return 0;
+}
+
 static uint32_t stack_move(int unmap, uint64_t dst, uint64_t src, uint64_t n) {
     if (!n || ((dst | src | n) & (PAGE - 1))) return R_INVALID_ADDRESS;
     if (!inside(dst, n, L.stack)) return R_INVALID_REGION;
     int in_heap = inside(src, n, (RtRange){L.heap.base, heap_size}) || inside(src, n, L.heap);
     int in_alias = inside(src, n, L.alias);
-    if (!in_heap && !in_alias) {
+    // MTF match setup copies a static 16 KiB stack template out of subsdk0 (heap stays 0). That page
+    // stays live; only the stack destination is committed. Heap and alias sources stay exclusive.
+    int in_mod = !in_heap && !in_alias && in_loaded_module(src, n);
+    if (!in_heap && !in_alias && !in_mod) {
         rt_log("stack_move: src=%#llx n=%#llx not in heap (base=%#llx sz=%#llx) nor alias",
                (unsigned long long)src, (unsigned long long)n, (unsigned long long)L.heap.base, (unsigned long long)heap_size);
         return R_INVALID_REGION;
@@ -410,8 +421,10 @@ static uint32_t stack_move(int unmap, uint64_t dst, uint64_t src, uint64_t n) {
             r = R_INVALID_STATE;
             goto out;
         }
-        protect(src, n, PLAT_PROT_RW, "moved stack source");
-        memcpy((void *)(uintptr_t)src, (const void *)(uintptr_t)dst, n);
+        if (!in_mod) {
+            protect(src, n, PLAT_PROT_RW, "moved stack source");
+            memcpy((void *)(uintptr_t)src, (const void *)(uintptr_t)dst, n);
+        }
         decommit(dst, n, "moved stack");
         stack_maps[found] = stack_maps[--nstack_maps];
     } else {
@@ -421,14 +434,22 @@ static uint32_t stack_move(int unmap, uint64_t dst, uint64_t src, uint64_t n) {
         }
         for (unsigned i = 0; i < nstack_maps; i++)
             if (overlaps(dst, n, stack_maps[i].dst, stack_maps[i].size) ||
-                overlaps(src, n, stack_maps[i].src, stack_maps[i].size)) {
+                (!in_mod && overlaps(src, n, stack_maps[i].src, stack_maps[i].size))) {
                 r = R_INVALID_REGION;
                 goto out;
             }
         commit(dst, n, "moved stack");
         memcpy((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, n);
-        protect(src, n, PLAT_PROT_NONE, "moved stack source");
+        if (!in_mod) protect(src, n, PLAT_PROT_NONE, "moved stack source");
         stack_maps[nstack_maps++] = (StackMap){dst, src, n};
+        if (in_mod) {
+            static int logged;
+            if (!logged) {
+                logged = 1;
+                rt_log("stack_move: module template %#llx (%#llx) copied into the stack region",
+                       (unsigned long long)src, (unsigned long long)n);
+            }
+        }
     }
 out:
     plat_mutex_unlock(&lock);

@@ -28,6 +28,9 @@ extern "C" uint64_t gfx_shader_nvn2_hash(const uint8_t *ctl, const uint8_t *code
     for (uint32_t i = 0; i < len; i++) h = (h ^ code[i]) * 0x100000001b3ull;
     return h;
 }
+extern "C" int gfx_shader_prepared_nvn2(const uint8_t *ctl, const uint8_t *code) {
+    (void)ctl; (void)code; return 0;
+}
 extern "C" void rt_log(const char *fmt, ...) {
     char buf[512];
     va_list ap;

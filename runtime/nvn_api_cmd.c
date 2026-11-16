@@ -1012,7 +1012,9 @@ NVN_API(nvnCommandBufferWaitSync) {
 // size_t size), SetPatchSize(cmd, int size)
 NVN_API(nvnCommandBufferWaitEvent) { (void)c; }
 NVN_API(nvnCommandBufferSetShaderScratchMemory) { (void)c; }
-NVN_API(nvnCommandBufferSetPatchSize) { (void)c; }
+NVN_API(nvnCommandBufferSetPatchSize) {
+    REC(cmd_of(c), OP_SET_PATCH_SIZE, p_flag)->value = (int32_t)arg_x(c, 1);
+}
 
 // ---------- submit
 // What the console reads at the submit call is read here, on the game thread: every handle must be a live recording,
@@ -1187,7 +1189,7 @@ const char *nvn_op_name(uint32_t op) {
         "DRAW_IDX", "DISPATCH", "BARRIER", "SET_TEX_POOL", "SET_SAMP_POOL", "COPY_B2T", "COPY_STRIDE", "BLEND_COLOR",
         "COPY_T2B", "BIND_IMG", "COPY_T2T", "RESET_COUNTER", "CLEAR_TEX", "DEPTH_CLAMP", "RENDER_ENABLE",
         "RASTER_DISCARD", "RENDER_COND", "PRIM_RESTART", "DRAW_IDX_IND", "DISPATCH_IND", "CLEAR_BUF", "PUSH_CONST", "WAIT_SYNC",
-        "DRAW_IDX_IND_COUNT",
+        "DRAW_IDX_IND_COUNT", "SET_PATCH_SIZE",
     };
     _Static_assert(sizeof names / sizeof *names == OP_COUNT_, "one name per op");
     return op < OP_COUNT_ ? names[op] : "?";
