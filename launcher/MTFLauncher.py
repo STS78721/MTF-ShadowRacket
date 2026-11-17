@@ -43,7 +43,7 @@ from mtf_dump import (
 
 APP_TITLE = "MTF ShadowRacket"
 APP_SUBTITLE = "Mario Tennis Fever  ·  Native Windows PC Recompilation"
-DEFAULT_VERSION = "Alpha 0.1.3"
+DEFAULT_VERSION = "Alpha 0.1.3b"
 GITLAB_URL = "https://gitlab.com/steeltemplesaint-recomps/MTF-ShadowRacket"
 RELEASES_URL = GITLAB_URL + "/-/releases"
 RELEASES_API_URL = (
@@ -505,6 +505,7 @@ class MTFLauncherApp(tk.Tk):
         self.shortcut_var = tk.BooleanVar(value=True)
         self.setup_status_var = tk.StringVar(value="Select your Mario Tennis Fever 1.1.1 ExeFS & RomFS folders to build mtf.exe locally.")
         self.setup_running = False
+        self.refresh_running = False
         self._last_nup_extract: tuple[Path, Path, Path] | None = None
         self.current_tab = initial_tab
         self.latest_release: dict | None = None
@@ -521,8 +522,10 @@ class MTFLauncherApp(tk.Tk):
         threading.Thread(target=self._probe_gpu_async, daemon=True).start()
         if self.shot_path:
             self.after(450, self._capture_shot_and_exit)
-        elif not getattr(self, "_skip_update_check", False):
-            self.after(700, self.check_for_updates)
+        else:
+            self.after(250, self._auto_refresh_existing_build)
+            if not getattr(self, "_skip_update_check", False):
+                self.after(700, self.check_for_updates)
 
     def _apply_window_icon(self) -> None:
         ico = find_icon_ico()
@@ -1638,6 +1641,7 @@ class MTFLauncherApp(tk.Tk):
 
             if self.shortcut_var.get():
                 create_shortcut(self.root_dir)
+            self._write_runtime_stamp()
 
             self.after(
                 0,
@@ -1662,6 +1666,129 @@ class MTFLauncherApp(tk.Tk):
             )
         finally:
             self.after(0, lambda: self._set_setup_busy(False))
+
+    def _runtime_stamp(self) -> str:
+        rt_lib = self.root_dir / "runtime" / "libmtfrt.a"
+        if not rt_lib.is_file():
+            return ""
+        xlate_id = self.root_dir / "bin" / "ns2_xlate.id"
+        xlate_txt = xlate_id.read_text(encoding="utf-8", errors="ignore").strip() if xlate_id.is_file() else ""
+        return f"{self.version}|{rt_lib.stat().st_size}|{xlate_txt}"
+
+    def _runtime_stamp_path(self) -> Path:
+        return self.root_dir / "work" / "build" / "mtf111" / ".mtf_runtime_stamp"
+
+    def _write_runtime_stamp(self) -> None:
+        stamp = self._runtime_stamp()
+        if not stamp:
+            return
+        sp = self._runtime_stamp_path()
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        sp.write_text(stamp + "\n", encoding="utf-8")
+
+    def _sync_staged_bin_files(self) -> None:
+        if not self._exe_path().is_file():
+            return
+        src_exe = self.root_dir / "bin" / "ns2_xlate.exe"
+        src_id = self.root_dir / "bin" / "ns2_xlate.id"
+        if not src_exe.is_file() or not src_id.is_file():
+            return
+        dst_exe = self.root_dir / "ns2_xlate.exe"
+        dst_id = self.root_dir / "ns2_xlate.id"
+        try:
+            src_bytes = src_id.read_bytes()
+            if not dst_id.is_file() or not dst_exe.is_file() or dst_id.read_bytes() != src_bytes:
+                shutil.copy2(src_exe, dst_exe)
+                shutil.copy2(src_id, dst_id)
+        except OSError:
+            pass
+
+    def _auto_refresh_existing_build(self) -> None:
+        self._sync_staged_bin_files()
+        if self.setup_running or self.refresh_running or self.update_in_progress:
+            return
+        exe = self._exe_path()
+        exefs = self.root_dir / "exefs"
+        packed_romfs = self.root_dir / "romfs_packed"
+        gen_dir = self.root_dir / "work" / "generated" / "mtf111"
+        rt_lib = self.root_dir / "runtime" / "libmtfrt.a"
+        if not (
+            exe.is_file()
+            and exefs.is_dir()
+            and (packed_romfs / "romfs.bin").is_file()
+            and (gen_dir / "layout.json").is_file()
+            and rt_lib.is_file()
+        ):
+            return
+        want_stamp = self._runtime_stamp()
+        if not want_stamp:
+            return
+        stamp_path = self._runtime_stamp_path()
+        have_stamp = stamp_path.read_text(encoding="utf-8", errors="ignore").strip() if stamp_path.is_file() else ""
+        stale = (have_stamp != want_stamp) or (rt_lib.stat().st_mtime > exe.stat().st_mtime + 1.0)
+        if not stale:
+            return
+        if game_process_warning(self.root_dir, "updating mtf.exe") is not None:
+            return
+        self.refresh_running = True
+        self.play_btn.configure(state=tk.DISABLED)
+        self.build_state_lbl.configure(text=f"Updating mtf.exe for {self.version}…", fg=C_WARN)
+        threading.Thread(
+            target=self._run_refresh_worker,
+            args=(exefs, packed_romfs, gen_dir, want_stamp),
+            daemon=True,
+        ).start()
+
+    def _run_refresh_worker(self, exefs: Path, packed_romfs: Path, gen_dir: Path, want_stamp: str) -> None:
+        err: str | None = None
+        try:
+            py = self._find_setup_python()
+            env = dict(os.environ)
+            for d in (self.root_dir / "python", self.root_dir / "llvm" / "bin", self.root_dir / "bin"):
+                if d.is_dir():
+                    env["PATH"] = str(d) + os.pathsep + env.get("PATH", "")
+            build_out = self.root_dir / "work" / "build" / "mtf111"
+            build_out.mkdir(parents=True, exist_ok=True)
+            cmd = self._build_game_cmd(
+                py,
+                gen_dir=gen_dir,
+                build_out=build_out,
+                exefs=exefs,
+                packed_romfs=packed_romfs,
+            )
+            proc = subprocess.run(
+                cmd,
+                cwd=str(self.root_dir),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if proc.returncode != 0:
+                tail = "\n".join((proc.stdout or "").strip().splitlines()[-8:])
+                raise RuntimeError(f"Runtime update build failed (exit {proc.returncode}):\n{tail}")
+            for fname in ("mtf.exe", "ns2_xlate.exe", "ns2_xlate.id", "SDL3.dll", "libopus-0.dll"):
+                src = build_out / fname
+                if src.is_file():
+                    shutil.copy2(src, self.root_dir / fname)
+            stamp_path = self._runtime_stamp_path()
+            stamp_path.parent.mkdir(parents=True, exist_ok=True)
+            stamp_path.write_text(want_stamp + "\n", encoding="utf-8")
+        except Exception as exc:
+            err = str(exc)
+        finally:
+            self.after(0, lambda e=err: self._finish_refresh_worker(e))
+
+    def _finish_refresh_worker(self, err: str | None) -> None:
+        self.refresh_running = False
+        self._refresh_status_cards()
+        if err:
+            self.build_hint_lbl.configure(text=err.splitlines()[0], fg=C_BAD)
+        else:
+            self.build_hint_lbl.configure(text=f"Updated {self._exe_path().name} to {self.version}. Press PLAY to launch.")
 
     def check_for_updates(self) -> None:
         if getattr(self, "release_check_active", False) or getattr(self, "update_in_progress", False):

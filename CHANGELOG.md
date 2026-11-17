@@ -1,5 +1,35 @@
 ﻿# Changelog
 
+## MTF-ShadowRacket Alpha 0.1.3b — AMD Hotfix
+
+This hotfix resolves shadow cascade rendering issues on AMD Radeon GPUs and fresh installs without bundled caches, restores true native `2160p (4K)` internal resolution without bottom-screen corruption, eliminates the brief black square around Mario when entering the court, and fixes default `Frame Generation = Off` handling as well as non-English locale fallbacks. Existing Alpha 0.1.2+ installs automatically update `mtf.exe` and `ns2_xlate.exe` on launcher startup after applying `Update.zip`.
+
+■ Major Updates
+
+- Implemented full 16-invocation `ViewportMask` geometry shader multicast (`ViewportIndex` + `Layer`) in `ns2_xlate` and Vulkan pipeline validation so cascaded court, stadium, and character shadows render accurately on AMD Radeon GPUs and cold shader-cache installs.
+- Added AMD `D24`-on-`D32_SFLOAT` constant shadow depth-bias rescaling on GPUs without `VK_EXT_depth_bias_control`.
+- Restored native `2160p (4K)` internal resolution (`3840x2160` swapchain and max-framebuffer promotion) in both the in-game Graphics menu (`F1`) and **MTFLauncher**.
+- Added automatic fast `mtf.exe` and `ns2_xlate.exe` runtime refresh in **MTFLauncher** on launch after installing an `Update.zip`.
+
+■ Bug Fixes
+
+- Fixed missing or collapsed shadow cascades on AMD GPUs and fresh installs, including lowered passthrough geometry shader cache matching.
+- Fixed the brief black square around Mario on court entry by far-clearing un-owned `1024x1024` guest-memory shadow targets before first use.
+- Fixed cold shader-compile hitches and audio crackle on court entry by pre-warming `ns2_xlate` asynchronously at boot and increasing default audio prefill to `35 ms`.
+- Fixed `Frame Generation = Off` (`fg_mode = off` and zero-config fresh profiles) still engaging Super Motion.
+- Fixed `nn::vi::QueryDisplayBufferMaxResolution` stack corruption and `2560x1440` swapchain clamping that corrupted the lower portion of the frame at `2160p`.
+- Fixed Windows Russian locale (`ru-RU`) falling back to mixed Japanese UI text instead of `en-US`.
+
+■ Known Issues
+
+- Minor graphical and gameplay issues remain in some modes.
+
+■ Install & Update
+
+- **New install:** Run `SteelTemple-MTF-ShadowRacket-Alpha-0.1.3b-Full-Setup-Wizard.exe`, open **MTFLauncher**, pick your Mario Tennis Fever 1.1.1 dump folder, NUP-extracted tree, or `.nup`, click **Verify & Build mtf.exe**, and press **Play**.
+- **Portable:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.3b-Portable-StandAlone.zip` anywhere and launch `MTFLauncher.exe`.
+- **Update:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.3b-Update.zip` over an existing Alpha 0.1.1+ install (or use **MTFLauncher**'s built-in auto-updater) — your existing dump, saves, and personal `mtf.ini` remain intact, and **MTFLauncher** refreshes `mtf.exe` automatically on startup.
+
 ## MTF-ShadowRacket Alpha 0.1.3
 
 This update pairs the complete Mario Tennis Fever 1.1.1 native runtime, internal resolution scaling, and world-locked character/court shadows with automatic runtime `subsdk0` module synthesis, faster single-pass `.nup` extraction, live progress tracking, and split `.nup` setup support. Standard 4-file ExeFS dumps and `.nup` packages (with RomFS `.nrr`), combined containers, and sibling base/update `.nup` pairs all verify and build seamlessly into self-contained installs.
