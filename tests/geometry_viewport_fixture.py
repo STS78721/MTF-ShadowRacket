@@ -35,8 +35,9 @@ def program(case):
         body = [geometry.movi(254, VALUE), geometry.movi(0, 1), mask_store(), store(254)]
     elif case == 'guest_cannot_unmask':
         body = [geometry.movi(0, 0), mask_store(), geometry.movi(254, 1), store(8)]
-    elif case in ('zero', 'one', 'never', 'indexed'):
-        body = [geometry.movi(0, int(case == 'one')), geometry.movi(12, 4),
+    elif case in ('zero', 'one', 'never', 'indexed', 'multicast'):
+        imm = 0x15 if case == 'multicast' else int(case == 'one')
+        body = [geometry.movi(0, imm), geometry.movi(12, 4),
                 mask_store(inverted=case == 'never', indexed=case == 'indexed'), store(8)]
     elif case in ('predicated', 'predicated_inverse'):
         # R2P.R: SrcA bits8..15, SrcB20..27, ByteSel0, Ccpr0; mask1 updates P0 only.
@@ -82,6 +83,7 @@ class ScalarModule:
         self.constants.update({o[1]: op == 41 for op, o in self.ops if op in (41, 42)})
         self.variables = {o[1]: o[2] for op, o in self.ops if op == 59}
         self.locations = {o[0]: o[2] for op, o in self.ops if op == 71 and o[1] == 30}
+        self.builtins = {o[0]: o[2] for op, o in self.ops if op == 71 and o[1] == 11}
         self.members = {(o[0], o[1]): o[3] for op, o in self.ops if op == 72 and o[2] == 11}
         bindings = {o[0]: o[2] for op, o in self.ops if op == 71 and o[1] == 33}
         resources = report['sbufs']
@@ -120,10 +122,13 @@ class ScalarModule:
             raise AssertionError('expected unique fixture interface')
         return items[0]
 
-    def run(self, positions, colors, predicate=0):
+    def run(self, positions, colors, predicate=0, invocation_id=0):
         values = dict(self.constants)
         pointers = {var: (var,) for var in self.variables}
         memory = {}
+        for var, builtin in self.builtins.items():
+            if self.variables.get(var) == 1 and builtin == 8:  # InvocationId
+                memory[(var,)] = invocation_id
         def position(storage):
             matches = []
             for op, o in self.ops:
@@ -157,7 +162,11 @@ class ScalarModule:
         output_position, member = self.unique(position(3))
         output_color = self.unique([var for var, location in self.locations.items()
                                     if location == LOCATION and self.variables[var] == 3])
-        emitted, writes, events, calls = [], [], [], []
+        vp_vars = [var for var, b in self.builtins.items() if self.variables.get(var) == 3 and b == 10]
+        layer_vars = [var for var, b in self.builtins.items() if self.variables.get(var) == 3 and b == 9]
+        output_viewport = self.unique(vp_vars) if vp_vars else None
+        output_layer = self.unique(layer_vars) if layer_vars else None
+        emitted, viewports, layers, writes, events, calls = [], [], [], [], [], []
         steps = 0
 
         def execute(function, arguments=()):
@@ -187,7 +196,7 @@ class ScalarModule:
                     steps += 1
                     if steps > 10000:
                         raise AssertionError('fixture step bound')
-                    if op in (61, 83, 124, 168, 169, 170, 171, 199, 245) and self.types[o[0]] not in (
+                    if op in (61, 83, 124, 168, 169, 170, 171, 194, 199, 245) and self.types[o[0]] not in (
                             (20, ()), (21, (32, 0)), (21, (32, 1)), (22, (32,))):
                         raise AssertionError('unsupported nonscalar fixture result type')
                     if op in (245, 247):
@@ -214,6 +223,11 @@ class ScalarModule:
                         values[o[1]] = values[o[2]]
                     elif op in (170, 171):
                         values[o[1]] = (values[o[2]] == values[o[3]]) == (op == 170)
+                    elif op == 194:
+                        shift = values[o[3]]
+                        if not 0 <= shift < 32:
+                            raise AssertionError('shift out of range: ' + str(shift))
+                        values[o[1]] = (values[o[2]] & 0xffffffff) >> shift
                     elif op == 199:
                         values[o[1]] = values[o[2]] & values[o[3]]
                     elif op == 168:
@@ -231,6 +245,10 @@ class ScalarModule:
                     elif op == 218:
                         emitted.append((tuple(memory[output_position, member, c] for c in range(4)),
                                         tuple(memory[output_color, c] for c in range(4))))
+                        if output_viewport is not None:
+                            viewports.append(memory[(output_viewport,)])
+                        if output_layer is not None:
+                            layers.append(memory[(output_layer,)])
                         events.append('emit')
                         for key in list(memory):
                             if self.variables.get(key[0]) == 3:
@@ -244,4 +262,5 @@ class ScalarModule:
                 previous, label = label, next_label
         execute(self.entry)
         return {'record': tuple(memory[self.storage, 0, word] for word in range(6)),
-                'writes': writes, 'emitted': emitted, 'events': events, 'steps': steps}
+                'writes': writes, 'emitted': emitted, 'viewports': viewports, 'layers': layers,
+                'events': events, 'steps': steps}

@@ -83,6 +83,8 @@ const GfxShader *gfx_shader_load_input(const uint8_t iid[32], int xlate);
 // Boot prewarm: out[i] = gfx_shader_load_input(iids[i], 1) on `threads` threads with up to `procs` translators, then
 // every other stored input not cached under this translator is translated. Logs progress and the total.
 void gfx_shader_prewarm(const uint8_t (*iids)[32], size_t n, const GfxShader **out, int threads, int procs);
+// Starts an idle translator process in the background so cold shader translation does not pay process startup later.
+void gfx_shader_warmup_async(void);
 // Answers met in play: from this call on, every (program, answers) a gfx_shader_get* call resolves is appended
 // to shader-answers.bin, and its program to shader-programs.bin, in the directory of `keys_path` (pipeline-keys.bin).
 void gfx_shader_record_at(const char *keys_path);

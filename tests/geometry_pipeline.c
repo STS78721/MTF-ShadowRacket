@@ -95,7 +95,7 @@ static void load_shader(GfxShader *s, const char *dir, const char *name, int sta
 
 static void capabilities(void) {
     P.dyn_vi=1; P.indep=1;
-    P.f_geometry=P.f_vertex_stores=P.f_gs_point_size=P.f_clip=P.f_cull=1;
+    P.f_geometry=P.f_vertex_stores=P.f_gs_point_size=P.f_clip=P.f_cull=P.f_multi_viewport=1;
 #ifndef GEOMETRY_SUBGROUP_BASELINE
     P.subgroup_stages=VK_SHADER_STAGE_GEOMETRY_BIT;
     P.subgroup_operations=VK_SUBGROUP_FEATURE_BASIC_BIT|VK_SUBGROUP_FEATURE_VOTE_BIT|

@@ -72,6 +72,11 @@ static const char *switch_language(const char *tag) {
     // Bananza ships Portuguese only as Mals/USpt (the Americas), with no EUpt for plain "pt", so every Portuguese
     // locale, Portugal's included, asks for pt-BR; "pt" alone would fall back to English.
     if (!strcmp(lang, "pt") && game_profile_has(GAME_QUIRK_PT_BR)) return "pt-BR";
+    if (!strcmp(lang, "ru") && game_profile_has(GAME_QUIRK_NO_RU)) {
+        static int logged;
+        if (!logged) { logged = 1; rt_log("oe: language 'ru' is unsupported by this title; falling back to 'en-US'"); }
+        return "en-US";
+    }
     if (!strcmp(lang, "ja") || !strcmp(lang, "de") || !strcmp(lang, "it") || !strcmp(lang, "nl") ||
         !strcmp(lang, "ru") || !strcmp(lang, "ko") || !strcmp(lang, "pt"))
         return !strcmp(lang, "ja") ? "ja" : !strcmp(lang, "de") ? "de" : !strcmp(lang, "it") ? "it"
@@ -95,6 +100,11 @@ const char *ov_language(void) {
                                         "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR"};
     const char *code = cfg_get("TOTK_LANG");   // no fixed default: TOTK_LOCALE or the Windows user locale decides when unset
     if (code && *code) {
+        if (!strcmp(code, "ru") && game_profile_has(GAME_QUIRK_NO_RU)) {
+            static int logged;
+            if (!logged) { logged = 1; rt_log("oe: language 'ru' is unsupported by this title; falling back to 'en-US'"); }
+            return "en-US";
+        }
         if (!strcmp(code, "zh-CN")) return "zh-Hans";
         if (!strcmp(code, "zh-TW")) return "zh-Hant";
         for (size_t i = 0; i < sizeof codes / sizeof *codes; i++)

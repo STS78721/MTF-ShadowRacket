@@ -409,6 +409,23 @@ class BodyInputs(unittest.TestCase):
 
     def test_viewport_mask_write_is_the_one_explicit_output(self):
         self.assertEqual(self.replies['viewport_mask'], 'ok viewport_mask')
+        spv = args.out / 'viewport_mask.spv'
+        validation = subprocess.run([str(args.spirv_val), '--target-env', 'vulkan1.3', str(spv)],
+                                    capture_output=True, text=True, timeout=15)
+        (args.out / 'viewport_mask.val.log').write_text(validation.stdout + validation.stderr, encoding='utf-8')
+        self.assertEqual(validation.returncode, 0, validation.stdout + validation.stderr)
+        report = json.loads((args.out / 'viewport_mask.res.json').read_text(encoding='utf-8'))
+        self.assertEqual(report['geometry'], dict(
+            input_vertices=3, output_topology='triangle_strip', invocations=16,
+            max_output_vertices=3, passthrough=False, source_passthrough=True))
+        module = GeometrySpirv(spv.read_bytes())
+        capabilities = {operands[0] for op, operands in module.ops if op == 17}
+        modes = {(operands[1], tuple(operands[2:])) for op, operands in module.ops if op == 16}
+        builtins = {operands[2] for op, operands in module.ops if op == 71 and operands[1] == 11}
+        self.assertIn(57, capabilities)      # MultiViewport
+        self.assertIn((0, (16,)), modes)     # Invocations 16
+        self.assertIn((26, (3,)), modes)     # OutputVertices 3
+        self.assertTrue({8, 9, 10}.issubset(builtins))  # InvocationId, Layer, ViewportIndex
 
     def test_explicit_output_and_emit_remain_unsupported(self):
         for name in ('reject_ast', 'reject_viewport_two_words', 'reject_out'):

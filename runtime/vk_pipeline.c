@@ -81,7 +81,7 @@ static struct {
     int vs_outs_all;                   // TOTK_VS_OUTS: 0 union of paired fragment inputs, 1 (all) all 32 output locations
     int dyn_vi, dyn_clamp, dyn_poly, dyn_blend_en, dyn_blend_eq, dyn_wmask, dyn_a2c;
     int f_logic_op, f_depth_clamp, f_fill_non_solid, f_dual_src;
-    int f_geometry, f_tess, f_vertex_stores, f_gs_point_size, f_clip, f_cull;
+    int f_geometry, f_tess, f_vertex_stores, f_gs_point_size, f_clip, f_cull, f_multi_viewport;
     uint32_t smem_limit;
     int pv_last;                       // provokingVertexLast enabled: NVN's default is the last vertex
     VkShaderStageFlags sg32_stages;    // stages that accept requiredSubgroupSize = 32 (0: not available)
@@ -267,6 +267,7 @@ static int ensure_init(void) {
     P.f_gs_point_size = f2.features.shaderTessellationAndGeometryPointSize;
     P.f_clip = f2.features.shaderClipDistance;
     P.f_cull = f2.features.shaderCullDistance;
+    P.f_multi_viewport = f2.features.multiViewport;
 #define PROC(field, name) (P.field = (void *)vkGetDeviceProcAddr(c->device, name))
     PROC(push, "vkCmdPushDescriptorSetKHR");
     // Descriptor update templates (core 1.1; the push variant comes with VK_KHR_push_descriptor on 1.1): the driver
@@ -1760,6 +1761,7 @@ static int geometry_interface(const GfxShader *s, uint32_t storage, uint32_t ver
             }
         } else if (op == 17 && n == 2) {
             if ((a[0] == 24 && !P.f_gs_point_size) || (a[0] == 32 && !P.f_clip) || (a[0] == 33 && !P.f_cull) ||
+                (a[0] == 57 && !P.f_multi_viewport) ||
                 a[0] == 53 || a[0] == 54) goto done;       // transform feedback / geometry streams not supported here
         } else if (op == 220 || op == 221) goto done;    // stream emission needs a different contract
         else if (op == 73 || op == 74 || op == 75 || op == 332) goto done; // indirect decorations are not modeled
@@ -1938,7 +1940,8 @@ static const char *geometry_validate(const VkPipeState *s, const VkPhysicalDevic
         g->output > GFX_GEOMETRY_OUTPUT_TRIANGLE_STRIP) return "geometry input/stage contract differs from draw";
     if (g->version == GFX_GEOMETRY_PASSTHROUGH_VERSION &&
         (!s->fs || g->input != GFX_GEOMETRY_TRIANGLES || g->output != GFX_GEOMETRY_OUTPUT_TRIANGLE_STRIP ||
-         g->invocations != 1 || g->max_output_vertices != 3)) return "unsupported portable geometry contract";
+         (g->invocations != 1 && g->invocations != 16) || g->max_output_vertices != 3))
+        return "unsupported portable geometry contract";
     // VUID-VkGraphicsPipelineCreateInfo-shaderTessellationAndGeometryPointSize-08776
     // requires PointSize on every emitted point. A declaration is not proof of
     // those writes. Polygon-mode points can also consume last-stage PointSize
@@ -1962,11 +1965,16 @@ static const char *geometry_validate(const VkPipeState *s, const VkPhysicalDevic
     if (!geometry_subgroups(s->gs, gi.system_inputs)) return "unsupported geometry subgroup capability, operation or stage";
     uint64_t per_vertex = UINT64_C(1) | UINT64_C(1) << 1 | UINT64_C(1) << 3 | UINT64_C(1) << 4;
     uint64_t generated = (UINT64_C(1) << 7) | (UINT64_C(1) << 8); // PrimitiveId / InvocationId are not VS outputs
-    if ((gi.builtin_mask & ~(per_vertex | generated)) || (go.builtin_mask & ~per_vertex))
+    uint64_t per_view = (UINT64_C(1) << 9) | (UINT64_C(1) << 10); // Layer / ViewportIndex GS outputs
+    if ((gi.builtin_mask & ~(per_vertex | generated)) || (go.builtin_mask & ~(per_vertex | per_view)))
         return "geometry built-in outside the supported per-vertex subset";
     const uint64_t scalar_int = 2 | UINT64_C(32) << 8 | UINT64_C(1) << 16;
     for (unsigned i = 7; i <= 8; i++)
         if ((gi.builtin_mask >> i & 1) && gi.builtin[i] != scalar_int) return "geometry invocation/primitive ID type mismatch";
+    for (unsigned i = 9; i <= 10; i++)
+        if ((go.builtin_mask >> i & 1) && (go.builtin[i] != scalar_int || !(go.standalone_builtins >> i & 1)))
+            return "geometry layer/viewport output mismatch";
+    if ((go.builtin_mask >> 10 & 1) && !P.f_multi_viewport) return "device has no multiViewport";
     if (!geometry_per_vertex(&vo, limits) || !geometry_per_vertex(&gi, limits) || !geometry_per_vertex(&go, limits))
         return "geometry per-vertex built-in type/device limit";
     uint64_t distance_components = 0;

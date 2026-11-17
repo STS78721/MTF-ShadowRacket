@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 POSITIONS = [tuple(0x3e800001 + vertex * 32 + c for c in range(4)) for vertex in range(3)]
 COLORS = [tuple(0x3f000001 + vertex * 32 + c for c in range(4)) for vertex in range(3)]
 CASES = ('no_ast_r254', 'preserve_r254', 'guest_cannot_unmask', 'zero', 'one', 'never',
-         'predicated', 'predicated_inverse', 'helper_store', 'helper_guest_write', 'indexed')
+         'predicated', 'predicated_inverse', 'helper_store', 'helper_guest_write', 'indexed', 'multicast')
 
 
 def check_result(result, value, culled=False):
@@ -70,8 +70,8 @@ class ViewportState(unittest.TestCase):
             report = json.loads((args.out / (case + '.res.json')).read_text(encoding='utf-8'))
             cls.modules[case] = fixture.ScalarModule(spv.read_bytes(), report)
 
-    def run_case(self, case, predicate=0):
-        return self.modules[case].run(POSITIONS, COLORS, predicate)
+    def run_case(self, case, predicate=0, invocation_id=0):
+        return self.modules[case].run(POSITIONS, COLORS, predicate, invocation_id)
 
     def test_no_ast_guest_register_cannot_cull(self):
         check_result(self.run_case('no_ast_r254'), 0)
@@ -86,6 +86,16 @@ class ViewportState(unittest.TestCase):
     def test_initialized_zero_and_one_keep_body_and_color(self):
         check_result(self.run_case('zero'), fixture.VALUE, True)
         check_result(self.run_case('one'), fixture.VALUE)
+
+    def test_multicast_routes_active_invocations_and_culls_inactive_lanes(self):
+        for inv in range(16):
+            with self.subTest(invocation=inv):
+                active = bool((0x15 >> inv) & 1)
+                result = self.run_case('multicast', invocation_id=inv)
+                check_result(result, fixture.VALUE, not active)
+                expected_vp = [inv if active else 0] * 3
+                self.assertEqual(result['viewports'], expected_vp)
+                self.assertEqual(result['layers'], expected_vp)
 
     def test_predicated_updates_and_skipped_store_default(self):
         for case, inverted in (('predicated', False), ('predicated_inverse', True)):

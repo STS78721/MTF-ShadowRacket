@@ -12,7 +12,8 @@
 //          "sbuf_align": int, "subgroup": int }
 //   GS additionally requires "geometry_version": 1 and "gs_input": "points|lines|lines_adjacency|triangles|triangles_adjacency".
 //   Portable passthrough GS requires geometry_version 2 and gs_passthrough_skip: eight uint32 hardware skip words.
-//   Its initial subset is one triangle invocation, Position and whole user vec4 attributes, without explicit output writes.
+//   Its initial subset is one triangle invocation (or 16 multicast invocations when writing ViewportMask, emitting
+//   Layer and ViewportIndex per invocation), Position and whole user vec4 attributes, without explicit output writes.
 //   Geometry fields are rejected on other stages; ordinary GS retains geometry_version 1.
 //   Output: <out>/<key>.spv and <out>/<key>.res.json (bindings, queried slots, notes).
 using Ryujinx.Common.Memory;

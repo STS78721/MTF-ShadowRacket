@@ -15,6 +15,7 @@ enum {
     GAME_QUIRK_MKW_HEAP_FALLBACK= 1u << 2, // Wrap sead::ExpHeap::alloc / camera / delegate checks (MKW)
     GAME_QUIRK_MKW_VTABLES      = 1u << 3, // Patch ExpHeap / dispose guest vtables after init_array (MKW)
     GAME_QUIRK_TOTK_PATCH_RES   = 1u << 4, // Game uses TotK-style output/scene/aspect assembly patches
+    GAME_QUIRK_NO_RU            = 1u << 5, // Title disables "ru" in language table; fall back to en-US (MTF)
 };
 
 typedef struct {

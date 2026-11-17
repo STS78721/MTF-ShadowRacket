@@ -453,7 +453,7 @@ void res_live_snapshot(unsigned win_sz[2], unsigned crop_sz[2], unsigned out_tgt
 // ---- MTF internal frame resolution (NS2_RESOLUTION), same idea as MKW's GParam line counts.
 // Mario Tennis Fever picks a 16:9 frame in subsdk0 f_700205e8fc, then scale mode 1/2 at
 // *(*(0x7002560000+0xef0)) shrinks it (mode 2 -> 2/3). Stock docked ends at 1706x960.
-#define MTF_LINES_MAX 1440
+#define MTF_LINES_MAX 2160
 
 static int g_mtf_boot_lines = -1;
 static volatile uint32_t g_mtf_base_w, g_mtf_base_h, g_mtf_tgt_w, g_mtf_tgt_h;

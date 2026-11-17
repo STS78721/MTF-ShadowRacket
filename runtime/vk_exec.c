@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "game_profile.h"
 #include "host.h"
 #include "nvn_api.h"
 #include "nvn_tex.h"
@@ -418,6 +419,7 @@ static void resolve_rt(VkExec *ex) {
     ex->pass_ncolor = (uint32_t)last_color;
     ex->pass_samples = samples ? samples : 1;
     ex->pipe.samples = (uint8_t)ex->pass_samples;
+    ex->dirty |= VK_EXEC_DIRTY_DEPTH_BIAS;
 }
 
 // The attachment view of a target. A registered texture's view lives as long as its image (vk_exec_target_view); any
@@ -598,6 +600,17 @@ static int depth_needs_auto_clear(const VkExecTarget *d) {
     return bit ? (d->img->depth_cleared_mask & bit) != bit : 0;
 }
 
+// MTF's close-range 1024x1024 fmt 124 (and D24/D32) shadow maps can reside in guest memory (`bound`) with zeroed
+// pool bytes and zero initial clear while cold shaders/pipelines settle; clear once before first use to far depth
+// (1.0f) so GREATER compare never sees all-black 0.0f texels on court entry.
+static int mtf_unowned_shadow_needs_clear(const VkExec *ex, const VkExecTarget *d) {
+    if (ex->pass_ncolor > 1 || !d->image || !d->img || d->img->gpu_owned || d->img->depth_cleared_frame != 0 ||
+        !(d->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) || d->width != d->height || d->width < 512 || d->width > 8192)
+        return 0;
+    const RtGameProfile *gp = game_profile();
+    return gp && gp->short_name && !strcmp(gp->short_name, "mtf");
+}
+
 void vk_exec_pass_begin(VkExec *ex) {
     if (ex->in_pass) return;
     resolve_rt(ex);
@@ -605,22 +618,29 @@ void vk_exec_pass_begin(VkExec *ex) {
     // older init, or last frame's depths. LESS writes then fail against 0, and the GREATER sample of that
     // empty map leaves the court without silhouettes. Clear to the far of the depth range at most once per
     // frame/layer so multi-pass or split shadow rendering does not wipe earlier passes.
-    if (ex->pass_ncolor == 0 && !ex->pass_cleared && depth_needs_auto_clear(&ex->depth)) {
+    int private_auto = ex->pass_ncolor == 0 && !ex->pass_cleared && depth_needs_auto_clear(&ex->depth);
+    int shadow_init = !ex->pass_cleared && mtf_unowned_shadow_needs_clear(ex, &ex->depth);
+    if (private_auto || shadow_init) {
         float zfar = ex->depth_range[0] <= ex->depth_range[1] ? ex->depth_range[1] : ex->depth_range[0];
         VkClearDepthStencilValue v = {zfar, 0};
-        VkImageAspectFlags asp = ex->depth.aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+        VkImageAspectFlags asp = ex->depth.aspect &
+            (ex->pass_ncolor == 0 ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) : VK_IMAGE_ASPECT_DEPTH_BIT);
+        uint32_t clr_base = shadow_init && !private_auto ? 0 : ex->depth.base_layer;
+        uint32_t clr_layers = shadow_init && !private_auto && ex->depth.img->layers ? ex->depth.img->layers : ex->depth.layers;
         barrier_to(ex, NULL, NULL, 0);
-        VkImageSubresourceRange r = {asp, ex->depth.level, 1, ex->depth.base_layer, ex->depth.layers};
+        VkImageSubresourceRange r = {asp, ex->depth.level, 1, clr_base, clr_layers};
         vkCmdClearDepthStencilImage(ex->cb, ex->depth.image, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &r);
         ex->recorded++;
         ex->pass_cleared = 1;
         ex->pass_clear = zfar;
-        vk_exec_mark_depth_cleared(ex->depth.img, ex->depth.base_layer, ex->depth.layers);
+        vk_exec_mark_depth_cleared(ex->depth.img, clr_base, clr_layers);
         vk_texture_gpu_written(ex->depth.tex);
         static int logged;
         if (!logged) {
             logged = 1;
-            rt_log("vk: private depth-only pass cleared to far %.3f (%ux%u)", zfar, ex->depth.width, ex->depth.height);
+            rt_log("vk: %s depth pass cleared to far %.3f (%ux%u, layers=%u)",
+                   shadow_init && !private_auto ? "uninitialized shadow" : "private depth-only",
+                   zfar, ex->depth.width, ex->depth.height, clr_layers);
         }
     }
     // Learned targets (VkTexImage.fb_learned) are attached in the feedback layout

@@ -91,7 +91,7 @@ static void report_once(Mixer *m, unsigned bit, const char *msg, int value) {
 // How much audio the output waits for before it starts, and again after an underrun: TOTK_AUDIO_PREFILL_MS rounded up
 // to whole 5 ms render blocks. Returns -1 for a value outside 0..500 ms.
 static int prefill_blocks_for(const char *e) {
-    if (!e || !*e) return 4;
+    if (!e || !*e) return 7;
     char *end;
     double ms = strtod(e, &end);
     if (end == e || *end || !(ms >= 0) || ms > 500) return -1;
@@ -291,8 +291,8 @@ void audio_mixer_open(AudioRenderer *r) {
     const char *pe = cfg_get("TOTK_AUDIO_PREFILL_MS");
     m->prefill = prefill_blocks_for(pe);
     if (m->prefill < 0) {
-        rt_log("audio: TOTK_AUDIO_PREFILL_MS=%s is not 0..500 ms: using 20", pe);
-        m->prefill = 4;
+        rt_log("audio: TOTK_AUDIO_PREFILL_MS=%s is not 0..500 ms: using 35", pe);
+        m->prefill = 7;
     }
     r->mixer = m;
     atomic_store(&m->playing, r->state == 0);

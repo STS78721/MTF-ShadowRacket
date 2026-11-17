@@ -140,7 +140,7 @@ static const CfgMeta metas[] = {
     {"UPSCALER_PRESET", "quality", "native|ultra_quality|quality|balanced|performance|ultra_performance", LIVE},
     {"REFLEX", "boost", "off|on|boost", LIVE},
     {"LOW_LATENCY", "boost", "auto|boost|on|off", LIVE},
-    {"FRAME_GEN", "1", "0|1", LIVE},
+    {"FRAME_GEN", "0", "0|1", LIVE},
     {"FG_MODE", "off", "off|msm_fg|fsr3_fg|xefg", LIVE},
     {"FG_MULT", "2x", "2x|3x|4x|6x", LIVE},
     {"FG_TYPE", "fixed", "fixed|adaptive", LIVE},

@@ -404,10 +404,11 @@ static void fg_apply_locked(void) {
     VkCtx *c = vk_ctx();
     if (!c) return;
     const char *mode = cfg_value("DKB_FG_MODE");
+    const char *explicit_mode = cfg_get("DKB_FG_MODE");
     const char *mult_s = cfg_value("DKB_FG_MULT");
     if (!mode || !*mode || !strcmp(mode, "off")) {
-        const char *fg_en = cfg_value("DKB_FRAME_GEN");
-        if (!fg_en || !*fg_en) fg_en = cfg_value("TOTK_FRAME_GEN");
+        const char *fg_en = (!explicit_mode || !*explicit_mode) ? cfg_value("DKB_FRAME_GEN") : NULL;
+        if ((!fg_en || !*fg_en) && (!explicit_mode || !*explicit_mode)) fg_en = cfg_value("TOTK_FRAME_GEN");
         if (fg_en && (!strcmp(fg_en, "1") || !strcmp(fg_en, "on"))) {
             mode = "msm_fg";
         } else {

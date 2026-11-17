@@ -2624,7 +2624,23 @@ static void record_fixed(VkExec *ex) {
         ex->recorded++;
     }
     if (ex->dirty & VK_EXEC_DIRTY_DEPTH_BIAS) {
-        vkCmdSetDepthBias(cb, ex->poly_offset.units, ex->poly_offset.clamp, ex->poly_offset.factor);
+        float units = ex->poly_offset.units;
+        VkCtx *vc = vk_ctx();
+        int force_unorm = vc && vc->has_depth_bias_control && vc->cmd_set_depth_bias2;
+        int nvn_d24 = ex->depth.nvn_format == NVN_FORMAT_DEPTH24 || ex->depth.nvn_format == NVN_FORMAT_DEPTH24_STENCIL8;
+        int d32_standin = ex->depth.format == VK_FORMAT_D32_SFLOAT || ex->depth.format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+        if (!force_unorm && nvn_d24 && d32_standin && units != 0.0f) {
+            // Orchid UpdateDepthBiasState: without VK_EXT_depth_bias_control FORCE_UNORM, D32_SFLOAT scales constant
+            // bias by 2^(exp(max_z)-23) instead of D24's 1/(2^24-1); rescale D24-authored units for [0,1] D32F.
+            const double rescale = (double)(1ull << (32 - 24)) / 0x1.ep+127;
+            units = (float)((double)units * rescale);
+            static int logged;
+            if (!logged) {
+                logged = 1;
+                rt_log("vk: D24->D32F constant depth bias rescaled (no FORCE_UNORM)");
+            }
+        }
+        vkCmdSetDepthBias(cb, units, ex->poly_offset.clamp, ex->poly_offset.factor);
         ex->recorded++;
     }
     if (ex->dirty & VK_EXEC_DIRTY_BLEND_CONST) {
@@ -3124,7 +3140,10 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     static uint64_t oneshot_left_ns;
     int oneshot = -1, skip = pipe_skip_mode();   // -1: not looked up
     if (vs_wait || fs_wait || gs_wait || tcs_wait || tes_wait) {
-        if (!(oneshot = !vk_exec_targets_recent(ex, skip >= 1))) return perf_count(PERF_CNT_SHADER_SKIP), 0;   // skipped until ready
+        int shadow_pass = ex->depth.image && ex->pass_ncolor <= 1 &&
+                          ex->depth.width == ex->depth.height && ex->depth.width >= 512;
+        if (!(oneshot = shadow_pass || !vk_exec_targets_recent(ex, skip >= 1)))
+            return perf_count(PERF_CNT_SHADER_SKIP), 0;   // skipped until ready
         uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         if (f != oneshot_frame) oneshot_frame = f, oneshot_left_ns = 150000000;
         if (oneshot_left_ns < 1000000) return perf_count(PERF_CNT_SHADER_SKIP), 0;

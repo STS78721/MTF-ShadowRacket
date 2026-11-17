@@ -1,3 +1,31 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/ShaderDefinitions.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ShaderDefinitions.cs
+@@ -209,6 +209,11 @@
+         public void EnableOutputIndexing()
+         {
+             OaIndexing = true;
+         }
++
++        public void SetThreadsPerInputPrimitive(int threadsPerInputPrimitive)
++        {
++            ThreadsPerInputPrimitive = threadsPerInputPrimitive;
++        }
+ 
+         public bool TryGetTransformFeedbackOutput(IoVariable ioVariable, int location, int component, out TransformFeedbackOutput transformFeedbackOutput)
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
+@@ -83,6 +83,11 @@
+             {
+                 context.AddCapability(Capability.Geometry);
+ 
++                if (context.Info.IoDefinitions.Contains(new IoDefinition(StorageKind.Output, IoVariable.ViewportIndex)))
++                {
++                    context.AddCapability(Capability.MultiViewport);
++                }
++
+                 if (parameters.Definitions.GpPassthrough && context.HostCapabilities.SupportsGeometryShaderPassthrough)
+                 {
+                     context.AddExtension("SPV_NV_geometry_shader_passthrough");
 --- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
 +++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
 @@ -197,6 +197,15 @@
@@ -16,7 +44,7 @@
          public void SetGeometryPassthroughAttributes(int mask)
          {
              if (Stage != ShaderStage.Geometry || !Definitions.GpPassthrough ||
-@@ -206,15 +215,18 @@
+@@ -206,15 +215,20 @@
              }
  
              // AST includes fixed builtins and physical/per-patch writes. OUT includes emission and cuts.
@@ -39,8 +67,10 @@
 +                if (op.Name == InstName.Ast) ExplicitGeometryViewportMask = true;
              }
  
++            if (ExplicitGeometryViewportMask) Definitions.SetThreadsPerInputPrimitive(16);
++
              AttributeUsage.SetGeometryPassthroughAttributes(mask);
-@@ -412,6 +424,8 @@
+@@ -412,6 +426,8 @@
          {
              ResourceManager resourceManager = new(Definitions.Stage, GpuAccessor, GetResourceReservations());
  
@@ -66,25 +96,68 @@
                  foreach (Block block in function.Blocks)
 --- a/src/Ryujinx.Graphics.Shader/Translation/EmitterContext.cs
 +++ b/src/Ryujinx.Graphics.Shader/Translation/EmitterContext.cs
-@@ -365,6 +365,18 @@
+@@ -360,11 +360,20 @@
+             else if (TranslatorContext.Definitions.Stage == ShaderStage.Geometry)
+             {
+-                void WritePositionOutput(int primIndex)
++                void WritePositionOutput(int primIndex, Operand culled)
+                 {
+                     Operand x = this.Load(StorageKind.Input, IoVariable.Position, Const(primIndex), Const(0));
                      Operand y = this.Load(StorageKind.Input, IoVariable.Position, Const(primIndex), Const(1));
                      Operand z = this.Load(StorageKind.Input, IoVariable.Position, Const(primIndex), Const(2));
                      Operand w = this.Load(StorageKind.Input, IoVariable.Position, Const(primIndex), Const(3));
-+
-+                    if (TranslatorContext.ExplicitGeometryViewportMask)
+ 
++                    if (culled != null)
 +                    {
-+                        // A viewport mask of 0 selects no viewport. Without the NV extension the primitive is moved outside the
-+                        // clip volume, as in Eglantine's translate_program.cpp, EmitGeometryPassthrough.
-+                        Operand mask = this.Load(StorageKind.LocalMemory, ResourceManager.GeometryViewportMaskMemoryId);
-+                        Operand culled = this.ICompareEqual(mask, Const(0));
++                        // Inactive multicast invocations are moved outside the clip volume, as in Orchid's EmitGeometryPassthrough.
 +                        x = this.ConditionalSelect(culled, ConstF(2.0f), x);
 +                        y = this.ConditionalSelect(culled, ConstF(2.0f), y);
 +                        z = this.ConditionalSelect(culled, ConstF(2.0f), z);
 +                        w = this.ConditionalSelect(culled, ConstF(1.0f), w);
 +                    }
- 
++
                      this.Store(StorageKind.Output, IoVariable.Position, null, Const(0), x);
                      this.Store(StorageKind.Output, IoVariable.Position, null, Const(1), y);
+@@ -388,5 +397,17 @@
+                 if (TranslatorContext.Definitions.GpPassthrough && !TranslatorContext.GpuAccessor.QueryHostSupportsGeometryShaderPassthrough())
+                 {
++                    Operand culled = null;
++                    Operand viewport = null;
++                    if (TranslatorContext.ExplicitGeometryViewportMask)
++                    {
++                        // NV_viewport_array2 passthrough multicasts across 16 invocations; inactive bits cull outside clip space.
++                        Operand mask = this.Load(StorageKind.LocalMemory, ResourceManager.GeometryViewportMaskMemoryId);
++                        Operand invocationId = this.Load(StorageKind.Input, IoVariable.InvocationId);
++                        Operand bit = this.BitwiseAnd(this.ShiftRightU32(mask, invocationId), Const(1));
++                        culled = this.ICompareEqual(bit, Const(0));
++                        viewport = this.ConditionalSelect(culled, Const(0), invocationId);
++                    }
++
+                     int inputStart, inputEnd, inputStep;
+ 
+                     InputTopology topology = TranslatorContext.Definitions.InputTopology;
+@@ -413,14 +434,20 @@
+                     for (int primIndex = inputStart; primIndex < inputEnd; primIndex += inputStep)
+                     {
+-                        WritePositionOutput(primIndex);
++                        WritePositionOutput(primIndex, culled);
+ 
+                         int passthroughAttributes = TranslatorContext.AttributeUsage.PassthroughAttributes;
+                         while (passthroughAttributes != 0)
+                         {
+                             int index = BitOperations.TrailingZeroCount(passthroughAttributes);
+                             WriteUserDefinedOutput(index, primIndex);
+                             passthroughAttributes &= ~(1 << index);
+                         }
+ 
++                        if (viewport != null)
++                        {
++                            this.Store(StorageKind.Output, IoVariable.ViewportIndex, null, viewport);
++                            this.Store(StorageKind.Output, IoVariable.Layer, null, viewport);
++                        }
++
+                         this.EmitVertex();
+                     }
 --- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAttribute.cs
 +++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAttribute.cs
 @@ -132,6 +132,13 @@

@@ -812,7 +812,7 @@ class MTFLauncherApp(tk.Tk):
         c2.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
         notes = [
             ("Zero-Config Baseline", "Starts cleanly at 1920x1080 Windowed, Original internal (~960p), FSR sharpness 80, Frame Gen Off, 60 FPS."),
-            ("Internal Scaling Ready", "Supports Original (~960p), 720p, 900p, 1080p, and 1440p — switch cleanly anytime before launch or in-game (F1)."),
+            ("Internal Scaling Ready", "Supports Original (~960p), 720p, 900p, 1080p, 1440p, and 2160p (4K) — switch cleanly anytime before launch or in-game (F1)."),
             ("No Personal Settings Bundled", "Your mtf.ini and saves stay strictly local on your PC; updates never overwrite them."),
             ("Controls", "Supports Xbox, DualSense, Nintendo Switch / Switch 2 Pro controllers, plus Keyboard."),
         ]
@@ -1065,7 +1065,7 @@ class MTFLauncherApp(tk.Tk):
 
         left = self._card(cols, "DISPLAY & RESOLUTION")
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
-        self._combo_row(left, "Internal Resolution", "resolution", ["original", "720", "900", "1080", "1440"],
+        self._combo_row(left, "Internal Resolution", "resolution", ["original", "720", "900", "1080", "1440", "2160"],
                         hint="original = 1706x960 (default). Higher values use more GPU fillrate.")
         self._combo_row(left, "Output / Window Size", "output_res",
                         ["1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160"])

@@ -33,6 +33,7 @@ static int g_font_bad;
 #pragma clang diagnostic pop
 #include "ui/binds_page.h"
 #include "ui/option_rows.h"
+#include "game_profile.h"
 #include "ui/theme.h"
 
 extern "C" {
@@ -529,16 +530,21 @@ static void row_game_lang(void) {
     };
     enum { N = sizeof langs / sizeof *langs + 1 };
     const char *vals[N], *names[N];
-    vals[0] = "";
-    names[0] = menu_text(UI_MENU_GAME_LANG_AUTO);
+    int n = 0;
+    vals[n] = "";
+    names[n] = menu_text(UI_MENU_GAME_LANG_AUTO);
+    n++;
     const char *now = cfg_value("NS2_LANG");
     int cur = *now ? -1 : 0;
-    for (int i = 1; i < N; i++) {
-        vals[i] = langs[i - 1].code;
-        names[i] = menu_text(langs[i - 1].name);
-        if (*now && !strcmp(ui_text_lang(now), ui_text_lang(vals[i]))) cur = i;   // en-GB is English too
+    int skip_ru = game_profile_has(GAME_QUIRK_NO_RU);
+    for (int i = 0; i < (int)(sizeof langs / sizeof *langs); i++) {
+        if (skip_ru && !strcmp(langs[i].code, "ru")) continue;
+        vals[n] = langs[i].code;
+        names[n] = menu_text(langs[i].name);
+        if (*now && !strcmp(ui_text_lang(now), ui_text_lang(vals[n]))) cur = n;   // en-GB is English too
+        n++;
     }
-    opt_choice_list("NS2_LANG", UI_MENU_GAME_LANG, vals, names, N, UI_MENU_GAME_LANG_DESC, cur);
+    opt_choice_list("NS2_LANG", UI_MENU_GAME_LANG, vals, names, n, UI_MENU_GAME_LANG_DESC, cur);
 }
 
 // The frame limit (frame_rate.c): full unlocked Switch 2 PC rates up to 240 Hz or Monitor Match.
@@ -647,9 +653,7 @@ static void tab_graphics(float scale) {
     {
         static const char *const vals[] = {"original", "720", "900", "1080", "1440", "2160"};
         const char *names[] = {menu_text(UI_MENU_RESOLUTION_ORIGINAL), "720p", "900p", "1080p", "1440p", "2160p (4K)"};
-        const RtGameProfile *gp = game_profile();
-        int nres = (gp && gp->short_name && !strcmp(gp->short_name, "mtf")) ? 5 : 6;
-        opt_choice_list("NS2_RESOLUTION", UI_MENU_RESOLUTION, vals, names, nres, UI_MENU_RESOLUTION_DESC);
+        opt_choice_list("NS2_RESOLUTION", UI_MENU_RESOLUTION, vals, names, 6, UI_MENU_RESOLUTION_DESC);
     }
     {
         static const char *const vals[] = {"game", "2", "4", "8", "16"};

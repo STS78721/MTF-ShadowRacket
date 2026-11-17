@@ -375,6 +375,7 @@ static void prewarm_main(void *arg) {
         int cpus = (int)plat_cpu_usable();
         gfx_shader_prepare_recorded(cpus, cpus / 2 > 16 ? 16 : cpus / 2 < 1 ? 1 : cpus / 2);
     }
+    if (!rt_config()->shot) gfx_shader_warmup_async();
     return;
 }
 

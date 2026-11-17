@@ -401,6 +401,18 @@ static void child_stop(Svc *v) {
     v->in_len = 0;
 }
 
+static PlatOnce shadow_ref_once = PLAT_ONCE_INIT;
+static void init_shadow_ref(void *arg) {
+    (void)arg;
+    // TotK's sun cascades are D16, and AMD compares a full-float reference, so those references are snapped to
+    // 16-bit. Mario Tennis Fever's cascades are D24: the same snap is coarser than the map and the bias, and every
+    // receiver fails (blue court, no silhouette). The translator reads this before it emits the compare.
+    const RtGameProfile *gp = game_profile();
+    int d16 = gp->short_name && !strcmp(gp->short_name, "totk");
+    plat_setenv("NS2_SHADOW_D16", d16 ? "1" : NULL);
+    rt_log("gfx_shader: array shadow compare reference %s", d16 ? "snapped to 16-bit" : "full precision");
+}
+
 static int child_start(Svc *v) {
     paths();
     if (!xlate_exe[0] || !file_exists(xlate_exe)) {
@@ -408,17 +420,7 @@ static int child_start(Svc *v) {
         return 0;
     }
     uint32_t err = 0;
-    // TotK's sun cascades are D16, and AMD compares a full-float reference, so those references are snapped to
-    // 16-bit. Mario Tennis Fever's cascades are D24: the same snap is coarser than the map and the bias, and every
-    // receiver fails (blue court, no silhouette). The translator reads this before it emits the compare.
-    static int shadow_ref;
-    if (!shadow_ref) {
-        shadow_ref = 1;
-        const RtGameProfile *gp = game_profile();
-        int d16 = gp->short_name && !strcmp(gp->short_name, "totk");
-        plat_setenv("NS2_SHADOW_D16", d16 ? "1" : NULL);
-        rt_log("gfx_shader: array shadow compare reference %s", d16 ? "snapped to 16-bit" : "full precision");
-    }
+    plat_once(&shadow_ref_once, init_shadow_ref, NULL);
     v->child = plat_child_start(xlate_exe, "--serve", &err);
     if (!v->child) {
         rt_log("gfx_shader: cannot start %s (error %lu)", xlate_exe, (unsigned long)err);
@@ -872,7 +874,8 @@ static int geometry_json(const char *js, const char *end, GfxShaderGeometry *g, 
     const char *src = json_member(o, oe, "source_passthrough");
     if (g->version == GFX_GEOMETRY_PASSTHROUGH_VERSION) {
         if (!src || src == oe || oe - src < 4 || memcmp(src, "true", 4) || !geometry_skip_json(js, end, skip) ||
-            g->input != GFX_GEOMETRY_TRIANGLES || g->input_vertices != 3 || g->invocations != 1 ||
+            g->input != GFX_GEOMETRY_TRIANGLES || g->input_vertices != 3 ||
+            (g->invocations != 1 && g->invocations != 16) ||
             g->max_output_vertices != 3 || g->output != GFX_GEOMETRY_OUTPUT_TRIANGLE_STRIP) return 0;
         *source = 1;
     } else if (src || json_member(js, end, "gs_passthrough_skip")) return 0;
@@ -2538,9 +2541,17 @@ static int req_init(Req *r, int stage, const uint8_t *control, const uint8_t *co
     return 1;
 }
 
+static int geometry_matches_request(const GfxShaderGeometry *s, const GfxShaderGeometry *r, int lowered_passthrough) {
+    if (s->version != r->version || s->input != r->input || s->input_vertices != r->input_vertices ||
+        s->output != r->output || s->max_output_vertices != r->max_output_vertices || s->passthrough != r->passthrough)
+        return 0;
+    if (s->invocations == r->invocations) return 1;
+    return lowered_passthrough && r->invocations == 1 && s->invocations == 16;
+}
+
 static int shader_matches_request(const GfxShader *s, const Req *r) {
     return s->stage == r->stage && (r->stage != GFX_STAGE_GS ||
-        (!memcmp(&s->geometry, &r->geometry, sizeof r->geometry) &&
+        (geometry_matches_request(&s->geometry, &r->geometry, r->lowered_body && r->geometry_source_passthrough) &&
          s->geometry_source_passthrough == r->geometry_source_passthrough &&
          !memcmp(s->geometry_skip, r->geometry_skip, sizeof r->geometry_skip)));
 }
@@ -3155,6 +3166,22 @@ void gfx_shader_prewarm(const uint8_t (*iids)[32], size_t n, const GfxShader **o
            (unsigned long long)((uint64_t)n_failures - fail0), procs, k, (double)plat_now_ms() - t0);
     free(w.other);
 }
+
+static void child_warmup_worker(void *arg) {
+    (void)arg;
+    paths();
+    if (!xlate_exe[0] || !file_exists(xlate_exe)) return;
+    Svc *v = svc_get();
+    if (!v->child) child_start(v);
+    svc_put(v);
+}
+
+void gfx_shader_warmup_async(void) {
+    static volatile int32_t started;
+    if (plat_xchg32(&started, 1)) return;
+    plat_thread_spawn(child_warmup_worker, NULL, "xlate-warm", 0);
+}
+
 const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words) {
     if (words) *words = s->words;
     return s->spirv;

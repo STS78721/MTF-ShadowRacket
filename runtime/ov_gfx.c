@@ -6,7 +6,9 @@
 //   nn::vi::*    display, layer and native window identities; the vsync event is bound here
 //   nvnBootstrapLoader   the end of --boot (rt_boot_event "nvn"); otherwise the synthetic address of an NVN proc (nvn_procs.c)
 #include <stdint.h>
+#include <string.h>
 
+#include "game_profile.h"
 #include "gfx.h"
 #include "host.h"
 #include "ov.h"
@@ -82,7 +84,32 @@ static void ov_open_display(Cpu *c) {
 }
 
 // Result nn::vi::CreateLayer(Layer **out, Display *display)
+static void mtf_promote_max_framebuffer(Cpu *c) {
+    const RtGameProfile *gp = game_profile();
+    if (!gp || !gp->short_name || strcmp(gp->short_name, "mtf") != 0) return;
+    uint32_t tw = 0, th = 0;
+    res_mtf_size(&tw, &th);
+    uint64_t out_addr = arg_x(c, 0);
+    if (th <= 1440 || out_addr <= 0xe8ull) return;
+    uint64_t self = out_addr - 0xe8ull;
+    if (!plat_mem_readable(self + 0x108ull, 8)) return;
+    uint32_t *self_w = (uint32_t *)(uintptr_t)(self + 0x108ull);
+    uint32_t *self_h = (uint32_t *)(uintptr_t)(self + 0x10cull);
+    if (*self_w != 2560u || *self_h != 1440u) return;
+    *self_w = tw;
+    *self_h = th;
+    static const uint64_t got_addrs[4] = {0x700255ede8ull, 0x700255edf0ull, 0x7002560a30ull, 0x7002560468ull};
+    const uint32_t vals[4] = {tw, th, tw / 2u, th / 2u};
+    for (int i = 0; i < 4; i++) {
+        if (!plat_mem_readable(got_addrs[i], 8)) continue;
+        uint64_t ptr = *(const uint64_t *)(uintptr_t)got_addrs[i];
+        if (ptr && plat_mem_readable(ptr, 4)) *(uint32_t *)(uintptr_t)ptr = vals[i];
+    }
+    rt_log("resolution: MTF max framebuffer promoted 2560x1440 -> %ux%u", tw, th);
+}
+
 static void ov_create_layer(Cpu *c) {
+    mtf_promote_max_framebuffer(c);
     void **out = arg_p(c, 0);
     if (!out || !vi_up() || arg_p(c, 1) != display) { ret_x(c, VI_R_INVALID); return; }
     *out = layer;
@@ -146,7 +173,7 @@ static void ov_display_max_res(Cpu *c) {
     int32_t *out = arg_p(c, 0);
     unsigned wh[2] = {1920, 1080};
     res_display_size(wh);
-    if (out) { out[0] = (int32_t)wh[0]; out[1] = (int32_t)wh[1]; }
+    if (out) *out = wh[1] >= 2160 ? 3 : wh[1] >= 1440 ? 2 : wh[1] >= 1080 ? 1 : 0;
     ret_x(c, 0);
 }
 static void ov_vi_void(Cpu *c) { (void)c; }
