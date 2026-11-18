@@ -44,12 +44,9 @@ from mtf_dump import (
 APP_TITLE = "MTF ShadowRacket"
 APP_SUBTITLE = "Mario Tennis Fever  ·  Native Windows PC Recompilation"
 DEFAULT_VERSION = "Alpha 0.1.3b"
-GITLAB_URL = "https://gitlab.com/steeltemplesaint-recomps/MTF-ShadowRacket"
-RELEASES_URL = GITLAB_URL + "/-/releases"
-RELEASES_API_URL = (
-    "https://gitlab.com/api/v4/projects/steeltemplesaint-recomps%2FMTF-ShadowRacket"
-    "/releases/permalink/latest"
-)
+GITHUB_URL = "https://github.com/STS78721/MTF-ShadowRacket"
+RELEASES_URL = GITHUB_URL + "/releases"
+RELEASES_API_URL = "https://api.github.com/repos/STS78721/MTF-ShadowRacket/releases/latest"
 UPDATE_SKIP_TOP = {
     "exefs",
     "romfs",
@@ -781,7 +778,7 @@ class MTFLauncherApp(tk.Tk):
         upd.pack(fill=tk.X, pady=(14, 0))
         self.update_status = tk.Label(
             upd,
-            text="Checking GitLab Releases…",
+            text="Checking GitHub Releases…",
             font=("Segoe UI", 9),
             fg=C_TEXT_DIM,
             bg=C_PANEL,
@@ -1796,23 +1793,24 @@ class MTFLauncherApp(tk.Tk):
         self.release_check_active = True
         self.update_action_btn.pack_forget()
         self.release_btn.pack_forget()
-        self.update_status.config(text="Checking GitLab Releases…", fg=C_TEXT_DIM)
+        self.update_status.config(text="Checking GitHub Releases…", fg=C_TEXT_DIM)
         threading.Thread(target=self._check_release_worker, daemon=True).start()
 
     def _check_release_worker(self) -> None:
         try:
             req = urllib.request.Request(
                 RELEASES_API_URL,
-                headers={"Accept": "application/json", "User-Agent": "MTFLauncher"},
+                headers={"Accept": "application/vnd.github+json", "User-Agent": "MTFLauncher"},
             )
             with urllib.request.urlopen(req, timeout=12) as r:
                 data = json.loads(r.read().decode("utf-8"))
             tag = (data.get("tag_name") or "").strip()
             title = (data.get("name") or tag or "Latest MTF ShadowRacket release").strip()
-            page = (data.get("_links") or {}).get("self") or f"{GITLAB_URL}/-/releases/{tag}" or RELEASES_URL
+            page = data.get("html_url") or (f"{GITHUB_URL}/releases/tag/{tag}" if tag else RELEASES_URL)
             if not tag:
                 raise ValueError("The latest release did not include a version tag.")
-            assets = (data.get("assets") or {}).get("links") or data.get("assets") or []
+            raw_assets = data.get("assets") or []
+            assets = raw_assets.get("links") or [] if isinstance(raw_assets, dict) else raw_assets
             tag_clean = tag.replace("-", "").replace(".", "")
             candidates = [
                 f"SteelTemple-MTF-ShadowRacket-{tag}-Update.zip",
@@ -1838,7 +1836,7 @@ class MTFLauncherApp(tk.Tk):
                     None,
                 )
             asset_name = asset.get("name") if asset else None
-            asset_url = (asset.get("url") or asset.get("browser_download_url")) if asset else None
+            asset_url = (asset.get("browser_download_url") or asset.get("url")) if asset else None
             self.after(0, lambda: self._show_release_result(tag, title, page, asset_url, asset_name))
         except Exception as exc:
             detail = str(exc)
@@ -1912,7 +1910,7 @@ class MTFLauncherApp(tk.Tk):
         self.update_in_progress = True
         self._auto_installing = bool(auto)
         self.update_action_btn.config(state=tk.DISABLED, text="DOWNLOADING UPDATE…")
-        self.update_status.config(text="Connecting to GitLab Releases…", fg=C_TEXT_DIM)
+        self.update_status.config(text="Connecting to GitHub Releases…", fg=C_TEXT_DIM)
         threading.Thread(target=self._download_update_worker, args=(self.latest_release.copy(),), daemon=True).start()
 
     def _download_update_worker(self, release: dict) -> None:

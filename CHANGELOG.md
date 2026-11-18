@@ -66,14 +66,14 @@ This update pairs the complete Mario Tennis Fever 1.1.1 native runtime, internal
 
 ## MTF-ShadowRacket Alpha 0.1.2
 
-This hotfix streamlines setup for update-only and NUP-only Mario Tennis Fever 1.1.1 dumps: complete update trees verify and build without requiring a separate base folder, while base+update overlays apply automatically when both are present. MTFLauncher also checks GitLab Releases and can install updates directly.
+This hotfix streamlines setup for update-only and NUP-only Mario Tennis Fever 1.1.1 dumps: complete update trees verify and build without requiring a separate base folder, while base+update overlays apply automatically when both are present. MTFLauncher also checks GitHub Releases and can install updates directly.
 
 ■ Major Updates
 
 - Update-only ExeFS and `.nup` dumps verify directly without requiring a separate base folder when all modules are present.
 - `tools/extract_nup.py --overlay-update` overlays a matching-title base when present, or extracts the update package on its own.
 - Clearer missing-module error messages (such as `subsdk0`) during dump verification.
-- MTFLauncher checks GitLab Releases and can download and install `SteelTemple-MTF-ShadowRacket-*-Update.zip` automatically.
+- MTFLauncher checks GitHub Releases and can download and install `SteelTemple-MTF-ShadowRacket-*-Update.zip` automatically.
 
 ■ Bug Fixes
 
