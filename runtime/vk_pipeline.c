@@ -1933,9 +1933,12 @@ static const char *geometry_validate(const VkPipeState *s, const VkPhysicalDevic
         }
         return NULL;
     }
+    uint8_t g_in = (g && g->version == GFX_GEOMETRY_PASSTHROUGH_VERSION && s->prim == NVN_DRAW_PRIMITIVE_QUADS)
+                       ? GFX_GEOMETRY_TRIANGLES
+                       : vk_geometry_input(s->prim);
     if (!g ||
         (g->version != GFX_GEOMETRY_VERSION && g->version != GFX_GEOMETRY_PASSTHROUGH_VERSION) || g->passthrough ||
-        !vk_geometry_input(s->prim) || vk_geometry_input(s->prim) != g->input ||
+        !g_in || g_in != g->input ||
         g->input_vertices != input_vertices[g->input] || g->output < GFX_GEOMETRY_OUTPUT_POINTS ||
         g->output > GFX_GEOMETRY_OUTPUT_TRIANGLE_STRIP) return "geometry input/stage contract differs from draw";
     if (g->version == GFX_GEOMETRY_PASSTHROUGH_VERSION &&
@@ -2445,8 +2448,10 @@ static void gkey_fill(const VkPipeState *s, GKey *k) {
     k->vs = s->vs, k->fs = s->fs, k->gs = s->gs, k->tcs = s->tcs, k->tes = s->tes;
     k->indep = (s->gs || s->tcs || s->tes) ? 0 : (uint8_t)P.indep;
     const GfxShaderGeometry *g = s->gs ? gfx_shader_geometry(s->gs) : NULL;
-    uint8_t gi = (s->gs_prepared && s->prim == NVN_DRAW_PRIMITIVE_QUADS) ? GFX_GEOMETRY_TRIANGLES
-                                                                        : vk_geometry_input(s->prim);
+    uint8_t gi = ((s->gs_prepared || (g && g->version == GFX_GEOMETRY_PASSTHROUGH_VERSION)) &&
+                  s->prim == NVN_DRAW_PRIMITIVE_QUADS)
+                     ? GFX_GEOMETRY_TRIANGLES
+                     : vk_geometry_input(s->prim);
     k->geometry_input = s->gs ? ((s->tcs || s->tes) ? (g && g->input ? g->input : GFX_GEOMETRY_TRIANGLES) : gi) : 0;
     k->patch_size = s->patch_size ? (uint8_t)s->patch_size : 3;
     k->gs_passthrough = s->gs_passthrough;

@@ -2972,8 +2972,9 @@ static int geometry_draw(VkExec *ex, uint32_t prim) {
         uint32_t len, flen, sph[5];
         if (!find_stage(ex->prog, NVN_STAGE_GS, &ctl, &code, &len)) return 0;
         if (nvn2_origin(code)) {
+            uint8_t gi = prim == NVN_DRAW_PRIMITIVE_QUADS ? GFX_GEOMETRY_TRIANGLES : vk_geometry_input(prim);
             if (len < 0x30 + 0x60 || !find_stage(ex->prog, NVN_STAGE_FS, &fctl, &fcode, &flen) ||
-                vk_geometry_input(prim) != GFX_GEOMETRY_TRIANGLES) return 0;
+                gi != GFX_GEOMETRY_TRIANGLES) return 0;
             memcpy(sph, code + 0x30, sizeof sph);
             if (!(sph[0] & (1u << 24)) || sph[2] >> 24 != 1 || (sph[3] >> 24 & 15) != 7 || (sph[4] & 0xfff) != 1) {
                 warn_once(W_GEOMETRY, "native GS: a stage outside the passthrough subset keeps the vertex and fragment path");

@@ -1,5 +1,31 @@
 ﻿# Changelog
 
+## MTF-ShadowRacket Alpha 0.1.4
+
+This update fixes the persistent blue/cyan tint ("blue filter") seen across 3D courts and characters on end-user release installs, and fixes **MTFLauncher**'s built-in auto-updater so future releases download, apply, clean up, and restart reliably.
+
+■ Major Updates
+
+- Implemented single-invocation explicit `gl_Layer` (`0x64`) lowering in `ns2_xlate` and quad-to-triangle promotion for native passthrough geometry shaders in Vulkan draw execution and pipeline validation, restoring accurate 64-slice 3D atmospheric fog LUT generation on every GPU and clean release install.
+- Rebuilt **MTFLauncher**'s self-updater with reliable hidden PowerShell execution, UTF-8 BOM script handling for accented paths, Windows long-path (`\\?\`) support, delta staging, atomic file swaps with lock retries and rollback, `logs\update.log` diagnostics, automatic stale `.mtf-update-*` cleanup, and anti-loop failure recovery.
+
+■ Bug Fixes
+
+- Fixed the blue/cyan color filter over courts, stadiums, and characters on clean release installs where the 3D aerial-perspective fog LUT geometry shader was previously skipped on quad draws, causing slice 0 to be overwritten by far-horizon sky blue.
+- Fixed **MTFLauncher**'s auto-updater silently exiting without applying downloaded files and accumulating leftover `.mtf-update-*` folders on each launch.
+- Fixed the updater skipping `_`-prefixed bundled Python files (`__init__.py`, `_*.pyd`) and failing on deeply nested or accented install folders.
+- Hardened **MTFLauncher**'s automatic `mtf.exe` and `ns2_xlate.exe` runtime refresh after updates by hashing `runtime/libmtfrt.a` and syncing `bin/ns2_xlate.*` consistently.
+
+■ Known Issues
+
+- Minor graphical and gameplay issues remain in some modes.
+
+■ Install & Update
+
+- **New install:** Run `SteelTemple-MTF-ShadowRacket-Alpha-0.1.4-Full-Setup-Wizard.exe`, open **MTFLauncher**, pick your Mario Tennis Fever 1.1.1 dump folder, NUP-extracted tree, or `.nup`, click **Verify & Build mtf.exe**, and press **Play**.
+- **Portable:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.4-Portable-StandAlone.zip` anywhere and launch `MTFLauncher.exe`.
+- **Update from Alpha 0.1.3b or earlier:** Extract `SteelTemple-MTF-ShadowRacket-Alpha-0.1.4-Update.zip` over your existing install folder once (or run the `Alpha 0.1.4` Setup Wizard) so the fixed `MTFLauncher.exe` is in place — your dump, saves, and personal `mtf.ini` remain intact, **MTFLauncher** refreshes `mtf.exe` and `ns2_xlate.exe` automatically on launch, and future releases will auto-update cleanly.
+
 ## MTF-ShadowRacket Alpha 0.1.3b — AMD Hotfix
 
 This hotfix resolves shadow cascade rendering issues on AMD Radeon GPUs and fresh installs without bundled caches, restores true native `2160p (4K)` internal resolution without bottom-screen corruption, eliminates the brief black square around Mario when entering the court, and fixes default `Frame Generation = Off` handling as well as non-English locale fallbacks. Existing Alpha 0.1.2+ installs automatically update `mtf.exe` and `ns2_xlate.exe` on launcher startup after applying `Update.zip`.

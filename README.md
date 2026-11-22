@@ -11,7 +11,7 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?style=for-the-badge&logo=windows&logoColor=white)](#-requirements)
 [![Vulkan](https://img.shields.io/badge/Vulkan-1.3-AC162C?style=for-the-badge&logo=vulkan&logoColor=white)](#-under-the-hood)
 [![Game version](https://img.shields.io/badge/game-1.1.1-76B900?style=for-the-badge)](#-quick-start)
-[![Release](https://img.shields.io/badge/release-Alpha%200.1.3b-CCF22A?style=for-the-badge&labelColor=0C1A11)](https://github.com/STS78721/MTF-ShadowRacket/releases/tag/Alpha-0.1.3b)
+[![Release](https://img.shields.io/badge/release-Alpha%200.1.4-CCF22A?style=for-the-badge&labelColor=0C1A11)](https://github.com/STS78721/MTF-ShadowRacket/releases/tag/Alpha-0.1.4)
 [![License](https://img.shields.io/badge/license-GPL--3.0%2B-blue?style=for-the-badge)](#-credits--licence)
 
 **[Quick start](#-quick-start)** · **[Features](#-highlights)** · **[Status](#-status)** · **[How it works](#-under-the-hood)** · **[Changelog](CHANGELOG.md)** · **[Credits](#-credits--licence)**
@@ -24,7 +24,7 @@
 > **No game files are included.** You need your own legally dumped copy of **Mario Tennis Fever (1.1.1)**: `exefs` and `romfs`. This repository contains only the recompiler, the runtime, the launcher, and the setup tools.
 
 > [!NOTE]
-> **Current release: `Alpha 0.1.3b`.** MTF-ShadowRacket starts on a balanced 1080p windowed baseline (`1920x1080` windowed, Original internal resolution, AMD FSR, Frame Generation Off, 60 FPS) so every system boots smoothly — adjust resolution, upscaling, and visual profiles anytime in `MTFLauncher` or in-game (`F1`). Known minor issues remain and will be addressed in upcoming patch updates.
+> **Current release: `Alpha 0.1.4`.** MTF-ShadowRacket starts on a balanced 1080p windowed baseline (`1920x1080` windowed, Original internal resolution, AMD FSR, Frame Generation Off, 60 FPS) so every system boots smoothly — adjust resolution, upscaling, and visual profiles anytime in `MTFLauncher` or in-game (`F1`). Known minor issues remain and will be addressed in upcoming patch updates.
 
 ## ✨ Highlights
 
@@ -72,8 +72,8 @@ Works out of the box with Xbox, DualSense, Switch / Switch 2 Pro controllers, an
 
 **1. Install MTF-ShadowRacket**
 
-Download the latest **`Alpha 0.1.3b`** release from the **[Releases page](https://github.com/STS78721/MTF-ShadowRacket/releases/tag/Alpha-0.1.3b)**:
-- Run **`SteelTemple-MTF-ShadowRacket-Alpha-0.1.3b-Full-Setup-Wizard.exe`** (no administrator rights needed), or extract **`Portable-StandAlone.zip`**.
+Download the latest **`Alpha 0.1.4`** release from the **[Releases page](https://github.com/STS78721/MTF-ShadowRacket/releases/tag/Alpha-0.1.4)**:
+- Run **`SteelTemple-MTF-ShadowRacket-Alpha-0.1.4-Full-Setup-Wizard.exe`** (no administrator rights needed), or extract **`Portable-StandAlone.zip`**.
 
 **2. Set up from your Mario Tennis Fever 1.1.1 dump**
 
@@ -127,7 +127,7 @@ flowchart LR
 
 - **CPU:** Mario Tennis Fever's ARM64 modules are lifted statically to C ([`recomp/`](recomp/)); [`runtime/`](runtime/) supplies the Horizon OS kernel, memory management, audio, input, and Tennis Court settings UI.
 - **GPU:** Switch 2 NVN 2 commands translate onto **Vulkan 1.3** with Graphics Pipeline Libraries, Ampere (`SM86`) shader lowering, AMD FSR 1.0, and frame-generation pacing.
-- **Release Versioning:** [`VERSION`](VERSION) drives the version label across the Setup Wizard, `MTFLauncher`, Windows Installed Apps, and the in-game F1 menu (`Alpha 0.1.3b`), alongside [`CHANGELOG.md`](CHANGELOG.md).
+- **Release Versioning:** [`VERSION`](VERSION) drives the version label across the Setup Wizard, `MTFLauncher`, Windows Installed Apps, and the in-game F1 menu (`Alpha 0.1.4`), alongside [`CHANGELOG.md`](CHANGELOG.md).
 
 ## 🙏 Credits & licence
 

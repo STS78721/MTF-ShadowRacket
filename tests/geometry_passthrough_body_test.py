@@ -4,7 +4,7 @@ The real compiler consumes authored Maxwell. A deliberately small scalar SPIR-V
 interpreter checks body stores and subsequent copies. Runtime admission uses the
 existing full-TU cache fixture unchanged, with its disclosed fail-loud providers.
 This does not implement passthrough linkage or GPU memory, and it checks only that a
-single ViewportMask write translates, not how the primitive is culled.
+single ViewportMask or Layer write translates, not how the primitive is culled or routed.
 """
 import argparse
 import hashlib
@@ -182,8 +182,10 @@ class BodyInputs(unittest.TestCase):
         packets = {'static': body_program(), 'dynamic': body_program(dynamic=True),
                    'omitted_value': body_program(omit_value=True), 'outside_mask': body_program(location=7),
                    'viewport_mask': portable.program(extra=[geometry.ast(0, 0x3a0, words=1)]),
+                   'layer_write': portable.program(extra=[geometry.ast(0, 0x64, words=1)]),
                    'reject_ast': portable.program(extra=[geometry.ast(0, 0x70)]),
                    'reject_viewport_two_words': portable.program(extra=[geometry.ast(0, 0x3a0, words=2)]),
+                   'reject_layer_two_words': portable.program(extra=[geometry.ast(0, 0x64, words=2)]),
                    'reject_out': portable.program(extra=[geometry.out_vertex()])}
         jobs = []
         for name, code in packets.items():
@@ -427,8 +429,29 @@ class BodyInputs(unittest.TestCase):
         self.assertIn((26, (3,)), modes)     # OutputVertices 3
         self.assertTrue({8, 9, 10}.issubset(builtins))  # InvocationId, Layer, ViewportIndex
 
+    def test_layer_write_lowers_single_invocation_layer(self):
+        self.assertEqual(self.replies['layer_write'], 'ok layer_write')
+        spv = args.out / 'layer_write.spv'
+        validation = subprocess.run([str(args.spirv_val), '--target-env', 'vulkan1.3', str(spv)],
+                                    capture_output=True, text=True, timeout=15)
+        (args.out / 'layer_write.val.log').write_text(validation.stdout + validation.stderr, encoding='utf-8')
+        self.assertEqual(validation.returncode, 0, validation.stdout + validation.stderr)
+        report = json.loads((args.out / 'layer_write.res.json').read_text(encoding='utf-8'))
+        self.assertEqual(report['geometry'], dict(
+            input_vertices=3, output_topology='triangle_strip', invocations=1,
+            max_output_vertices=3, passthrough=False, source_passthrough=True))
+        module = GeometrySpirv(spv.read_bytes())
+        capabilities = {operands[0] for op, operands in module.ops if op == 17}
+        modes = {(operands[1], tuple(operands[2:])) for op, operands in module.ops if op == 16}
+        builtins = {operands[2] for op, operands in module.ops if op == 71 and operands[1] == 11}
+        self.assertNotIn(57, capabilities)   # MultiViewport not required for single-invocation Layer
+        self.assertIn((0, (1,)), modes)      # Invocations 1
+        self.assertIn((26, (3,)), modes)     # OutputVertices 3
+        self.assertIn(9, builtins)           # BuiltIn Layer
+        self.assertNotIn(10, builtins)       # No ViewportIndex
+
     def test_explicit_output_and_emit_remain_unsupported(self):
-        for name in ('reject_ast', 'reject_viewport_two_words', 'reject_out'):
+        for name in ('reject_ast', 'reject_viewport_two_words', 'reject_layer_two_words', 'reject_out'):
             self.assertTrue(self.replies[name].startswith('fail ' + name + ' '))
             self.assertFalse((args.out / (name + '.spv')).exists())
             self.assertFalse((args.out / (name + '.res.json')).exists())

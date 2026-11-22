@@ -102,9 +102,16 @@ def copy_tree(src: Path, dst: Path, skip=lambda _rel: False) -> None:
 
 
 def build_launcher() -> Path:
-    pyinstaller = ROOT / ".venv" / "Scripts" / "pyinstaller.exe"
-    if not pyinstaller.is_file():
-        sys.exit(f"Missing PyInstaller at {pyinstaller}")
+    # This checkout's .venv, then the main checkout's (a git worktree has none), then PATH.
+    cands = [
+        ROOT / ".venv" / "Scripts" / "pyinstaller.exe",
+        ROOT.parent / "Universal-NS2-to-PC" / ".venv" / "Scripts" / "pyinstaller.exe",
+    ]
+    pyinstaller = next((c for c in cands if c.is_file()), None)
+    if pyinstaller is None and shutil.which("pyinstaller"):
+        pyinstaller = Path(shutil.which("pyinstaller"))
+    if pyinstaller is None:
+        sys.exit(f"Missing PyInstaller (looked in {', '.join(str(c) for c in cands)} and PATH)")
     run([pyinstaller, ROOT / "MTFLauncher.spec", "--noconfirm"], cwd=ROOT)
     exe = ROOT / "dist" / "MTFLauncher.exe"
     if not exe.is_file():
@@ -147,6 +154,7 @@ def stage_python(stage: Path) -> Path:
     r = subprocess.run(
         [
             str(py_dst / "python.exe"),
+            "-B",
             "-I",
             "-c",
             "from compression import zstd; import numpy, lz4.block; "
@@ -481,7 +489,7 @@ def pack_setup_with_py314(py314: Path, stub: Path, stage: Path, out_exe: Path, v
         "    f.write(struct.pack('<Q', off) + MAGIC)\n"
         "print(f'{out_exe}: {len(files)} files ({total/2**20:.1f} MiB -> {out_exe.stat().st_size/2**20:.1f} MiB)')\n"
     )
-    run([py314 / "python.exe", "-I", "-c", script, stub, stage, out_exe, ver, str(level)], env=clean_env(py314))
+    run([py314 / "python.exe", "-B", "-I", "-c", script, stub, stage, out_exe, ver, str(level)], env=clean_env(py314))
 
 
 def write_release_zips(stage: Path, out_dir: Path, slug: str) -> None:
